@@ -1,0 +1,100 @@
+{
+  "name": "LOOM \u2014 00 \u2014 Factory Failure Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-1",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\n\nconst requiredCodes = [\n  'SOURCE_VALIDATION_FAILED',\n  'OPENSHORTS_SUBMISSION_FAILED',\n  'OPENSHORTS_SUBMISSION_UNKNOWN',\n  'TUNNEL_UNREACHABLE',\n  'STATUS_RETRIEVAL_FAILED',\n  'OPENSHORTS_JOB_FAILED',\n  'ORCHESTRATION_TIMEOUT',\n  'MALFORMED_STATUS_RESPONSE',\n  'NO_CLIPS_RETURNED',\n  'TRANSCRIPT_RETRIEVAL_FAILED',\n  'CANDIDATE_NORMALIZATION_FAILED',\n  'CANDIDATE_SCORING_FAILED',\n  'AGGREGATION_FAILED'\n];\n\nif (!requiredCodes.includes(input.failure_code)) {\n  throw new Error('LOOM_FAILURE_INVALID: Unknown failure_code: ' + input.failure_code);\n}\n\nconst sanitized = { ...input };\nif (sanitized.error_message && typeof sanitized.error_message === 'string') {\n  sanitized.error_message = sanitized.error_message.substring(0, 1000);\n}\nif (sanitized.evidence && sanitized.evidence.headers) {\n  delete sanitized.evidence.headers.authorization;\n  delete sanitized.evidence.headers['x-n8n-api-key'];\n}\n\nreturn [{ json: sanitized }];"
+      },
+      "id": "validate-1",
+      "name": "Validate Failure Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const p = $json;\n\nconst title = `\ud83d\udea8 **LOOM Factory Failure:** ${p.failure_code}`;\nlet text = `${title}\\n\\n`;\ntext += `**Stage:** ${p.stage || 'unknown'}\\n`;\ntext += `**Error:** ${p.error_message || 'N/A'}\\n`;\ntext += `**Status:** ${p.http_status || 'N/A'}\\n\\n`;\ntext += `**Run ID:** ${p.run_id || 'N/A'}\\n`;\ntext += `**Job ID:** ${p.job_id || 'N/A'} | **Clip ID:** ${p.clip_id || 'N/A'}\\n`;\ntext += `**Attempt:** ${p.attempt || 1}/${p.max_attempts || 1} | **Retryable:** ${p.retryable ? 'Yes' : 'No'}\\n`;\n\nreturn [{ json: { discord_text: text, original_failure: p } }];"
+      },
+      "id": "format-discord",
+      "name": "Format Discord Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "webhookApi",
+        "content": "={{ $json.discord_text }}",
+        "operation": "send"
+      },
+      "id": "discord-1",
+      "name": "Send Discord Alert",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ],
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "JbK8O1h4xNVhdMrm",
+          "name": "LOOM Discord Alerts"
+        }
+      },
+      "webhookId": "85396668-febe-4805-ac3c-0b934ce1bd06"
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Failure Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Failure Contract": {
+      "main": [
+        [
+          {
+            "node": "Format Discord Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Discord Payload": {
+      "main": [
+        [
+          {
+            "node": "Send Discord Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {}
+}

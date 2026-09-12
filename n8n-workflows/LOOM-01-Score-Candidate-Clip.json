@@ -1,0 +1,272 @@
+{
+  "name": "LOOM \u2014 01 \u2014 Score Candidate Clip",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "dummy-1",
+              "name": "clip_transcript",
+              "value": "Guy 1: You really think you can take me in the ring? Guy 2: Bro I've been boxing since I was six. Guy 1: We'll see about that then, let's go. [both laugh, put on gloves]",
+              "type": "string"
+            },
+            {
+              "id": "dummy-2",
+              "name": "hook_text",
+              "value": "They actually wanted to fight.",
+              "type": "string"
+            },
+            {
+              "id": "dummy-3",
+              "name": "predicted_score_openshorts",
+              "value": 75,
+              "type": "number"
+            },
+            {
+              "id": "dummy-4",
+              "name": "clip_duration_seconds",
+              "value": 23.2,
+              "type": "number"
+            },
+            {
+              "id": "dummy-5",
+              "name": "run_id",
+              "value": "test-run-1",
+              "type": "string"
+            },
+            {
+              "id": "dummy-6",
+              "name": "tenant_id",
+              "value": "test-tenant",
+              "type": "string"
+            },
+            {
+              "id": "dummy-7",
+              "name": "clip_id",
+              "value": "test-clip-1",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "set-dummy-data-1",
+      "name": "Dummy Candidate Clip Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.request_body }}",
+        "options": {}
+      },
+      "id": "http-openrouter-1",
+      "name": "Score via OpenRouter (Qwen)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "6s92tsh5pB4Gkw04",
+          "name": "OpenRouter API Key (live)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Qwen Score: strict parse only. No fence-stripping, no repair.\n// Any failure throws so the run visibly fails instead of silently\n// producing a \"valid: false\" success further down the chain.\nconst body = $json;\nconst choice = (body.choices && body.choices[0]) || {};\nconst message = choice.message || {};\nconst content = message.content;\n\nif (typeof content !== 'string') {\n  throw new Error('LOOM_SCORE_PARSE_FAILED: message.content is not a string (got ' + typeof content + ')');\n}\n\nlet parsed;\ntry {\n  parsed = JSON.parse(content);\n} catch (e) {\n  throw new Error('LOOM_SCORE_PARSE_FAILED: JSON.parse failed: ' + e.message);\n}\n\nreturn [{ json: { parsed } }];\n"
+      },
+      "id": "code-parse-1",
+      "name": "Parse Qwen Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate LOOM Score: full contract check against the locked scoring\n// contract (loom_candidate_semantic_score, v1.0). Any violation throws\n// LOOM_SCORE_VALIDATION_FAILED so a bad model response fails the run\n// loudly instead of returning valid:false as a \"successful\" output.\n//\n// NOTE: the hook word-count bound, caption char-count bound, and the\n// overall_score weighting formula below are NOT part of Codex's locked\n// JSON schema (that schema has no length/word constraints on these two\n// text fields, and specifies no scoring formula at all). They are\n// LOOM-side editorial/business rules layered on top, confirmed by Bryan.\n// Reference \"Build OpenRouter Request\" instead of a single named entry-path\n// node: BOTH entry paths (Manual Trigger -> Dummy Candidate Clip Data, and\n// Execute Sub-workflow Trigger -> Validate Incoming Candidate) converge into\n// this node before the OpenRouter call, and it spreads ...$json from\n// whichever upstream node actually ran, so run_id/tenant_id/clip_id are\n// always present here regardless of entry path. Referencing either entry\n// node by name directly breaks on the OTHER path, since only one of them\n// executes per run (observed: execution 9509/9512, \"node X hasn't been\n// executed\").\nconst expected = $('Build OpenRouter Request').item.json;\nconst p = $json.parsed || {};\nconst errors = [];\n\nconst requiredFields = [\n  'schema_version','run_id','tenant_id','clip_id',\n  'hook_score','completeness_score','clarity_score','emotional_intensity_score',\n  'shareability_score','context_dependency_score','duration_score','duration_fit',\n  'dead_air_detected','repair_actions','hard_failure_codes','suggested_hook',\n  'suggested_caption','confidence','evidence_summary','unverified_dimensions',\n  'recommended_decision'\n];\nfor (const f of requiredFields) {\n  if (!(f in p)) errors.push(`missing required field: ${f}`);\n}\n\n// --- Identifier cross-check: must match what we actually sent, not just be present ---\nif (p.run_id !== expected.run_id) errors.push(`run_id mismatch: expected ${expected.run_id}, got ${JSON.stringify(p.run_id)}`);\nif (p.tenant_id !== expected.tenant_id) errors.push(`tenant_id mismatch: expected ${expected.tenant_id}, got ${JSON.stringify(p.tenant_id)}`);\nif (p.clip_id !== expected.clip_id) errors.push(`clip_id mismatch: expected ${expected.clip_id}, got ${JSON.stringify(p.clip_id)}`);\nif (p.schema_version !== '1.0') errors.push(`schema_version must be \"1.0\", got ${JSON.stringify(p.schema_version)}`);\n\n// --- Score fields: integer 0-100 ---\nconst scoreFields = ['hook_score','completeness_score','clarity_score','emotional_intensity_score','shareability_score','context_dependency_score','duration_score'];\nfor (const f of scoreFields) {\n  const v = p[f];\n  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 100) {\n    errors.push(`${f} must be an integer 0-100, got: ${JSON.stringify(v)}`);\n  }\n}\n\n// --- Enums ---\nif (!['too_short','good','too_long'].includes(p.duration_fit)) {\n  errors.push(`duration_fit invalid enum value: ${JSON.stringify(p.duration_fit)}`);\n}\nif (!['publishable','repairable','reject'].includes(p.recommended_decision)) {\n  errors.push(`recommended_decision invalid enum value: ${JSON.stringify(p.recommended_decision)}`);\n}\n\n// --- confidence range ---\nif (typeof p.confidence !== 'number' || p.confidence < 0 || p.confidence > 1) {\n  errors.push(`confidence must be a number 0-1, got: ${JSON.stringify(p.confidence)}`);\n}\n\n// --- Array shape checks ---\nconst arrayFields = ['repair_actions','hard_failure_codes','unverified_dimensions'];\nfor (const f of arrayFields) {\n  if (!Array.isArray(p[f])) errors.push(`${f} must be an array`);\n}\nif (!Array.isArray(p.evidence_summary) || p.evidence_summary.length < 1 || p.evidence_summary.length > 5) {\n  errors.push('evidence_summary must be an array of 1-5 strings');\n}\n\n// --- Text field bounds (LOOM editorial rules, not from Codex's schema) ---\nif (typeof p.suggested_hook !== 'string' || p.suggested_hook.trim().length === 0) {\n  errors.push('suggested_hook must be a non-empty string');\n} else {\n  const wc = p.suggested_hook.trim().split(/\\s+/).length;\n  if (wc < 3 || wc > 10) {\n    errors.push(`suggested_hook must be 3-10 words (3-7 preferred), got ${wc}: \"${p.suggested_hook}\"`);\n  }\n}\nif (typeof p.suggested_caption !== 'string' || p.suggested_caption.trim().length === 0) {\n  errors.push('suggested_caption must be a non-empty string');\n} else if (p.suggested_caption.length > 220) {\n  errors.push(`suggested_caption exceeds 220 characters (${p.suggested_caption.length})`);\n}\n\n// --- dead_air_detected null-consistency ---\n// This pipeline is transcript-only (no audio/video access), so the model has\n// no basis to judge dead air. Require null here; a true/false value means the\n// model guessed at something it cannot actually observe from text alone.\nif (p.dead_air_detected !== null) {\n  errors.push(`dead_air_detected must be null for a transcript-only pipeline, got: ${JSON.stringify(p.dead_air_detected)}`);\n}\n\n// --- unverified_dimensions: pipeline-authoritative, not Qwen-authoritative ---\n// Revised 2026-09-06: which dimensions are unverifiable for a transcript-only\n// pipeline is STATIC KNOWLEDGE about what this pipeline can and cannot see --\n// it does not depend on Qwen reliably enumerating all 7 every single call.\n// Requiring Qwen's own list to be complete caused real validation failures\n// when the model returned a partial (e.g. 6 of 7) but otherwise-correct list.\n//\n// New approach: n8n computes the authoritative list itself\n// (requiredUnverifiedDimensions, hardcoded). Qwen's returned list is kept for\n// observability only (modelUnverifiedDimensions) and is still checked for\n// well-formedness -- it must be an array, and every value in it must be one\n// of the 7 valid enum values (no fabricated dimension names) -- but it is no\n// longer required to be complete, and it no longer decides the final output.\nconst requiredUnverifiedDimensions = ['crop_quality','speaker_visibility','facial_framing','subtitle_placement','audio_sync','camera_switching','dead_air'];\nconst modelUnverifiedDimensions = p.unverified_dimensions;\n\nif (!Array.isArray(modelUnverifiedDimensions)) {\n  errors.push('unverified_dimensions must be an array');\n} else {\n  const invalid = modelUnverifiedDimensions.filter(d => !requiredUnverifiedDimensions.includes(d));\n  if (invalid.length > 0) {\n    errors.push(`unverified_dimensions contains invalid/fabricated values not in the known enum: ${invalid.join(', ')}`);\n  }\n}\n\nif (errors.length > 0) {\n  throw new Error('LOOM_SCORE_VALIDATION_FAILED: ' + errors.join(' | '));\n}\n\n// --- Deterministic LOOM scoring (independent of the model's own recommendation) ---\n// LOOM-side scoring formula, revised by Bryan on 2026-09-06 -- supersedes the\n// earlier 30/15/15/15/15/5/5 weighting. Not derived from Codex's schema, which\n// specifies no formula or weights of any kind for overall_score (overall_score\n// itself is not a schema field -- it's a LOOM-computed metric layered on top).\n// context_dependency_score is inverted here: a clip that depends heavily on\n// external context to make sense is worse for short-form, so a HIGH\n// context_dependency_score should PULL DOWN overall_score, not up.\nconst overall_score = Math.round(\n  p.hook_score * 0.20 +\n  p.completeness_score * 0.20 +\n  p.clarity_score * 0.15 +\n  p.emotional_intensity_score * 0.15 +\n  p.shareability_score * 0.15 +\n  (100 - p.context_dependency_score) * 0.10 +\n  p.duration_score * 0.05\n);\n\n// Decision policy revised by Bryan on 2026-09-06: publishable now requires a\n// higher overall_score bar (80, up from 70) PLUS three additional gates that\n// did not exist before -- this is a new, stricter policy layered on top of\n// the existing overall_score metric, not a fix to a defect in prior code\n// (there was no previous context_dependency/completeness/clarity gate to\n// \"restore\"). repairable floor also raised from 40 to 60, which narrows what\n// counts as repairable vs. reject.\nlet decision;\nif (p.hard_failure_codes.length > 0) {\n  decision = 'reject';\n} else if (\n  overall_score >= 80 &&\n  p.context_dependency_score <= 45 &&\n  p.completeness_score >= 75 &&\n  p.clarity_score >= 70 &&\n  p.repair_actions.length === 0\n) {\n  decision = 'publishable';\n} else if (overall_score >= 60) {\n  decision = 'repairable';\n} else {\n  decision = 'reject';\n}\n\nconst decision_agreement = decision === p.recommended_decision;\n\nreturn [{ json: {\n  parsed: p,\n  overall_score,\n  decision,\n  model_recommended_decision: p.recommended_decision,\n  decision_agreement,\n  // Authoritative for downstream use -- pipeline-computed, not Qwen's raw list.\n  // Qwen's own list is preserved separately purely for observability.\n  authoritative_unverified_dimensions: requiredUnverifiedDimensions,\n  model_unverified_dimensions: modelUnverifiedDimensions,\n  openshorts_score: expected.predicted_score_openshorts\n} }];\n"
+      },
+      "id": "code-validate-1",
+      "name": "Validate LOOM Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Return Validated Result: flattened production-shaped output.\n// Only reached if Validate LOOM Score did NOT throw, so this is always\n// a passing result -- no validation_errors key needed here.\nconst v = $json;\nconst p = v.parsed;\n\nreturn [{ json: {\n  schema_version: p.schema_version,\n  run_id: p.run_id,\n  tenant_id: p.tenant_id,\n  clip_id: p.clip_id,\n  hook_score: p.hook_score,\n  completeness_score: p.completeness_score,\n  clarity_score: p.clarity_score,\n  emotional_intensity_score: p.emotional_intensity_score,\n  shareability_score: p.shareability_score,\n  context_dependency_score: p.context_dependency_score,\n  duration_score: p.duration_score,\n  duration_fit: p.duration_fit,\n  openshorts_score: v.openshorts_score,\n  overall_score: v.overall_score,\n  dead_air_detected: p.dead_air_detected,\n  repair_actions: p.repair_actions,\n  hard_failure_codes: p.hard_failure_codes,\n  suggested_hook: p.suggested_hook,\n  suggested_caption: p.suggested_caption,\n  confidence: p.confidence,\n  evidence_summary: p.evidence_summary,\n  unverified_dimensions: v.authoritative_unverified_dimensions,\n  model_unverified_dimensions: v.model_unverified_dimensions,\n  decision: v.decision,\n  model_recommended_decision: v.model_recommended_decision,\n  decision_agreement: v.decision_agreement,\n  verification_status: 'semantic_only_pending_closed_weight_clip_verifier'\n} }];\n"
+      },
+      "id": "set-return-1",
+      "name": "Return Validated Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build OpenRouter Request: constructs the full request body as a real JS\n// object (not a stringified {{ }} expression). Moved here specifically to\n// avoid n8n's expression-delimiter parser mis-detecting the closing \"}}\" of\n// the {{ }} wrapper when it collides with nested \"}}\" sequences inside a large\n// inline JSON schema literal -- observed as \"invalid syntax\" on the HTTP node\n// when the schema was embedded directly in its jsonBody expression.\nconst schema = {\"name\": \"loom_candidate_semantic_score\", \"strict\": true, \"schema\": {\"type\": \"object\", \"additionalProperties\": false, \"properties\": {\"schema_version\": {\"type\": \"string\", \"enum\": [\"1.0\"]}, \"run_id\": {\"type\": \"string\"}, \"tenant_id\": {\"type\": \"string\"}, \"clip_id\": {\"type\": \"string\"}, \"hook_score\": {\"type\": \"integer\", \"minimum\": 0, \"maximum\": 100}, \"completeness_score\": {\"type\": \"integer\", \"minimum\": 0, \"maximum\": 100}, \"clarity_score\": {\"type\": \"integer\", \"minimum\": 0, \"maximum\": 100}, \"emotional_intensity_score\": {\"type\": \"integer\", \"minimum\": 0, \"maximum\": 100}, \"shareability_score\": {\"type\": \"integer\", \"minimum\": 0, \"maximum\": 100}, \"context_dependency_score\": {\"type\": \"integer\", \"minimum\": 0, \"maximum\": 100}, \"duration_score\": {\"type\": \"integer\", \"minimum\": 0, \"maximum\": 100}, \"duration_fit\": {\"type\": \"string\", \"enum\": [\"too_short\", \"good\", \"too_long\"]}, \"dead_air_detected\": {\"type\": [\"boolean\", \"null\"]}, \"repair_actions\": {\"type\": \"array\", \"uniqueItems\": true, \"items\": {\"type\": \"string\", \"enum\": [\"rewrite_hook\", \"rewrite_caption\", \"adjust_duration\", \"remove_dead_air\", \"needs_visual_verification\", \"needs_audio_verification\"]}}, \"hard_failure_codes\": {\"type\": \"array\", \"uniqueItems\": true, \"items\": {\"type\": \"string\", \"enum\": [\"incomplete_thought\", \"misleading_hook\", \"unintelligible_transcript\", \"missing_essential_context\", \"rights_or_policy_risk\"]}}, \"suggested_hook\": {\"type\": \"string\"}, \"suggested_caption\": {\"type\": \"string\"}, \"confidence\": {\"type\": \"number\", \"minimum\": 0, \"maximum\": 1}, \"evidence_summary\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 5, \"items\": {\"type\": \"string\"}}, \"unverified_dimensions\": {\"type\": \"array\", \"uniqueItems\": true, \"items\": {\"type\": \"string\", \"enum\": [\"crop_quality\", \"speaker_visibility\", \"facial_framing\", \"subtitle_placement\", \"audio_sync\", \"camera_switching\", \"dead_air\"]}}, \"recommended_decision\": {\"type\": \"string\", \"enum\": [\"publishable\", \"repairable\", \"reject\"]}}, \"required\": [\"schema_version\", \"run_id\", \"tenant_id\", \"clip_id\", \"hook_score\", \"completeness_score\", \"clarity_score\", \"emotional_intensity_score\", \"shareability_score\", \"context_dependency_score\", \"duration_score\", \"duration_fit\", \"dead_air_detected\", \"repair_actions\", \"hard_failure_codes\", \"suggested_hook\", \"suggested_caption\", \"confidence\", \"evidence_summary\", \"unverified_dimensions\", \"recommended_decision\"]}};\n\nconst requestBody = {\n  model: \"qwen/qwen3.5-9b\",\n  temperature: 0.2,\n  max_tokens: 1200,\n  reasoning: { effort: \"none\", exclude: true },\n  response_format: {\n    type: \"json_schema\",\n    json_schema: schema\n  },\n  messages: [\n    {\n      role: \"system\",\n      content: \"You are a LOOM Factory clip-scoring assistant. Score the candidate short-form clip strictly according to the provided JSON schema. This pipeline only has the transcript (no video or audio access) -- mark ALL visual/audio dimensions (crop_quality, speaker_visibility, facial_framing, subtitle_placement, audio_sync, camera_switching, dead_air) in unverified_dimensions, and set dead_air_detected to null since you cannot judge it from text alone. Return only the fields defined in the schema, using the exact run_id, tenant_id, and clip_id provided. Each numeric score must be an integer from 0 to 100, where 0 is the weakest possible score and 100 is the strongest. Use the full 0\u2013100 range. Do not use a 0\u201310 scale. suggested_hook must be 3-10 words (3-7 preferred).\"\n    },\n    {\n      role: \"user\",\n      content: `Transcript: ${$json.no_speech ? '[NO SPEECH \u2014 instrumental clip; do not invent dialogue]' : $json.clip_transcript}\\nHook text: ${$json.hook_text}\\nDuration: ${$json.clip_duration_seconds}s\\nrun_id: ${$json.run_id}\\ntenant_id: ${$json.tenant_id}\\nclip_id: ${$json.clip_id}`\n    }\n  ]\n};\n\nreturn [{ json: { ...$json, request_body: requestBody } }];\n"
+      },
+      "id": "code-build-request-1",
+      "name": "Build OpenRouter Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "jsonExample",
+        "jsonExample": "{\"schema_version\": \"1.0\", \"run_id\": \"loom-run-example\", \"tenant_id\": \"example-tenant\", \"clip_id\": \"example-job:0\", \"source_id\": \"example-job\", \"candidate_clip_url\": \"https://example.com/videos/example-job/clip_0.mp4\", \"clip_transcript\": \"example transcript text\", \"clip_duration_seconds\": 20.0, \"existing_hook\": \"example hook\", \"openshorts_score\": 70, \"no_speech\": false, \"source_context\": null, \"platform_targets\": [\"tiktok\", \"instagram_reels\", \"youtube_shorts\", \"facebook_reels\"], \"streamer_profile\": null}"
+      },
+      "id": "exec-wf-trigger-1",
+      "name": "Execute Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\n\nconst reservedKeys = [\n  'model', 'temperature', 'max_tokens', 'reasoning', 'response_format',\n  'json_schema', 'schema', 'weights', 'overall_score_weights',\n  'decision_thresholds', 'prompt', 'system_prompt', 'credentials',\n  'credential_id', 'openrouter_key', 'api_key'\n];\nconst foundReserved = reservedKeys.filter(k => k in input);\nif (foundReserved.length > 0) {\n  throw new Error('LOOM_CANDIDATE_REJECTED: attempted override of locked scoring configuration: ' + foundReserved.join(', '));\n}\n\nconst requiredFields = ['run_id', 'tenant_id', 'clip_id', 'source_id', 'candidate_clip_url', 'clip_duration_seconds', 'schema_version'];\nif (input.no_speech !== true) {\n  requiredFields.push('clip_transcript');\n}\nconst missingRequired = requiredFields.filter(f => input[f] === undefined || input[f] === null || input[f] === '');\nif (missingRequired.length > 0) {\n  throw new Error('LOOM_CANDIDATE_REJECTED: missing required candidate field(s): ' + missingRequired.join(', '));\n}\n\nreturn [{ json: {\n  ...input,\n  clip_transcript: input.clip_transcript,\n  hook_text: input.existing_hook || (input.no_speech === true ? '[no speech]' : '(no existing hook provided)'),\n  predicted_score_openshorts: (input.openshorts_score === undefined ? null : input.openshorts_score),\n  clip_duration_seconds: input.clip_duration_seconds,\n  run_id: input.run_id,\n  tenant_id: input.tenant_id,\n  clip_id: input.clip_id\n} }];"
+      },
+      "id": "code-validate-incoming-1",
+      "name": "Validate Incoming Candidate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Dummy Candidate Clip Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dummy Candidate Clip Data": {
+      "main": [
+        [
+          {
+            "node": "Build OpenRouter Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score via OpenRouter (Qwen)": {
+      "main": [
+        [
+          {
+            "node": "Parse Qwen Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Qwen Score": {
+      "main": [
+        [
+          {
+            "node": "Validate LOOM Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate LOOM Score": {
+      "main": [
+        [
+          {
+            "node": "Return Validated Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build OpenRouter Request": {
+      "main": [
+        [
+          {
+            "node": "Score via OpenRouter (Qwen)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Incoming Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Incoming Candidate": {
+      "main": [
+        [
+          {
+            "node": "Build OpenRouter Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

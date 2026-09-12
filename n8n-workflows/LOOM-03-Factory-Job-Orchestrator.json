@@ -1,0 +1,1136 @@
+{
+  "name": "LOOM \u2014 03 \u2014 Factory Job Orchestrator",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "source-input-1",
+      "name": "Source Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "source_url",
+              "value": "https://www.youtube.com/watch?v=xtOKTsIYwH0",
+              "type": "string"
+            },
+            {
+              "id": "2",
+              "name": "tenant_id",
+              "value": "loom-internal-test",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "validate-source-1",
+      "name": "Validate Source",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const input = $json;\nconst urlStr = input.source_url;\ntry {\n  if (typeof urlStr !== 'string' || !urlStr) throw new Error('URL is empty or not a string');\n  const m = urlStr.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\\/\\/([^\\/?#]+)/);\n  if (!m) throw new Error('Malformed URL');\n  const protocol = m[1].toLowerCase() + ':';\n  const hostname = m[2].split('@').pop().split(':')[0].toLowerCase();\n  const allowlist = ['youtube.com', 'www.youtube.com', 'youtu.be', 'twitch.tv', 'www.twitch.tv', 'kick.com', 'www.kick.com'];\n  if (protocol !== 'https:') throw new Error('Must be HTTPS');\n  if (!allowlist.includes(hostname)) throw new Error('Domain not in allowlist');\n  if (urlStr.includes('list=')) throw new Error('Playlist/Mix URLs rejected by MVP policy');\n} catch (e) {\n  throw new Error('SOURCE_VALIDATION_FAILED: ' + e.message);\n}\nreturn [{ json: input }];"
+      }
+    },
+    {
+      "id": "create-run-1",
+      "name": "Create Run Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nreturn [{ json: { ...$json, run_id: 'loom-run-' + crypto.randomUUID(), started_at: new Date().toISOString(), poll_count: 0 } }];"
+      }
+    },
+    {
+      "id": "submit-1",
+      "name": "Submit OpenShorts Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueErrorOutput",
+      "position": [
+        800,
+        300
+      ],
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "https://users-macbook-pro-1.taild000b2.ts.net/api/process",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $json.source_url }}"
+            },
+            {
+              "name": "webhook_url",
+              "value": "http://host.docker.internal:8082/relay"
+            },
+            {
+              "name": "acknowledged",
+              "value": "true"
+            },
+            {
+              "name": "output_format",
+              "value": "vertical"
+            },
+            {
+              "name": "auto_hook",
+              "value": "1"
+            },
+            {
+              "name": "auto_hook_style",
+              "value": "classic"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "5FDwahQgAPWe53MD",
+          "name": "LOOM Tunnel Proxy Token"
+        }
+      },
+      "retryOnFail": false
+    },
+    {
+      "id": "check-submit",
+      "name": "Check Submission",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ],
+      "parameters": {
+        "jsCode": "if ($json.error) {\n  return [{ json: { ...$('Create Run Context').item.json, failure_code: 'OPENSHORTS_SUBMISSION_UNKNOWN', error_message: $json.error.message } }];\n}\nif (!$json.job_id) {\n  return [{ json: { ...$('Create Run Context').item.json, failure_code: 'OPENSHORTS_SUBMISSION_FAILED', error_message: 'No job_id returned' } }];\n}\nreturn [{ json: { ...$('Create Run Context').item.json, job_id: $json.job_id } }];"
+      }
+    },
+    {
+      "id": "validate-completed-1",
+      "name": "Validate Completed Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "onError": "continueErrorOutput",
+      "position": [
+        2200,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const context = $('Correlate Run Context').item.json;\nconst p = $json;\n\nif (!p.result || !Array.isArray(p.result.clips) || p.result.clips.length === 0) {\n  throw new Error('NO_CLIPS_RETURNED: Completed job returned zero clips');\n}\n\nconst uniqueClips = [];\nconst seenKeys = new Set();\np.result.clips.forEach((clip, index) => {\n  const candidateKey = context.job_id + ':' + index;\n  if (!seenKeys.has(candidateKey)) {\n    seenKeys.add(candidateKey);\n    uniqueClips.push(clip);\n  }\n});\n\nreturn [{ json: {\n  run_id: context.run_id,\n  tenant_id: context.tenant_id,\n  job_id: context.job_id,\n  source_url: context.source_url,\n  started_at: context.started_at,\n  cached_scores: context.cached_scores || {},\n  status_response: { result: { clips: uniqueClips } }\n} }];"
+      }
+    },
+    {
+      "id": "split-clips",
+      "name": "Split Completed Clips",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const clips = ($json.status_response && $json.status_response.result && $json.status_response.result.clips) || [];\nconst cachedScores = $json.cached_scores || {};\nreturn clips.map((clip, index) => ({ json: { ...clip, _clip_index: index, _cached_score: cachedScores[$json.job_id + ':' + index] || null } }));"
+      }
+    },
+    {
+      "id": "attach-context",
+      "name": "Attach Job and Tenant Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const context = $('Validate Completed Job').item.json;\nreturn $input.all().map(item => {\n  const clip = item.json;\n  return { json: {\n    run_id: context.run_id,\n    tenant_id: context.tenant_id,\n    job_id: context.job_id,\n    clip_index: clip._clip_index,\n    source_url: context.source_url,\n    clip_start: clip.start,\n    clip_end: clip.end,\n    clip_hook: clip.viral_hook_text || clip.hook_text || null,\n    clip_score: clip.predicted_score || null,\n    asset_url: clip.video_url || null,\n    source_context: null,\n    platform_targets: ['tiktok', 'instagram_reels', 'youtube_shorts', 'facebook_reels'],\n    streamer_profile: null\n  } };\n});"
+      }
+    },
+    {
+      "id": "exec-wf02",
+      "name": "Execute Workflow 02",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "onError": "continueErrorOutput",
+      "position": [
+        2800,
+        300
+      ],
+      "parameters": {
+        "workflowId": "6RNa6TXeppCQ7bhh",
+        "mode": "each"
+      }
+    },
+    {
+      "id": "capture-result",
+      "name": "Capture Success/Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3000,
+        300
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().map(item => ({ json: item.json }));"
+      }
+    },
+    {
+      "id": "aggregate",
+      "name": "Aggregate Batch Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3200,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const items = $items('Capture Success/Error');\nconst context = $('Validate Completed Job').item.json;\nlet scored = [];\nlet failed = [];\nlet summary = { publishable: 0, repairable: 0, reject: 0, failed: 0 };\n\nitems.forEach(item => {\n  const result = item.json.scored_candidate || item.json;\n  if (result.error) {\n    failed.push({ error: (result.error && result.error.message) ? result.error.message : String(result.error) });\n    summary.failed++;\n  } else {\n    scored.push(result);\n    if (result.decision === 'publishable') summary.publishable++;\n    else if (result.decision === 'repairable') summary.repairable++;\n    else summary.reject++;\n  }\n});\n\nconst total = items.length;\nconst status = (scored.length > 0 && failed.length > 0) ? 'partial' : (scored.length > 0 ? 'completed' : 'failed');\n\nreturn [{ json: {\n  schema_version: \"1.0\",\n  run_id: context.run_id,\n  tenant_id: context.tenant_id,\n  job_id: context.job_id,\n  source_type: \"youtube_vod\",\n  source_url: context.source_url,\n  status: status,\n  started_at: context.started_at,\n  completed_at: new Date().toISOString(),\n  poll_count: context.poll_count,\n  total_candidates: total,\n  scored_candidates: scored,\n  failed_candidates: failed,\n  summary: summary\n} }];"
+      }
+    },
+    {
+      "id": "exec-wf00",
+      "name": "Factory Failure Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        500
+      ],
+      "parameters": {
+        "workflowId": "IYB1Pp8cTMrghaoK"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Persist Run Context: the OpenShorts terminal callback payload contains\n// only job_id (no run_id/tenant_id/source_url). This durable map lets the\n// callback correlate back to the originating run. n8n workflow static data\n// only persists for PRODUCTION executions (documented n8n behavior, also\n// noted in the installed OpenShorts n8n example README) -- this workflow\n// must be active for this correlation to survive between submit and callback.\nconst staticData = $getWorkflowStaticData('global');\nstaticData.pendingRuns = staticData.pendingRuns || {};\nconst ctx = $json; // from Check Submission\nstaticData.pendingRuns[ctx.job_id] = {\n  run_id: ctx.run_id,\n  tenant_id: ctx.tenant_id,\n  source_url: ctx.source_url,\n  submitted_at: ctx.started_at\n};\n\nreturn [{ json: {\n  run_id: ctx.run_id,\n  job_id: ctx.job_id,\n  tenant_id: ctx.tenant_id,\n  source_url: ctx.source_url,\n  status: 'submitted_awaiting_callback',\n  webhook_registered: true\n} }];\n"
+      },
+      "id": "persist-run-context",
+      "name": "Persist Run Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "abc-1",
+                    "leftValue": "={{ $json.failure_code ? 'fail' : 'ok' }}",
+                    "rightValue": "ok",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ok"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "abc-2",
+                    "leftValue": "={{ $json.failure_code ? 'fail' : 'ok' }}",
+                    "rightValue": "fail",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "fail"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": 1
+        }
+      },
+      "id": "route-submission-result",
+      "name": "Route Submission Result",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1000,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst p = $json;\nreturn [{ json: {\n  schema_version: '1.0',\n  failure_id: require('crypto').randomUUID(),\n  occurred_at: new Date().toISOString(),\n  run_id: p.run_id,\n  execution_id: $execution.id,\n  workflow_id: $workflow.id,\n  tenant_id: p.tenant_id,\n  source_type: 'youtube_vod',\n  source_url: p.source_url,\n  job_id: p.job_id || null,\n  clip_id: null,\n  stage: 'submission',\n  failure_code: p.failure_code,\n  retryable: false,\n  attempt: 1,\n  max_attempts: 1,\n  http_status: null,\n  error_message: (p.error_message || 'Submission failed').toString().substring(0, 1000),\n  evidence: {}\n} }];\n"
+      },
+      "id": "prepare-submission-failure",
+      "name": "Prepare Submission Failure Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "loom-openshorts-callback",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "responseCode": 200,
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "openshorts-callback-webhook",
+      "name": "OpenShorts Callback",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        600
+      ],
+      "webhookId": "loom-openshorts-callback-wh",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "p7I7vakxK0a7qdew",
+          "name": "LOOM Relay Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.lockedJobs = staticData.lockedJobs || {};\nconst body = $json.body || {};\nconst jobId = body.job_id || 'unknown';\nconst isResume = body.resume === true;\n\nif (staticData.lockedJobs[jobId] && !isResume) {\n  const locked = staticData.lockedJobs[jobId];\n  throw new Error('DUPLICATE_CALLBACK_IGNORED: job_id ' + jobId + ' already locked by event \"' + locked.event + '\" at ' + locked.processedAt + ' -- rejecting later event \"' + (body.event || 'unknown') + '\"');\n}\n\nif (isResume) {\n  delete staticData.lockedJobs[jobId];\n}\n\nstaticData.lockedJobs[jobId] = { event: body.event || 'unknown', processedAt: new Date().toISOString(), resume: isResume };\nreturn [{ json: $json }];"
+      },
+      "id": "deduplicate-callback",
+      "name": "Deduplicate Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst body = $json.body;\nif (!body || !body.event || !['job.completed', 'job.failed'].includes(body.event)) {\n  throw new Error('MALFORMED_STATUS_RESPONSE: callback missing or invalid event field: ' + JSON.stringify(body && body.event));\n}\nif (!body.job_id) {\n  throw new Error('MALFORMED_STATUS_RESPONSE: callback missing job_id');\n}\nreturn [{ json: $json }];\n"
+      },
+      "id": "validate-terminal-event",
+      "name": "Validate Terminal Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst body = $json.body;\nconst jobId = body.job_id;\nconst pending = (staticData.pendingRuns || {})[jobId];\nif (!pending) {\n  throw new Error('CANDIDATE_NORMALIZATION_FAILED: no pending run context found for job_id ' + jobId + ' (submitted via a different execution, static data not persisted, or already consumed)');\n}\nreturn [{ json: {\n  run_id: pending.run_id,\n  tenant_id: pending.tenant_id,\n  job_id: jobId,\n  source_url: pending.source_url,\n  started_at: pending.submitted_at,\n  event: body.event,\n  error: body.error || null,\n  cached_scores: body.cached_scores || {}\n} }];"
+      },
+      "id": "correlate-run-context",
+      "name": "Correlate Run Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cb-1",
+                    "leftValue": "={{ $json.event }}",
+                    "rightValue": "job.completed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "completed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cb-2",
+                    "leftValue": "={{ $json.event }}",
+                    "rightValue": "job.failed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "failed"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": 1
+        }
+      },
+      "id": "route-callback-event",
+      "name": "Route Callback Event",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1200,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst context = $json;\nreturn [{ json: {\n  schema_version: '1.0',\n  failure_id: require('crypto').randomUUID(),\n  occurred_at: new Date().toISOString(),\n  run_id: context.run_id,\n  execution_id: $execution.id,\n  workflow_id: $workflow.id,\n  tenant_id: context.tenant_id,\n  source_type: 'youtube_vod',\n  source_url: context.source_url,\n  job_id: context.job_id,\n  clip_id: null,\n  stage: 'openshorts_callback',\n  failure_code: 'OPENSHORTS_JOB_FAILED',\n  retryable: false,\n  attempt: 1,\n  max_attempts: 1,\n  http_status: null,\n  error_message: (context.error || 'OpenShorts reported job.failed').toString().substring(0, 1000),\n  evidence: {}\n} }];\n"
+      },
+      "id": "prepare-callback-failure",
+      "name": "Prepare Callback Failure Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ 'https://users-macbook-pro-1.taild000b2.ts.net/api/status/' + $('Correlate Run Context').item.json.job_id }}",
+        "method": "GET",
+        "options": {}
+      },
+      "id": "fetch-completed-1",
+      "name": "Fetch Completed Details (Attempt 1)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        500
+      ],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "5FDwahQgAPWe53MD",
+          "name": "LOOM Tunnel Proxy Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "seconds"
+      },
+      "id": "wait-retry-1",
+      "name": "Wait 5s Before Retry 1",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1600,
+        560
+      ],
+      "webhookId": "2c39f753-73f0-40ee-bbc1-53c2d5521fab"
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ 'https://users-macbook-pro-1.taild000b2.ts.net/api/status/' + $('Correlate Run Context').item.json.job_id }}",
+        "method": "GET",
+        "options": {}
+      },
+      "id": "fetch-completed-2",
+      "name": "Fetch Completed Details (Attempt 2)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1800,
+        560
+      ],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "5FDwahQgAPWe53MD",
+          "name": "LOOM Tunnel Proxy Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "id": "wait-retry-2",
+      "name": "Wait 15s Before Retry 2",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2000,
+        620
+      ],
+      "webhookId": "215b41c9-586e-48ad-8fe7-82f9e7df2244"
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ 'https://users-macbook-pro-1.taild000b2.ts.net/api/status/' + $('Correlate Run Context').item.json.job_id }}",
+        "method": "GET",
+        "options": {}
+      },
+      "id": "fetch-completed-3",
+      "name": "Fetch Completed Details (Attempt 3)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        620
+      ],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "5FDwahQgAPWe53MD",
+          "name": "LOOM Tunnel Proxy Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 45,
+        "unit": "seconds"
+      },
+      "id": "wait-retry-3",
+      "name": "Wait 45s Before Retry 3",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2400,
+        680
+      ],
+      "webhookId": "3d79af68-2dc5-4b25-be6e-fa025ab86f68"
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ 'https://users-macbook-pro-1.taild000b2.ts.net/api/status/' + $('Correlate Run Context').item.json.job_id }}",
+        "method": "GET",
+        "options": {}
+      },
+      "id": "fetch-completed-4",
+      "name": "Fetch Completed Details (Attempt 4 - Final)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2600,
+        680
+      ],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "5FDwahQgAPWe53MD",
+          "name": "LOOM Tunnel Proxy Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst context = $('Correlate Run Context').item.json;\nconst lastError = $json.error ? $json.error.message : 'Unknown transport error after 4 attempts';\nreturn [{ json: {\n  schema_version: '1.0',\n  failure_id: require('crypto').randomUUID(),\n  occurred_at: new Date().toISOString(),\n  run_id: context.run_id,\n  execution_id: $execution.id,\n  workflow_id: $workflow.id,\n  tenant_id: context.tenant_id,\n  source_type: 'youtube_vod',\n  source_url: context.source_url,\n  job_id: context.job_id,\n  clip_id: null,\n  stage: 'completed_result_retrieval',\n  failure_code: 'STATUS_RETRIEVAL_FAILED',\n  retryable: false,\n  attempt: 4,\n  max_attempts: 4,\n  http_status: ($json.error && $json.error.httpCode) || null,\n  error_message: String(lastError).substring(0, 1000),\n  evidence: {}\n} }];\n"
+      },
+      "id": "prepare-get-failure",
+      "name": "Prepare GET Failure Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        740
+      ]
+    },
+    {
+      "id": "source-intake-webhook-1",
+      "name": "Source Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        480
+      ],
+      "webhookId": "loom-source-intake-webhook",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "loom-source-intake",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "responseCode": 200,
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lmO8Iv21Jp6rFBxL",
+          "name": "LOOM Source Intake Auth"
+        }
+      }
+    },
+    {
+      "id": "map-webhook-input-1",
+      "name": "Map Webhook Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        480
+      ],
+      "parameters": {
+        "jsCode": "const body = $json.body || $json;\nconst source_url = body.source_url;\nconst tenant_id = body.tenant_id || 'loom-internal-test';\nif (!source_url || typeof source_url !== 'string') {\n  throw new Error('LOOM_SOURCE_INTAKE_INVALID: missing or invalid source_url in webhook body');\n}\nreturn [{ json: { source_url, tenant_id } }];\n"
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cached-1",
+                    "leftValue": "={{ $json._cached_score ? 'cached' : 'fresh' }}",
+                    "rightValue": "cached",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "cached"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "fresh-1",
+                    "leftValue": "={{ $json._cached_score ? 'cached' : 'fresh' }}",
+                    "rightValue": "fresh",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "fresh"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": 1
+        }
+      },
+      "id": "route-cached-score",
+      "name": "Route Cached Score",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(item => ({ json: { scored_candidate: item.json._cached_score } }));"
+      },
+      "id": "format-cached-result",
+      "name": "Format Cached Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        980,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Source Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Source Input": {
+      "main": [
+        [
+          {
+            "node": "Validate Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Source": {
+      "main": [
+        [
+          {
+            "node": "Create Run Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Run Context": {
+      "main": [
+        [
+          {
+            "node": "Submit OpenShorts Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit OpenShorts Job": {
+      "main": [
+        [
+          {
+            "node": "Check Submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Submission": {
+      "main": [
+        [
+          {
+            "node": "Route Submission Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Submission Result": {
+      "main": [
+        [
+          {
+            "node": "Persist Run Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Submission Failure Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Submission Failure Payload": {
+      "main": [
+        [
+          {
+            "node": "Factory Failure Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenShorts Callback": {
+      "main": [
+        [
+          {
+            "node": "Deduplicate Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deduplicate Callback": {
+      "main": [
+        [
+          {
+            "node": "Validate Terminal Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Terminal Event": {
+      "main": [
+        [
+          {
+            "node": "Correlate Run Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Correlate Run Context": {
+      "main": [
+        [
+          {
+            "node": "Route Callback Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Callback Event": {
+      "main": [
+        [
+          {
+            "node": "Fetch Completed Details (Attempt 1)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Callback Failure Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Callback Failure Payload": {
+      "main": [
+        [
+          {
+            "node": "Factory Failure Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Completed Details (Attempt 1)": {
+      "main": [
+        [
+          {
+            "node": "Validate Completed Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 5s Before Retry 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5s Before Retry 1": {
+      "main": [
+        [
+          {
+            "node": "Fetch Completed Details (Attempt 2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Completed Details (Attempt 2)": {
+      "main": [
+        [
+          {
+            "node": "Validate Completed Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 15s Before Retry 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 15s Before Retry 2": {
+      "main": [
+        [
+          {
+            "node": "Fetch Completed Details (Attempt 3)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Completed Details (Attempt 3)": {
+      "main": [
+        [
+          {
+            "node": "Validate Completed Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 45s Before Retry 3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 45s Before Retry 3": {
+      "main": [
+        [
+          {
+            "node": "Fetch Completed Details (Attempt 4 - Final)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Completed Details (Attempt 4 - Final)": {
+      "main": [
+        [
+          {
+            "node": "Validate Completed Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare GET Failure Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare GET Failure Payload": {
+      "main": [
+        [
+          {
+            "node": "Factory Failure Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Completed Job": {
+      "main": [
+        [
+          {
+            "node": "Split Completed Clips",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Completed Clips": {
+      "main": [
+        [
+          {
+            "node": "Route Cached Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Job and Tenant Context": {
+      "main": [
+        [
+          {
+            "node": "Execute Workflow 02",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow 02": {
+      "main": [
+        [
+          {
+            "node": "Capture Success/Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Capture Success/Error": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Batch Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Source Intake Webhook": {
+      "main": [
+        [
+          {
+            "node": "Map Webhook Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Webhook Input": {
+      "main": [
+        [
+          {
+            "node": "Validate Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Cached Score": {
+      "main": [
+        [
+          {
+            "node": "Format Cached Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Attach Job and Tenant Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Cached Result": {
+      "main": [
+        [
+          {
+            "node": "Capture Success/Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {}
+}

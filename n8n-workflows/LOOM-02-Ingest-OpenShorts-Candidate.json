@@ -1,0 +1,209 @@
+{
+  "name": "LOOM \u2014 02 \u2014 Ingest OpenShorts Candidate",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-1",
+      "name": "Execute Sub-workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst input = $json;\nconst required = ['run_id', 'tenant_id', 'job_id', 'clip_index', 'source_url', 'clip_start', 'clip_end'];\nconst missing = required.filter(k => input[k] === undefined || input[k] === null || input[k] === '');\nif (missing.length > 0) {\n  throw new Error('LOOM_DYNAMIC_CANDIDATE_INVALID: Missing required fields: ' + missing.join(', '));\n}\n\nreturn [{ json: {\n  ...input,\n  source_context: input.source_context || null,\n  platform_targets: input.platform_targets || ['tiktok', 'instagram_reels', 'youtube_shorts', 'facebook_reels'],\n  streamer_profile: input.streamer_profile || null\n} }];\n"
+      },
+      "id": "validate-dynamic-2",
+      "name": "Validate Dynamic Candidate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ 'https://users-macbook-pro-1.taild000b2.ts.net/api/clip/' + $json.job_id + '/' + $json.clip_index + '/transcript' }}",
+        "method": "GET",
+        "options": {}
+      },
+      "id": "fetch-transcript-1",
+      "name": "Fetch Clip Transcript",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        600,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "5FDwahQgAPWe53MD",
+          "name": "LOOM Tunnel Proxy Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $('Validate Dynamic Candidate Input').item.json;\nconst tr = $json;\n\nlet transcriptText = '';\nif (Array.isArray(tr.captions) && tr.captions.length > 0) {\n  transcriptText = tr.captions.map(c => (typeof c === 'string' ? c : (c.text || c.word || ''))).filter(Boolean).join(' ');\n} else if (typeof tr.transcript === 'string') {\n  transcriptText = tr.transcript;\n} else if (typeof tr.text === 'string') {\n  transcriptText = tr.text;\n} else if (typeof tr === 'string') {\n  transcriptText = tr;\n}\ntranscriptText = transcriptText.trim();\nconst noSpeech = transcriptText.length === 0;\n\nreturn [{ json: {\n  schema_version: '1.0',\n  run_id: input.run_id,\n  tenant_id: input.tenant_id,\n  clip_id: input.job_id + ':' + input.clip_index,\n  source_id: input.job_id,\n  candidate_clip_url: input.asset_url || input.source_url,\n  clip_transcript: transcriptText,\n  clip_duration_seconds: (input.clip_end != null && input.clip_start != null) ? (input.clip_end - input.clip_start) : (tr.durationSec || null),\n  no_speech: noSpeech,\n  existing_hook: input.clip_hook || null,\n  openshorts_score: input.clip_score || null,\n  source_context: input.source_context || null,\n  platform_targets: input.platform_targets || ['tiktok', 'instagram_reels', 'youtube_shorts', 'facebook_reels'],\n  streamer_profile: input.streamer_profile || null\n} }];"
+      },
+      "id": "normalize-1",
+      "name": "Normalize Candidate Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "Vttea1FqX4TVn4yH"
+      },
+      "id": "exec-wf01",
+      "name": "Execute Sub-workflow: LOOM \u2014 01",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "scored_candidate",
+              "value": "={{ $json }}",
+              "type": "object"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "return-1",
+      "name": "Return Scored Candidate",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1200,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "trigger-manual-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nreturn [{ json: {\n  job_id: 'test-job-c22b31f9',\n  clip_index: 1,\n  source_url: 'https://www.youtube.com/watch?v=xtOKTsIYwH0',\n  clip_start: 10.5,\n  clip_end: 33.25,\n  clip_hook: \"He's tired of the excuses.\",\n  clip_score: 82,\n  transcript: \"So chat He's gonna be like it's like he's coaching you I\",\n  source_context: null,\n  platform_targets: ['tiktok', 'instagram_reels', 'youtube_shorts', 'facebook_reels'],\n  streamer_profile: null\n} }];"
+      },
+      "id": "synthetic-candidate-1",
+      "name": "Synthetic OpenShorts Candidate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        100
+      ]
+    }
+  ],
+  "connections": {
+    "Execute Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Dynamic Candidate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Dynamic Candidate Input": {
+      "main": [
+        [
+          {
+            "node": "Fetch Clip Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Clip Transcript": {
+      "main": [
+        [
+          {
+            "node": "Normalize Candidate Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Candidate Data": {
+      "main": [
+        [
+          {
+            "node": "Execute Sub-workflow: LOOM \u2014 01",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Sub-workflow: LOOM \u2014 01": {
+      "main": [
+        [
+          {
+            "node": "Return Scored Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Synthetic OpenShorts Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Synthetic OpenShorts Candidate": {
+      "main": [
+        [
+          {
+            "node": "Normalize Candidate Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

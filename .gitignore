@@ -1,0 +1,26 @@
+# Upstream OpenShorts clone (separate repo with its own remote/history)
+openshorts/
+
+# Rendered assets / raw baseline results
+baseline-results/
+
+# Secrets & credentials (never commit)
+.env
+.env.*
+.token
+*.pem
+*.key
+
+# OS
+.DS_Store
+
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Logs, backups, temp
+*.log
+*.bak

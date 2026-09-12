@@ -1,0 +1,22 @@
+services:
+  loom-tunnel-proxy:
+    image: caddy:2-alpine
+    container_name: loom-tunnel-proxy
+    restart: unless-stopped
+    # Bind ONLY to loopback — never expose this port on all interfaces.
+    # Tailscale Funnel will be the only thing fronting this, once approved.
+    # Port 8082 is the LOOM callback relay: also loopback-only. OpenShorts'
+    # backend container reaches it via host.docker.internal:8082, which
+    # Docker Desktop for Mac resolves automatically for every container
+    # without needing extra_hosts on the OpenShorts side.
+    ports:
+      - "127.0.0.1:8081:8081"
+      - "127.0.0.1:8082:8082"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      - LOOM_TUNNEL_TOKEN=${LOOM_TUNNEL_TOKEN}
+      - LOOM_RELAY_TOKEN=${LOOM_RELAY_TOKEN}
+      - LOOM_GEMINI_KEY=${LOOM_GEMINI_KEY}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

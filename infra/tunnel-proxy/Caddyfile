@@ -1,0 +1,61 @@
+:8081 {
+	# Auth-gated reverse proxy in front of the self-hosted OpenShorts backend.
+	# OpenShorts itself has ZERO authentication on any endpoint (confirmed by
+	# reading app.py's _assert_job_owner(), which is a hard no-op when
+	# BILLING_ENABLED is unset) — this proxy is the only auth boundary between
+	# a public Tailscale Funnel URL and an otherwise wide-open backend.
+	#
+	# Token is read from the LOOM_TUNNEL_TOKEN env var (injected via docker-compose
+	# from the local .token file — never hardcoded here, never logged).
+
+	@authorized {
+		header Authorization "Bearer {$LOOM_TUNNEL_TOKEN}"
+	}
+
+	handle @authorized {
+		# Injects the Gemini API key OpenShorts requires for job processing.
+		# Read from LOOM_GEMINI_KEY (injected via docker-compose from the local
+		# .env file — never hardcoded here, never logged). Scoped to this :8081
+		# block only — never added to the :8082 callback relay block.
+		reverse_proxy host.docker.internal:8000 {
+			header_up X-Gemini-Key "{$LOOM_GEMINI_KEY}"
+		}
+	}
+
+	handle {
+		respond "Unauthorized" 401
+	}
+}
+
+:8082 {
+	# LOOM callback relay (local-only, no public exposure of this port).
+	# OpenShorts posts its terminal job.completed/job.failed webhook here.
+	# The OpenShorts backend container and this container are on SEPARATE
+	# Docker networks (openshorts_default vs tunnel-proxy_default), so
+	# container-name DNS does not resolve between them. Instead, OpenShorts
+	# reaches this relay via http://host.docker.internal:8082/relay -- Docker
+	# Desktop for Mac resolves host.docker.internal from every container
+	# automatically (confirmed: `docker exec openshorts-backend getent hosts
+	# host.docker.internal` resolves without any extra_hosts entry on that
+	# side), and this container's port 8082 is bound to 127.0.0.1:8082 on
+	# the host, which host.docker.internal routes to.
+	# This relay does NOT verify OpenShorts' own HMAC signature (that remains
+	# OpenShorts' job to compute and n8n's job to verify independently if ever
+	# re-added) — its only role is to inject a fixed private header so n8n
+	# Cloud's Webhook node can authenticate the HOP from this relay, since n8n
+	# Cloud has no network-level way to restrict inbound callers to "only this
+	# Mac." Token is read from LOOM_RELAY_TOKEN (injected via docker-compose
+	# from the local .env file — never hardcoded here, never logged).
+
+	handle_path /relay* {
+		rewrite * /webhook/loom-openshorts-callback
+		reverse_proxy https://fns2.app.n8n.cloud {
+			header_up Host fns2.app.n8n.cloud
+			header_up X-LOOM-Relay-Token "{$LOOM_RELAY_TOKEN}"
+		}
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}
