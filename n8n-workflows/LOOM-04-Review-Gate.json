@@ -1,0 +1,187 @@
+{
+  "name": "LOOM \u2014 04 \u2014 Review Gate",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "loom-candidate-card",
+        "responseMode": "onReceived",
+        "responseCode": 200,
+        "options": {}
+      },
+      "id": "candidate-card-webhook",
+      "name": "Candidate Card Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 200],
+      "webhookId": "loom-candidate-card-wh"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst clipId = body.clip_id || ((body.job_id != null && body.clip_index != null) ? (body.job_id + ':' + body.clip_index) : null);\nif (!clipId) throw new Error('LOOM_CARD_INVALID: missing clip_id');\nreturn [{ json: {\n  clip_id: clipId,\n  preview_url: body.preview_url || body.asset_url || body.candidate_clip_url || null,\n  source_url: body.source_url || body.source || null,\n  suggested_hook: body.suggested_hook || body.hook || null,\n  suggested_caption: body.suggested_caption || body.caption || null,\n  overall_score: body.overall_score ?? null,\n  decision: body.decision || null,\n  duration_seconds: body.duration_seconds ?? body.clip_duration_seconds ?? null,\n  tenant_id: body.tenant_id || null,\n  run_id: body.run_id || null,\n  job_id: body.job_id || null,\n  recipe: body.recipe || null,\n  version: body.version || body.schema_version || null\n} }];"
+      },
+      "id": "normalize-candidate",
+      "name": "Normalize Candidate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $json;\nconst lines = [];\nlines.push('\ud83c\udfac **LOOM Candidate Review**');\nlines.push('');\nlines.push('**Clip ID:** ' + (c.clip_id || 'N/A'));\nif (c.preview_url) lines.push('**Preview:** ' + c.preview_url);\nif (c.source_url) lines.push('**Source:** ' + c.source_url);\nif (c.suggested_hook) lines.push('**Hook:** ' + c.suggested_hook);\nif (c.suggested_caption) lines.push('**Caption:** ' + c.suggested_caption);\nif (c.overall_score !== null && c.overall_score !== undefined) lines.push('**LOOM Score:** ' + c.overall_score + (c.decision ? ' (' + c.decision + ')' : ''));\nif (c.duration_seconds !== null && c.duration_seconds !== undefined) lines.push('**Duration:** ' + c.duration_seconds + 's');\nif (c.tenant_id) lines.push('**Tenant:** ' + c.tenant_id);\nif (c.run_id) lines.push('**Run ID:** ' + c.run_id);\nif (c.recipe && typeof c.recipe === 'object') lines.push('**Recipe:** ' + JSON.stringify(c.recipe));\nif (c.version) lines.push('**Version:** ' + String(c.version));\nlines.push('');\nlines.push('Approve / Reject / Hold');\n\nconst scorePayload = {\n  clip_id: c.clip_id,\n  asset_url: c.preview_url,\n  tenant_id: c.tenant_id,\n  run_id: c.run_id,\n  job_id: c.job_id,\n  schema_version: (c.version && typeof c.version === 'string') ? c.version : null,\n  overall_score: c.overall_score,\n  decision: c.decision,\n  suggested_hook: c.suggested_hook,\n  suggested_caption: c.suggested_caption\n};\n\nreturn [{ json: { discord_text: lines.join('\\n'), score_payload: scorePayload } }];"
+      },
+      "id": "format-card",
+      "name": "Format Candidate Card",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/loom_scores?on_conflict=clip_id",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Prefer", "value": "resolution=merge-duplicates,return=representation" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.score_payload) }}",
+        "options": {}
+      },
+      "id": "persist-score",
+      "name": "Persist Candidate Score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 200],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "JoPSxTOjtLvDXLRV",
+          "name": "LOOM Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "webhook",
+        "content": "={{ $('Format Candidate Card').item.json.discord_text }}",
+        "operation": "sendLegacy"
+      },
+      "id": "send-card",
+      "name": "Send Candidate Card",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [880, 200],
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "JbK8O1h4xNVhdMrm",
+          "name": "LOOM Discord Alerts"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "loom-review-decision",
+        "responseMode": "onReceived",
+        "responseCode": 200,
+        "options": {}
+      },
+      "id": "review-decision-webhook",
+      "name": "Review Decision Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 420],
+      "webhookId": "loom-review-decision-wh"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst clipId = body.clip_id;\nif (!clipId) throw new Error('LOOM_REVIEW_INVALID: missing clip_id');\n\nconst validDecisions = ['approve', 'reject', 'hold'];\nconst rawDecision = body.decision;\nif (!validDecisions.includes(rawDecision)) {\n  throw new Error('LOOM_REVIEW_INVALID: decision must be approve|reject|hold, got ' + JSON.stringify(rawDecision));\n}\n\nlet decision = rawDecision;\nlet finalStatus = null;\nlet reviewerInstructions = body.reviewer_instructions || null;\nlet rejectionCategory = body.rejection_category || null;\n\nif (rawDecision === 'reject' && !rejectionCategory) {\n  throw new Error('LOOM_REVIEW_INVALID: rejection_category is required for reject');\n}\n\n// retry_failed_step is a human action mapped to a hold with an explicit\n// technical-retry instruction (no model call, no media regen, single attempt).\nif (body.action === 'retry_failed_step') {\n  decision = 'hold';\n  finalStatus = 'retry_requested';\n  reviewerInstructions = (reviewerInstructions ? reviewerInstructions + '; ' : '') + 'retry smallest failed operation once, then hold';\n}\n\nif (!finalStatus) {\n  finalStatus = decision === 'approve' ? 'approved' : (decision === 'reject' ? 'rejected' : 'on_hold');\n}\n\nconst reviewPayload = {\n  clip_id: clipId,\n  asset_url: body.asset_url || body.preview_url || null,\n  tenant_id: body.tenant_id || null,\n  reviewer: body.reviewer || 'bryan',\n  decision: decision,\n  rejection_category: (decision === 'reject') ? rejectionCategory : null,\n  reviewer_instructions: reviewerInstructions,\n  final_status: finalStatus\n};\n\nreturn [{ json: { review_payload: reviewPayload, publication_enabled: false } }];"
+      },
+      "id": "validate-review",
+      "name": "Validate Review Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 420]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/loom_reviews?on_conflict=clip_id",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Prefer", "value": "resolution=merge-duplicates,return=representation" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.review_payload) }}",
+        "options": {}
+      },
+      "id": "persist-review",
+      "name": "Persist Review Decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 420],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "JoPSxTOjtLvDXLRV",
+          "name": "LOOM Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const persisted = $json;\nconst hasError = !!persisted.error;\nreturn [{ json: {\n  persisted: !hasError,\n  clip_id: persisted.clip_id || ($('Validate Review Decision').item.json.review_payload && $('Validate Review Decision').item.json.review_payload.clip_id) || null,\n  decision: (persisted.decision) || ($('Validate Review Decision').item.json.review_payload && $('Validate Review Decision').item.json.review_payload.decision) || null,\n  final_status: persisted.final_status || null,\n  publication_enabled: false,\n  note: 'Durable decision saved. Publication is NOT triggered by this workflow.'\n} }];"
+      },
+      "id": "return-decision",
+      "name": "Return Decision Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 420]
+    }
+  ],
+  "connections": {
+    "Candidate Card Webhook": {
+      "main": [[{ "node": "Normalize Candidate", "type": "main", "index": 0 }]]
+    },
+    "Normalize Candidate": {
+      "main": [[{ "node": "Format Candidate Card", "type": "main", "index": 0 }]]
+    },
+    "Format Candidate Card": {
+      "main": [[{ "node": "Persist Candidate Score", "type": "main", "index": 0 }]]
+    },
+    "Persist Candidate Score": {
+      "main": [
+        [{ "node": "Send Candidate Card", "type": "main", "index": 0 }],
+        [{ "node": "Send Candidate Card", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Candidate Card": {
+      "main": []
+    },
+    "Review Decision Webhook": {
+      "main": [[{ "node": "Validate Review Decision", "type": "main", "index": 0 }]]
+    },
+    "Validate Review Decision": {
+      "main": [[{ "node": "Persist Review Decision", "type": "main", "index": 0 }]]
+    },
+    "Persist Review Decision": {
+      "main": [[{ "node": "Return Decision Result", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
