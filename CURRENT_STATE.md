@@ -10,35 +10,48 @@
 
 ## 4B–4D results (runtime verified)
 
-- **4B Discord candidate card — PASSED.** New workflow **`LOOM — 04 — Review Gate`** (id `3yUBe8H14TjwDCGw`), active. Candidate card webhook `POST /webhook/loom-candidate-card` → normalize → format card → persist score → Discord send. Execution **10098**: Discord node returned `{"success": true}`; score persisted to `loom_scores`.
-- **Discord v2 node root cause — CONFIRMED + FIXED.** The deployed n8n Discord v2 node requires parameter values `authentication: "webhook"` (NOT `"webhookApi"`) and `operation: "sendLegacy"` (NOT `"send"`). The WF00 node carried stale values `webhookApi`/`send` that were previously tolerated but a fresh node hit the v2 router's `Could not get parameter "operation"`. Fix = explicit `operation: "sendLegacy"` + `authentication: "webhook"` + reuse credential `LOOM Discord Alerts` (`JbK8O1h4xNVhdMrm`). **No new webhook was created.**
-- **4C review intake — PASSED.** Review decision webhook `POST /webhook/loom-review-decision`. Validation enforces `decision ∈ {approve, reject, hold}`, requires `rejection_category` on reject (exec **10100** correctly errored without it), and maps `action: retry_failed_step` → hold + `final_status: retry_requested` + instruction (no model call, no media regen, single attempt).
-- **4D durable decisions — PASSED.** `loom_reviews` upsert idempotent by `clip_id` (`on_conflict=clip_id` + `Prefer: resolution=merge-duplicates`). Verified: approve (exec 10099), reject (exec 10101), hold/retry (exec 10102); single row survives repeated clicks; latest decision wins. **Publication is NOT triggered** — `publication_enabled: false` is explicit and there is no downstream GHL/distribution node.
-- **Score persistence — PASSED.** `loom_scores` upsert idempotent by `clip_id`. Card path persists `overall_score`, `decision`, `suggested_hook`, `suggested_caption`, identifiers.
+- **4B Discord candidate card — PASSED.** New workflow **`LOOM — 04 — Review Gate`** (id `3yUBe8H14TjwDCGw`), active. Candidate card webhook `POST /webhook/loom-candidate-card` → normalize → format card → persist score → Discord send. Execution **10105**: Discord returned `{"success": true}`; score persisted to `loom_scores`.
+- **Discord v2 node root cause — CONFIRMED + FIXED.** The deployed n8n Discord v2 node requires `authentication: "webhook"` (NOT `"webhookApi"`) and `operation: "sendLegacy"` (NOT `"send"`). WF00 still carries stale values. Fix = explicit `sendLegacy` + `webhook` + reuse credential `LOOM Discord Alerts` (`JbK8O1h4xNVhdMrm`). No new webhook.
+- **4C review intake — PASSED.** `POST /webhook/loom-review-decision`. Validation enforces `decision ∈ {approve, reject, hold}`, requires `rejection_category` on reject, maps `action: retry_failed_step` → hold + `retry_requested`.
+- **4D durable decisions — PASSED.** `loom_reviews` upsert idempotent by `clip_id`. Single row survives repeated clicks; latest decision wins. Publication NOT triggered (`publication_enabled: false`; no downstream GHL node).
+- **Score persistence — PASSED.** `loom_scores` upsert by `clip_id`.
+
+## Reviewer experience — gaps found + fixed (2026-09-12)
+
+- **Preview placeholder → real final clip.** Clip `126d1217-…:0` (repairable, overall 81, hook "Walk like a big dog, but you a small cat.") final render is served at `http://localhost:8000/videos/…/hooked_…_clip_1.mp4` (18 MB, HTTP 200). This is the working final-clip preview. The public Tailscale Funnel URL is Bearer-auth-gated (401) and media is locked local per SOURCE_OF_TRUTH, so `localhost:8000` is the correct preview link for Bryan's Mac.
+- **Discordbot auto-fire bug — FOUND + FIXED.** A GET-based `loom-review-action` endpoint (added to make "clickable links") was auto-fetched by `Discordbot/2.0` link-preview on card send, silently persisting `hold`→`reject`→`approve` with no human click (execs 10106–10108). **Removed.** Review decisions are POST-only via `loom-review-decision`. Lesson: never expose a state-mutating GET endpoint in a Discord message — Discord's link-preview crawler will fire it.
+- **Candidate record kept for Bryan's test.** `loom_scores` row for `126d1217-…:0` retained (overall 81, repairable); `loom_reviews` empty so Bryan can make the first real decision. Publication disabled.
+
+## Two genuine credential needs (BLOCKERS for full reviewer UX)
+
+Neither is self-servable by Bentley (requires Bryan's Discord admin):
+
+1. **`#clip-review` Discord webhook URL.** Only `LOOM Discord Alerts` (→ #factory-alerts) exists. The candidate card currently routes there because it is the only available webhook. To send review cards to `#clip-review`, Bryan must create a webhook in that channel and provide its URL (Bentley will store it as a dedicated `LOOM Clip Review` credential — do NOT repurpose `LOOM Discord Alerts`, which must stay the failure-alert destination).
+2. **Discord bot token (for interactive Approve/Reject/Hold buttons).** A webhook can send messages but cannot receive button clicks/interactions. Real clickable review buttons require a Discord bot token + interaction endpoint. Without it, review controls are limited to the POST decision webhook (which works but is not a Discord-native button).
 
 ## Supabase credential — RESOLVED (fresh key)
 
-- **New service key read from `~/.openclaw/.env`**: `LOOM_SUPABASE_SERVICE_ROLE_KEY` (new `sb_secret_…` format) + `LOOM_SUPABASE_URL`. Auth verified once against `/rest/v1/` → **HTTP 200**. TOOLS.md `service_role` keys (JWT, `iat` 2025-01-22) are **superseded — do not use**.
-- **Dedicated LOOM n8n credential created:** `LOOM Supabase` (type `httpHeaderAuth`, header `apikey`, id `JoPSxTOjtLvDXLRV`). The existing generic `Supabase account` (`buSyhkIhcyb8eFxF`) was **not modified** — it is not LOOM-exclusive.
-- **Tables created** (idempotent DDL via Supabase Management API, PAT recovered from keychain `Supabase CLI`): `loom_scores`, `loom_reviews`, with indexes. DDL file: `infra/supabase/001_loom_ledger.sql`.
+- Service key from `~/.openclaw/.env` (`LOOM_SUPABASE_SERVICE_ROLE_KEY`, new `sb_secret_…` format) + `LOOM_SUPABASE_URL`. Auth verified HTTP 200. TOOLS.md JWT keys are superseded — do not use.
+- Dedicated n8n credential `LOOM Supabase` (`httpHeaderAuth`, header `apikey`, id `JoPSxTOjtLvDXLRV`). Existing `Supabase account` (`buSyhkIhcyb8eFxF`) untouched (not LOOM-exclusive).
+- Tables `loom_scores` + `loom_reviews` created (idempotent DDL: `infra/supabase/001_loom_ledger.sql`).
 
 ## Credential locations (values NOT recorded)
 - n8n API key — `LOOM_N8N_API_KEY` env (`~/.openclaw/.env`).
 - OpenRouter / Qwen — Jasmine Phase 1 `docs/TOOLS.md`; n8n credential "OpenRouter API Key (live)".
-- Discord webhook — n8n credential "LOOM Discord Alerts" (id `JbK8O1h4xNVhdMrm`).
-- Supabase service key — `~/.openclaw/.env` `LOOM_SUPABASE_SERVICE_ROLE_KEY` + `LOOM_SUPABASE_URL` (NOT TOOLS.md).
-- Supabase Management PAT — macOS keychain, service `Supabase CLI` (base64-wrapped `go-keyring-base64:`). Used only for DDL.
-- n8n Supabase credential — `LOOM Supabase` (id `JoPSxTOjtLvDXLRV`).
+- Discord webhook — n8n credential "LOOM Discord Alerts" (`JbK8O1h4xNVhdMrm`) → #factory-alerts (failures only).
+- Supabase service key — `~/.openclaw/.env` `LOOM_SUPABASE_SERVICE_ROLE_KEY` + `LOOM_SUPABASE_URL`.
+- Supabase Management PAT — macOS keychain `Supabase CLI` (base64-wrapped `go-keyring-base64:`).
+- n8n Supabase credential — `LOOM Supabase` (`JoPSxTOjtLvDXLRV`).
 - GHL — TOOLS.md files.
 
 ## Evidence (execution IDs)
-- 3E/4A: `10080` (clip 0 Qwen), `10082` (3E accept), `10084` (clip 1 Qwen), `10088` (all-cached resume).
-- 4B: `10098` (candidate card send success — Discord `{"success": true}`).
-- 4C/4D: `10099` (approve), `10100` (reject-no-category → validation error), `10101` (reject with category), `10102` (retry_failed_step → hold).
-- Prior Discord send: `10059` (success, WF00), `10091`/`10092` (failure — `operation` param, superseded by fix).
+- 3E/4A: `10080`, `10082`, `10084`, `10088`.
+- 4B: `10098` (example.com card), `10105` (real-preview card, Discord `{"success":true}`).
+- 4C/4D: `10099` (approve), `10100` (reject-no-category → error), `10101` (reject+category), `10102` (retry).
+- Discordbot auto-fire (bug, now removed): `10106`–`10108`.
 
 ## Next task — Segment 5: GHL Media Storage
-Transfer one final clip to GHL Media Storage and persist the returned media identifier/URL. This is the first task that requires GHL authentication (primary account PIT token + location ID from TOOLS.md). Begin only after the 4B–4D approval gate is confirmed working end-to-end by Bryan.
+Transfer one final clip to GHL Media Storage and persist the returned media identifier/URL. First task requiring GHL auth (primary PIT token + location ID). Begin only after the 4B–4D approval gate is confirmed working end-to-end by Bryan, and after the #clip-review webhook + bot-token credentials (above) are provided if native buttons are wanted.
 
 ## Locked decisions (abridged)
-Hook bound 3–10 words (3–7 preferred) · no-speech clips valid (no fabricated dialogue) · resume via explicit `resume` flag (no media regen) · Qwen via OpenRouter, validated in code · GHL = storage/distribution plane · Supabase/Postgres approved for LOOM ledger · Discord QC via `LOOM Discord Alerts` webhook · no publication without a persisted human approve. Integration research: `LOOM_Integration_Research.md`.
+Hook bound 3–10 words (3–7 preferred) · no-speech clips valid (no fabricated dialogue) · resume via explicit `resume` flag (no media regen) · Qwen via OpenRouter, validated in code · GHL = storage/distribution plane · Supabase/Postgres approved for LOOM ledger · Discord QC via webhook (buttons need bot token) · no publication without a persisted human approve. Integration research: `LOOM_Integration_Research.md`.
