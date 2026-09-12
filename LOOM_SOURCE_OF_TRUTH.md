@@ -571,7 +571,7 @@ None of these have been runtime-verified. Workflow 03 remains inactive.
 * Server: `Clippy Factory`
 * LOOM Factory alerts webhook rotated by Bryan.
 * Updated n8n Discord credential saved successfully.
-* No live Discord test has been authorized during the current static mission.
+* Bryan authorized a labeled LOOM test candidate card on 2026-09-11. The send was attempted via the `LOOM Discord Alerts` webhook (blocked on a Discord v2 node `operation` parameter error — the node config is identical to the working `Send Discord Alert` node, but a fresh copy throws `Could not get parameter "operation"` at the router).
 
 ## Candidate card fields
 

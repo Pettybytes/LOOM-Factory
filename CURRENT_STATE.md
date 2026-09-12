@@ -13,9 +13,9 @@
 - All-cached resume edge case: **fixed + verified** — execution `10088` returns the completed aggregate with both candidates.
 
 ## Remaining issues / blockers
-- **Segment 4B–4D design documented** (`SEGMENT_4_DESIGN.md`); implementation pending on infrastructure:
-  - **Supabase unreachable**: `edtcewkvnxrlzhqebayr.supabase.co` → NXDOMAIN (project paused/deleted or wrong ref). Blocks `loom_reviews`/`loom_scores` table creation and the decision save/retrieve test.
-  - **Discord live test not authorized** (SOURCE_OF_TRUTH: "no live Discord test has been authorized"). Card structure spec'd, not sent. Webhook credential exists in n8n ("LOOM Discord Alerts").
+- **Segment 4B–4D design documented** (`SEGMENT_4_DESIGN.md`); runtime tests blocked on two separate items:
+  - **Supabase**: project resumed by Bryan, but the `service_role` key in TOOLS.md is **stale** (HTTP 401 "Invalid API key"; key `iat` 2025-01 but project created 2026-02). Blocks `loom_reviews`/`loom_scores` table creation + the decision save/retrieve test. Needs Bryan to supply the current `service_role` key.
+  - **Discord**: test card authorized + attempted via `LOOM Discord Alerts` webhook, but the send failed — Discord v2 node throws `Could not get parameter "operation"` at runtime (config identical to WF00's working node). Needs n8n-side investigation.
 
 ## Next task
 Segment 4B–4D (review card + durable decisions + score persistence), then Segment 5 (first durable asset transfer to GHL).
