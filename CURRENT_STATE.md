@@ -12,9 +12,10 @@
 - Clip `126d1217-…:1` — Qwen exec `10084` → **reject, overall 31** (`rights_or_policy_risk` + `unintelligible_transcript`; transcript contains explicit slurs).
 - All-cached resume edge case: **fixed + verified** — execution `10088` returns the completed aggregate with both candidates.
 
-## Remaining issues
-- Segment 4B–4D: Discord candidate card, durable decision record, retry logic (in progress).
-- Discord credential: **not documented** (gap for 4B).
+## Remaining issues / blockers
+- **Segment 4B–4D design documented** (`SEGMENT_4_DESIGN.md`); implementation pending on infrastructure:
+  - **Supabase unreachable**: `edtcewkvnxrlzhqebayr.supabase.co` → NXDOMAIN (project paused/deleted or wrong ref). Blocks `loom_reviews`/`loom_scores` table creation and the decision save/retrieve test.
+  - **Discord live test not authorized** (SOURCE_OF_TRUTH: "no live Discord test has been authorized"). Card structure spec'd, not sent. Webhook credential exists in n8n ("LOOM Discord Alerts").
 
 ## Next task
 Segment 4B–4D (review card + durable decisions + score persistence), then Segment 5 (first durable asset transfer to GHL).
@@ -24,7 +25,7 @@ Segment 4B–4D (review card + durable decisions + score persistence), then Segm
 - No-speech clips: valid; carry explicit `no_speech` state; do not fabricate dialogue.
 - Resume: explicit `resume` flag continues an existing job without re-submitting source or regenerating media; normal duplicates blocked by terminal-event lock.
 - Scoring: Qwen via OpenRouter, locked JSON schema, validated in code.
-- Storage/distribution plane: GHL (Media Storage + Social Planner). Supabase/Cloudinary out of scope for LOOM.
+- Storage/distribution plane: GHL (Media Storage + Social Planner). Supabase/Postgres is **approved** as LOOM's operational/decision ledger (SOURCE_OF_TRUTH line 207; older HANDOFF/TOOLS "unapproved" notes are stale).
 - Builder spend and media-inference spend are tracked separately.
 
 ## Integration research (reference — read once 2026-09-12)
