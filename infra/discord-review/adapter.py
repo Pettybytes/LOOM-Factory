@@ -47,7 +47,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -144,32 +144,115 @@ def verify_signature(public_key_hex: str, signature_hex: str, timestamp: str, ra
 
 
 # ---------------------------------------------------------------------------
-# Opaque review tokens (server-side identity map)
+# Opaque review tokens (durable, Supabase-backed)
 # ---------------------------------------------------------------------------
 # custom_id carries only {decision, token}; the full identity (tenant_id,
-# clip_id, asset_version, review_stage) is resolved SERVER-SIDE here at
-# decision time — never trusted from the client, never truncated. The mapping
-# is in-memory: an adapter restart invalidates pending cards (they must be
-# re-sent), which is acceptable for the review flow.
+# clip_id, asset_version, review_stage) is resolved from a durable Supabase
+# ledger at decision time — never trusted from the client, never truncated.
+# Only the token HASH is stored; the raw token lives only in the ephemeral
+# custom_id. Restart-survivable: an adapter restart does NOT invalidate a
+# pending card.
 # ---------------------------------------------------------------------------
 
-_review_tokens = {}
-_REVIEW_TOKEN_TTL_SECONDS = 3600
+REVIEW_TOKEN_TTL_SECONDS = 72 * 3600  # 72h. Expired cards revert to manual Hold (never auto-approve).
 
-def register_review_token(identity: dict) -> str:
-    token = secrets.token_urlsafe(9)  # ~12 chars, opaque, non-guessable
-    _review_tokens[token] = {"identity": identity, "ts": time.time()}
-    return token
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def register_review_token(token: str, identity: dict, discord_message_id=None):
+    """Create a durable review-token row. Raw token is used only for the
+    custom_id; the DB stores only its SHA-256 hash."""
+    token_hash = hash_token(token)
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=REVIEW_TOKEN_TTL_SECONDS)).isoformat()
+    payload = {
+        "token_hash": token_hash,
+        "tenant_id": identity["tenant_id"],
+        "clip_id": identity["clip_id"],
+        "asset_version": identity["asset_version"],
+        "review_stage": identity["review_stage"],
+        "discord_message_id": discord_message_id,
+        "status": "pending",
+        "expires_at": expires_at,
+    }
+    url = f"{SUPABASE_URL}/rest/v1/loom_review_tokens"
+    data = json.dumps(payload).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    headers["Prefer"] = "return=representation"
+    req = Request(url, data=data, headers=headers, method="POST")
+    with urlopen(req, timeout=15) as resp:
+        return resp.status
+
+
+def update_review_token_message(token_hash: str, discord_message_id: str):
+    url = f"{SUPABASE_URL}/rest/v1/loom_review_tokens?token_hash=eq.{token_hash}"
+    data = json.dumps({"discord_message_id": discord_message_id}).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    req = Request(url, data=data, headers=headers, method="PATCH")
+    with urlopen(req, timeout=15) as resp:
+        return resp.status
+
+
+def mark_token_expired(token_hash: str):
+    url = f"{SUPABASE_URL}/rest/v1/loom_review_tokens?token_hash=eq.{token_hash}&status=eq.pending"
+    data = json.dumps({"status": "expired"}).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    req = Request(url, data=data, headers=headers, method="PATCH")
+    with urlopen(req, timeout=15) as resp:
+        return resp.status
 
 
 def resolve_review_token(token: str):
-    entry = _review_tokens.get(token)
-    if not entry:
+    """Resolve an opaque token to its identity from the durable ledger.
+    Rejects unknown, expired, or consumed tokens. Returns {'token_hash',
+    'identity'} or None."""
+    token_hash = hash_token(token)
+    url = (f"{SUPABASE_URL}/rest/v1/loom_review_tokens"
+           f"?token_hash=eq.{token_hash}&status=eq.pending&select=*")
+    req = Request(url, headers=_supabase_headers(), method="GET")
+    with urlopen(req, timeout=15) as resp:
+        rows = json.loads(resp.read().decode() or "[]")
+    if not rows:
         return None
-    if time.time() - entry["ts"] > _REVIEW_TOKEN_TTL_SECONDS:
-        _review_tokens.pop(token, None)
-        return None
-    return entry["identity"]
+    row = rows[0]
+    expires_at = row.get("expires_at")
+    if expires_at:
+        try:
+            exp = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if exp < datetime.now(timezone.utc):
+                mark_token_expired(token_hash)
+                return None
+        except Exception:
+            pass
+    return {
+        "token_hash": token_hash,
+        "identity": {
+            "tenant_id": row.get("tenant_id"),
+            "clip_id": row.get("clip_id"),
+            "asset_version": row.get("asset_version"),
+            "review_stage": row.get("review_stage"),
+        },
+    }
+
+
+def consume_review_token(token_hash: str):
+    """Atomically finalize a token (first terminal decision wins). PATCH only
+    where status is still 'pending'; a competing action that already consumed
+    it affects zero rows."""
+    url = f"{SUPABASE_URL}/rest/v1/loom_review_tokens?token_hash=eq.{token_hash}&status=eq.pending"
+    data = json.dumps({"status": "consumed", "consumed_at": now_iso()}).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    req = Request(url, data=data, headers=headers, method="PATCH")
+    with urlopen(req, timeout=15) as resp:
+        return resp.status
 
 
 # ---------------------------------------------------------------------------
@@ -374,14 +457,16 @@ def send_review_card(payload: dict):
 
     channel_id = resolve_clip_review_channel()
 
-    # Register opaque token -> full identity (server-side, never in custom_id).
+    # Register opaque token -> full identity (durable, server-side, never in
+    # custom_id). Register BEFORE sending so the card is resolvable immediately.
     identity = {
         "tenant_id": tenant_id,
         "clip_id": clip_id,
         "asset_version": asset_version,
         "review_stage": review_stage,
     }
-    token = register_review_token(identity)
+    token = secrets.token_urlsafe(9)  # ~12 chars, opaque, non-guessable
+    register_review_token(token, identity)
 
     # 1) Generate review proxy (master untouched).
     tmpdir = tempfile.mkdtemp(prefix="loom-review-")
@@ -500,6 +585,9 @@ def send_review_card(payload: dict):
         attachment_url = None
         for att in result.get("attachments", []):
             attachment_url = att.get("url")
+
+        # Record the Discord message id for traceability (best-effort).
+        update_review_token_message(hash_token(token), message_id)
 
         return {
             "channel_id": channel_id,
@@ -679,10 +767,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         decision = parsed.get("d")
-        identity = self._resolve_identity(parsed)
-        if decision not in ("approve", "reject", "hold") or not identity:
+        resolved = self._resolve_identity(parsed)
+        if decision not in ("approve", "reject", "hold") or not resolved:
             self._send_json(200, {"type": 4, "data": {"content": "Invalid action.", "flags": 64}})
             return
+        identity = resolved["identity"]
+        token_hash = resolved["token_hash"]
 
         reviewer = self._reviewer_name(interaction)
 
@@ -713,7 +803,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # approve / hold: persist, then update the card to "decided".
-        self._decide_and_update(interaction, identity, decision, reviewer,
+        self._decide_and_update(interaction, identity, token_hash, decision, reviewer,
                                 category=None, instructions=None)
 
     def _handle_modal_submit(self, interaction):
@@ -724,10 +814,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"type": 4, "data": {"content": "Invalid modal.", "flags": 64}})
             return
 
-        identity = self._resolve_identity(parsed)
-        if not identity:
+        resolved = self._resolve_identity(parsed)
+        if not resolved:
             self._send_json(200, {"type": 4, "data": {"content": "Unknown candidate.", "flags": 64}})
             return
+        identity = resolved["identity"]
+        token_hash = resolved["token_hash"]
 
         values = {}
         for row in data.get("components", []):
@@ -745,10 +837,10 @@ class Handler(BaseHTTPRequestHandler):
 
         instructions = (values.get("reject_instructions") or "").strip() or None
         reviewer = self._reviewer_name(interaction)
-        self._decide_and_update(interaction, identity, "reject", reviewer,
+        self._decide_and_update(interaction, identity, token_hash, "reject", reviewer,
                                 category=category, instructions=instructions)
 
-    def _decide_and_update(self, interaction, identity, decision, reviewer,
+    def _decide_and_update(self, interaction, identity, token_hash, decision, reviewer,
                            category, instructions):
         clip_id = identity["clip_id"]
         scores = supabase_get("loom_scores", clip_id)
@@ -766,6 +858,10 @@ class Handler(BaseHTTPRequestHandler):
         pub = None
         if decision == "approve" and identity["review_stage"] == "final_publication":
             pub = approve_publication(identity, row)
+
+        # Atomically consume the token (first terminal decision wins).
+        if token_hash:
+            consume_review_token(token_hash)
 
         # Forward the verified normalized event to n8n (idempotent there too).
         forward_to_n8n({
