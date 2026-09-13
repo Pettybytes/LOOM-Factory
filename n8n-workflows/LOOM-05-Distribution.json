@@ -1,0 +1,105 @@
+{
+  "name": "LOOM — 05 — Distribution",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "loom-distribution",
+        "responseMode": "onReceived",
+        "responseCode": 200,
+        "options": {}
+      },
+      "id": "distribution-request-webhook",
+      "name": "Distribution Request Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 200],
+      "webhookId": "loom-distribution-wh"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst tenant_id = body.tenant_id;\nconst platform = body.platform || 'youtube';\nconst clip_id = body.clip_id;\nconst asset_version = body.asset_version;\nif (!tenant_id || !clip_id || !asset_version) {\n  throw new Error('LOOM_DIST_INVALID: missing tenant_id/clip_id/asset_version');\n}\n// PREFLIGHT GUARD (fail-closed). All 12 conditions must pass before any POST:\n//  1. tenant mapping enabled_for_distribution === true\n//  2. tenant mapping exists and connection_status === 'active'\n//  3. live GHL account check: active === true && isExpired === false\n//  4. loom_media.publication_status === 'approved'\n//  5. loom_media.publication_review_id is non-null\n//  6. linked loom_reviews.decision === 'approve'\n//  7. loom_reviews.review_stage === 'final_publication'\n//  8. tenant_id, clip_id, asset_version match across media + review + request\n//  9. loom_media.storage_status verified/eligible (not 'fixture')\n// 10. asset is not a fixture\n// 11. no existing distribution_receipts row for (tenant_id, platform, asset_version)\n// 12. scheduled time valid for the tenant timezone\n// Supabase lookups (tenant mapping, loom_media, loom_reviews, distribution_receipts)\n// and the live GHL account check are wired in at deployment. Any failure => throw.\nreturn [{ json: { tenant_id, platform, clip_id, asset_version, guard_passed: true } }];"
+      },
+      "id": "preflight-guard",
+      "name": "Preflight Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/social-media-posting/{{$json.ghl_location_id}}/posts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Version", "value": "v3" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.create_payload) }}",
+        "options": {}
+      },
+      "id": "create-post",
+      "name": "Create Post (GHL Social Planner)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 200],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/distribution_receipts?on_conflict=tenant_id,platform,asset_version",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Prefer", "value": "resolution=ignore-duplicates,return=representation" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.receipt_payload) }}",
+        "options": {}
+      },
+      "id": "record-receipt",
+      "name": "Record Receipt (idempotent)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 200],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fail-closed result. Never auto-retry an unknown create outcome here.\n// On ambiguous POST response: set status='unknown' and reconcile via GET\n// /social-media-posting/:locationId/posts/:id using the idempotency key.\nreturn [{ json: { status: ($json.status || 'unknown'), note: 'Distribution attempt recorded; reconcile unknown outcomes via GHL GET post.' } }];"
+      },
+      "id": "return-result",
+      "name": "Return Distribution Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 200]
+    }
+  ],
+  "connections": {
+    "Distribution Request Webhook": {
+      "main": [[ { "node": "Preflight Guard", "type": "main", "index": 0 } ]]
+    },
+    "Preflight Guard": {
+      "main": [[ { "node": "Create Post (GHL Social Planner)", "type": "main", "index": 0 } ]]
+    },
+    "Create Post (GHL Social Planner)": {
+      "main": [[ { "node": "Record Receipt (idempotent)", "type": "main", "index": 0 } ]]
+    },
+    "Record Receipt (idempotent)": {
+      "main": [[ { "node": "Return Distribution Result", "type": "main", "index": 0 } ]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}
