@@ -122,9 +122,14 @@ Recommendation (Bryan chooses; I do not publish): **C — unlisted** test post, 
 
 For the MVP controlled test: Dreemzy YouTube may be entitled; TikTok/Instagram/Facebook remain disabled; the expired Instagram is NOT eligible; other platforms do not gate the initial YouTube proof. Schema/workflow stays platform-neutral.
 
-## Media payload schema — NOT yet confirmed
+## Media payload schema — CONFIRMED (2026-09-13, live)
 
-The GHL v3 `media` object property names are NOT exposed in the public docs (the field is shown as `object[]` with the nested schema client-side-rendered). Do NOT guess property names during the live post. At deployment time, before the live post, confirm the media shape via a safe validation mechanism — a non-publishing `status: draft` create that is then inspected via `GET /posts/:id` (draft skips publishing; its normalized response reveals the accepted media fields).
+- `media` object: `{"url": <canonical GHL media URL>, "type": <MIME type>}`.
+- `media.type` = the actual MIME type from the GHL media-library `contentType` (for this MP4: `video/mp4`). Do NOT hard-code `video/mp4` universally — resolve/validate `contentType` per asset.
+- YouTube: `privacyLevel` supports `unlisted`; `youtubePostDetails.type=short`; top-level `type=reel`.
+- create-post requires `userId` (valid GHL user ObjectId) — resolved live from `GET /users/?locationId=...` (Bryan Petty = `uT8mleycXWhVCWcGw3f6`); do NOT infer or globally hard-code.
+- A `published` create response may OMIT the post id; reconcile/retrieve via **`POST /social-media-posting/:locationId/posts/list`** (NOT an assumed GET list route).
+- Unknown POST outcomes must be reconciled (via list/get) before any retry.
 
 ## Generated test asset identity (2026-09-13)
 

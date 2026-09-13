@@ -1,6 +1,19 @@
 # LOOM — Current State (handoff)
 
-*Updated: 2026-09-13 (EDT) — Segment 5A–5D storage spine COMPLETE; Segment 6 pre-distribution DEPLOYED; Segment 6A tenant mapping COMPLETE*
+> ## 🚀 START HERE NEXT SESSION
+> **Repository:** `/Users/user/Desktop/LOOM-Factory` · **Remote:** `Pettybytes/LOOM-Factory`
+> **Completed segments:** 3 (ingest) · 4 (Discord QC) · 5 (GHL media storage) · 6A (tenant mapping)
+> **6B status:** API contract **runtime-verified via a manual curl harness**; `Workflow 05` is **prepared/not deployed** (not runtime-verified)
+> **Unlisted YouTube proof:** https://www.youtube.com/watch?v=ua50Kuxwi-g
+> **GHL post ID:** `6aa63853d1928cc532472362` · **Receipt ID:** `76abb31d-effd-492b-b03c-3fdd9524c0d0`
+> **Safety:** `entitled=false`, `enabled_for_distribution=false` (fail-closed)
+> **Pending manual migration:** `010_tenant_distribution_publisher.sql`
+> **First next action:** run `010` in SQL Editor → deploy Workflow 05 (inactive→guarded) → re-run the unlisted-post path through the workflow for true runtime verification
+> **Remaining before 6C:** Workflow 05 deployed + runtime-verified end-to-end
+> **Live deps:** Discord review adapter (`infra/discord-review/supervise.sh`) · GHL PIT token (single-location) · Supabase `edtcewkvnxrlzhqebayr`
+> *(no credential values here)*
+
+*Updated: 2026-09-13 (EDT) — Segments 3/4/5/6A complete; Segment 6B API runtime-verified via manual harness*
 
 ## ✅ Segment 4 — Discord QC — COMPLETE (runtime verified end-to-end)
 
@@ -91,10 +104,7 @@ verified read-only. One Dreemzy YouTube profile discovered + persisted.
 
 ## Next segment
 
-**Segment 6B — Distribution scheduling/publishing.** Gated; do NOT begin until:
-1. a real `final_publication` **approved** candidate exists (the fixture is storage-acceptance only),
-2. `enabled_for_distribution` is explicitly set true for this mapping, and
-3. the distribution guard (tenant + clip + asset_version match, non-fixture, approved) passes.
+**6B remainder → 6C.** 6B API contract is runtime-verified (unlisted post live via a manual curl harness), but `Workflow 05` is still **prepared/not deployed**. First action tomorrow: run `010` + deploy Workflow 05 (guarded) + re-run the path through the workflow. 6C is then gated on Workflow 05 runtime verification + an explicitly `enabled_for_distribution=true` mapping + a real approved asset.
 
 Segment 3 is closed and must not be reopened.
 
