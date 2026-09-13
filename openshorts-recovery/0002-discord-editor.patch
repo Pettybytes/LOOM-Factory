@@ -14,18 +14,20 @@ index 207759a..a76488f 100644
    <link rel="preconnect" href="https://fonts.googleapis.com" />
 diff --git a/dashboard/src/components/ManualTrimEditor.jsx b/dashboard/src/components/ManualTrimEditor.jsx
 new file mode 100644
-index 0000000..b1940a6
+index 0000000..4e57a3d
 --- /dev/null
 +++ b/dashboard/src/components/ManualTrimEditor.jsx
-@@ -0,0 +1,309 @@
+@@ -0,0 +1,364 @@
 +import React, { useState, useEffect, useRef, useCallback } from 'react';
 +import { getApiUrl } from '../config';
 +import { apiFetch } from '../lib/api';
 +
-+// One-time launch-token exchange endpoint (the LOOM Discord adapter). The raw
-+// launch token is consumed server-side on first use; only its hash was stored.
++// One-time launch-token exchange + edit completion endpoints (the LOOM adapter).
++// The raw launch token is consumed server-side on first use; only its hash is stored.
 +const EDITOR_EXCHANGE_URL =
 +  import.meta.env.VITE_EDITOR_EXCHANGE_URL || 'http://localhost:8090/discord/editor/exchange';
++const EDITOR_COMPLETE_URL =
++  import.meta.env.VITE_EDITOR_COMPLETE_URL || 'http://localhost:8090/discord/editor/complete';
 +
 +function fmt(s) {
 +  const n = Number(s);
@@ -47,13 +49,18 @@ index 0000000..b1940a6
 +  const [error, setError] = useState(null);
 +
 +  const [clipUrl, setClipUrl] = useState(null);
-+  const [edl, setEdl] = useState(null);       // { segments, framing, canonical_range, source }
-+  const [words, setWords] = useState([]);      // transcript word timeline
++  const [edl, setEdl] = useState(null);
++  const [words, setWords] = useState([]);
 +  const [scenes, setScenes] = useState([]);
 +  const [canonical, setCanonical] = useState({ start: 0, end: 0 });
 +
 +  const [trimStart, setTrimStart] = useState(0);
 +  const [trimEnd, setTrimEnd] = useState(0);
++  const [framing, setFraming] = useState('auto');            // reframe/crop control (auto|full|track)
++  const [captionText, setCaptionText] = useState('');          // caption text (joined words)
++  const [captionPosition, setCaptionPosition] = useState('bottom');
++  const [captionStyle, setCaptionStyle] = useState('classic');
++  const [captionUppercase, setCaptionUppercase] = useState(false);
 +  const [instruction, setInstruction] = useState('');
 +  const [rerendering, setRerendering] = useState(false);
 +  const [result, setResult] = useState(null);
@@ -67,9 +74,6 @@ index 0000000..b1940a6
 +    const clipIndex = params.get('clip_index');
 +    const token = params.get('token');
 +
-+    // Strip the launch token from the URL immediately so it never lingers in
-+    // history/referrer. Referrer-Policy: no-referrer is set globally in index.html.
-+    // The raw token is sent ONLY in this single exchange body (never in logs).
 +    if (window.location.search) history.replaceState({}, '', '/edit');
 +
 +    if (!jobId || clipIndex == null || !token) {
@@ -88,23 +92,16 @@ index 0000000..b1940a6
 +        });
 +        const data = await res.json();
 +        if (cancelled) return;
-+        if (!data.ok) {
-+          setError(data.error || 'Token exchange failed.');
-+          setLoading(false);
-+          return;
-+        }
++        if (!data.ok) { setError(data.error || 'Token exchange failed.'); setLoading(false); return; }
 +        setSession({ ...data.session, job_id: jobId, clip_index: Number(clipIndex) });
 +      } catch (e) {
-+        if (!cancelled) {
-+          setError('Token exchange error: ' + (e && e.message ? e.message : String(e)));
-+          setLoading(false);
-+        }
++        if (!cancelled) { setError('Token exchange error: ' + (e && e.message ? e.message : String(e))); setLoading(false); }
 +      }
 +    })();
 +    return () => { cancelled = true; };
 +  }, []);
 +
-+  // --- 2. Load clip metadata (EDL recipe + transcript + scenes + video) -----
++  // --- 2. Load clip metadata + transcript (for caption text) -----------------
 +  useEffect(() => {
 +    if (!session) return;
 +    let cancelled = false;
@@ -112,7 +109,6 @@ index 0000000..b1940a6
 +      try {
 +        const { job_id, clip_index } = session;
 +
-+        // Video source for the preview.
 +        const stRes = await apiFetch(`/api/status/${job_id}`);
 +        const st = await stRes.json();
 +        const clips = st?.result?.clips || st?.clips || [];
@@ -120,7 +116,6 @@ index 0000000..b1940a6
 +        const rawUrl = cl?.video_url || cl?.view_url || null;
 +        if (rawUrl) setClipUrl(getApiUrl(rawUrl));
 +
-+        // Editable recipe (segments + canonical range + framing).
 +        const edlRes = await apiFetch(`/api/clip/${job_id}/${clip_index}/edl`);
 +        if (edlRes.ok) {
 +          const e = await edlRes.json();
@@ -131,16 +126,17 @@ index 0000000..b1940a6
 +          setCanonical({ start: s, end: en });
 +          setTrimStart(s);
 +          setTrimEnd(en);
++          if (e.framing) setFraming(e.framing === 'full' || e.framing === 'track' ? e.framing : 'auto');
 +        }
 +
-+        // Transcript (word timeline for seeking).
 +        const tRes = await apiFetch(`/api/clip/${job_id}/${clip_index}/transcript`);
 +        if (tRes.ok) {
 +          const t = await tRes.json();
-+          setWords(Array.isArray(t) ? t : (t?.words || t?.segments || []));
++          const w = Array.isArray(t) ? t : (t?.words || t?.segments || []);
++          setWords(w);
++          setCaptionText(w.map(x => x?.word ?? x?.text ?? x?.w ?? '').filter(Boolean).join(' '));
 +        }
 +
-+        // Scenes (for seeking).
 +        const scRes = await apiFetch(`/api/clip/${job_id}/${clip_index}/scenes`);
 +        if (scRes.ok) setScenes(await scRes.json());
 +      } catch (e) {
@@ -152,41 +148,93 @@ index 0000000..b1940a6
 +    return () => { cancelled = true; };
 +  }, [session]);
 +
-+  // --- 3. Rerender (immutable: the edited output becomes a NEW asset version)
++  // --- 3. Apply caption style/text, then rerender, then complete -------------
 +  const handleRerender = useCallback(async () => {
 +    if (!session || !edl) return;
 +    setRerendering(true);
 +    setResult(null);
 +    setError(null);
 +    try {
-+      // A plain trim is a single segment inside the canonical range (FAST path).
++      const { job_id, clip_index } = session;
++
++      // Caption changes: apply via /api/subtitle (re-burn with new style/text).
++      const caption_changes = {
++        text: captionText,
++        position: captionPosition,
++        style: captionStyle,
++        uppercase: captionUppercase,
++      };
++      let captionApplied = false;
++      if (captionText.trim() || captionPosition !== 'bottom' || captionStyle !== 'classic' || captionUppercase) {
++        const subRes = await apiFetch('/api/subtitle', {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify({
++            job_id, clip_index,
++            position: captionPosition, style: captionStyle, uppercase: captionUppercase,
++            // Best-effort verbatim words (same timestamps as the stored transcript).
++            words: words.length ? words.map((w, i) => ({
++              text: (captionText.split(/\s+/)[i] ?? w?.word ?? w?.text ?? ''),
++              startMs: Math.round(Number(w?.start ?? w?.s ?? 0) * 1000),
++              endMs: Math.round(Number(w?.end ?? w?.e ?? 0) * 1000),
++            })) : undefined,
++          }),
++        });
++        captionApplied = subRes.ok;
++      }
++
++      // Reframe/crop: framing override on the rerender (affects the output).
++      const crop_reframe_changes = { framing };
 +      const segments = [{ start: Number(trimStart), end: Number(trimEnd) }];
-+      const res = await apiFetch('/api/clip/rerender', {
++      const rrRes = await apiFetch('/api/clip/rerender', {
 +        method: 'POST',
 +        headers: { 'Content-Type': 'application/json' },
 +        body: JSON.stringify({
-+          job_id: session.job_id,
-+          clip_index: session.clip_index,
-+          segments,
-+          snap_to_words: true,
-+          reapply_captions: true,
-+          framing: (edl.framing === 'auto' ? 'auto' : undefined),
-+          instruction: instruction.trim() || undefined,
++          job_id, clip_index, segments,
++          snap_to_words: true, reapply_captions: true,
++          framing: framing === 'auto' ? undefined : framing,
 +        }),
 +      });
-+      const data = await res.json();
-+      if (!res.ok) {
-+        setError('Rerender failed: ' + (data?.detail || data?.error || res.status));
++      const rrData = await rrRes.json();
++      if (!rrRes.ok) {
++        setError('Rerender failed: ' + (rrData?.detail || rrData?.error || rrRes.status));
 +        setRerendering(false);
 +        return;
 +      }
-+      setResult(data);
++
++      // Complete: register the new asset_version + send the re-review card.
++      const completeRes = await fetch(EDITOR_COMPLETE_URL, {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          edit_session_id: session.edit_session_id,
++          content_type: 'video/mp4',
++          trim_start: Number(trimStart),
++          trim_end: Number(trimEnd),
++          caption_changes,
++          crop_reframe_changes,
++          instruction: instruction.trim() || undefined,
++          llm_assist_used: false,
++          edl_metadata: { caption_applied: captionApplied, framing, segments },
++          job_id,
++          ready_file: rrData?.filename || rrData?.ready_file || '',
++          duration_seconds: Number(trimEnd) - Number(trimStart),
++          correction_summary: buildSummary(caption_changes, crop_reframe_changes),
++        }),
++      });
++      const completeData = await completeRes.json();
++      if (!completeData.ok) {
++        setError('Registration failed: ' + (completeData.error || 'unknown'));
++        setRerendering(false);
++        return;
++      }
++      setResult(completeData);
 +    } catch (e) {
 +      setError('Rerender error: ' + (e && e.message ? e.message : String(e)));
 +    } finally {
 +      setRerendering(false);
 +    }
-+  }, [session, edl, trimStart, trimEnd, instruction]);
++  }, [session, edl, trimStart, trimEnd, framing, captionText, captionPosition, captionStyle, captionUppercase, instruction, words]);
 +
 +  if (loading) {
 +    return (
@@ -219,106 +267,103 @@ index 0000000..b1940a6
 +      <main className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6">
 +        {error && <div className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg p-3">{error}</div>}
 +
-+        {/* Video preview */}
 +        <div className="grid md:grid-cols-2 gap-6">
 +          <div className="space-y-3">
-+            <video
-+              ref={videoRef}
-+              src={clipUrl}
-+              controls
-+              className="w-full rounded-lg bg-black aspect-[9/16] object-contain"
-+            />
++            <video ref={videoRef} src={clipUrl} controls className="w-full rounded-lg bg-black aspect-[9/16] object-contain" />
 +            {clipUrl == null && <p className="text-xs text-muted">(preview unavailable — no clip URL)</p>}
 +          </div>
 +
-+          {/* Trim controls */}
 +          <div className="space-y-4">
 +            <h2 className="font-display lowercase text-xl text-ink">trim</h2>
 +            <div className="grid grid-cols-2 gap-3">
-+              <label className="text-xs text-muted">
-+                start (s)
-+                <input
-+                  type="number" step="0.1" min={canonical.start} max={canonical.end}
-+                  value={trimStart}
++              <label className="text-xs text-muted">start (s)
++                <input type="number" step="0.1" min={canonical.start} max={canonical.end} value={trimStart}
 +                  onChange={(e) => { setTrimStart(e.target.value); seekTo(videoRef, e.target.value); }}
-+                  className="mt-1 w-full bg-background border border-rule rounded-lg px-3 py-2 text-ink"
-+                />
++                  className="mt-1 w-full bg-background border border-rule rounded-lg px-3 py-2 text-ink" />
 +              </label>
-+              <label className="text-xs text-muted">
-+                end (s)
-+                <input
-+                  type="number" step="0.1" min={canonical.start} max={canonical.end}
-+                  value={trimEnd}
++              <label className="text-xs text-muted">end (s)
++                <input type="number" step="0.1" min={canonical.start} max={canonical.end} value={trimEnd}
 +                  onChange={(e) => { setTrimEnd(e.target.value); seekTo(videoRef, e.target.value); }}
-+                  className="mt-1 w-full bg-background border border-rule rounded-lg px-3 py-2 text-ink"
-+                />
++                  className="mt-1 w-full bg-background border border-rule rounded-lg px-3 py-2 text-ink" />
 +              </label>
 +            </div>
-+            <div className="text-sm text-ink">
-+              duration <span className="text-brass">{fmt(trimEnd - trimStart)}</span>
-+              <span className="text-muted"> · source range {fmt(canonical.start)}–{fmt(canonical.end)}</span>
-+            </div>
++            <div className="text-sm text-ink">duration <span className="text-brass">{fmt(trimEnd - trimStart)}</span>
++              <span className="text-muted"> · source {fmt(canonical.start)}–{fmt(canonical.end)}</span></div>
 +
-+            {/* Optional written instruction (LLM assist only when non-empty) */}
-+            <label className="block text-xs text-muted">
-+              written instruction (captured, not yet applied — LLM edit not wired end-to-end)
-+              <textarea
-+                value={instruction}
-+                onChange={(e) => setInstruction(e.target.value)}
-+                rows={3}
-+                placeholder="e.g. tighten the opening, cut the pause at the start"
-+                className="mt-1 w-full bg-background border border-rule rounded-lg px-3 py-2 text-ink resize-y"
-+              />
++            <h2 className="font-display lowercase text-xl text-ink pt-2">reframe / crop</h2>
++            <div className="grid grid-cols-3 gap-2">
++              {['auto', 'full', 'track'].map(f => (
++                <button key={f} onClick={() => setFraming(f)}
++                  className={`px-2 py-2 rounded-lg border text-xs ${framing === f ? 'border-brass text-ink bg-brass/10' : 'border-rule text-muted'}`}>
++                  {f}
++                </button>
++              ))}
++            </div>
++            <p className="text-xs text-muted">auto = inherit · full = whole frame (blur bars) · track = subject crop</p>
++
++            <h2 className="font-display lowercase text-xl text-ink pt-2">captions</h2>
++            <label className="block text-xs text-muted">text
++              <textarea value={captionText} onChange={(e) => setCaptionText(e.target.value)} rows={2}
++                placeholder="caption text (verbatim)"
++                className="mt-1 w-full bg-background border border-rule rounded-lg px-3 py-2 text-ink resize-y" />
++            </label>
++            <div className="grid grid-cols-2 gap-3">
++              <label className="text-xs text-muted">position
++                <select value={captionPosition} onChange={(e) => setCaptionPosition(e.target.value)}
++                  className="mt-1 w-full bg-background border border-rule rounded-lg px-3 py-2 text-ink">
++                  <option value="top">top</option><option value="middle">middle</option><option value="bottom">bottom</option>
++                </select>
++              </label>
++              <label className="text-xs text-muted">style
++                <select value={captionStyle} onChange={(e) => setCaptionStyle(e.target.value)}
++                  className="mt-1 w-full bg-background border border-rule rounded-lg px-3 py-2 text-ink">
++                  <option value="classic">classic</option><option value="karaoke">karaoke</option>
++                </select>
++              </label>
++            </div>
++            <label className="flex items-center gap-2 text-xs text-muted">
++              <input type="checkbox" checked={captionUppercase} onChange={(e) => setCaptionUppercase(e.target.checked)} />
++              uppercase
 +            </label>
 +
-+            <button
-+              onClick={handleRerender}
-+              disabled={rerendering || !edl}
-+              className="btn-primary px-4 py-2 w-full disabled:opacity-50"
-+            >
-+              {rerendering ? 'rerendering…' : 'rerender (new asset version)'}
++            <label className="block text-xs text-muted">written instruction (captured, not yet applied — LLM edit not wired end-to-end)
++              <textarea value={instruction} onChange={(e) => setInstruction(e.target.value)} rows={2}
++                placeholder="e.g. tighten the opening"
++                className="mt-1 w-full bg-background border border-rule rounded-lg px-3 py-2 text-ink resize-y" />
++            </label>
++
++            <button onClick={handleRerender} disabled={rerendering || !edl}
++              className="btn-primary px-4 py-2 w-full disabled:opacity-50">
++              {rerendering ? 'rerendering…' : 'rerender + register new asset version'}
 +            </button>
 +
-+            {result && (
-+              <div className="text-sm text-ink bg-background border border-rule rounded-lg p-3">
-+                ✓ rerender accepted — new asset version pending re-review
-+              </div>
-+            )}
++            {result && <div className="text-sm text-ink bg-background border border-rule rounded-lg p-3">
++              ✓ registered as new asset version — re-review card sent</div>}
 +          </div>
 +        </div>
 +
-+        {/* Transcript + scenes seeking */}
 +        <div className="grid md:grid-cols-2 gap-6">
 +          <div className="space-y-2">
 +            <h3 className="font-display lowercase text-lg text-ink">transcript</h3>
 +            <div className="max-h-64 overflow-y-auto space-y-1">
-+              {(words || []).slice(0, 200).map((w, i) => {
-+                const t = w?.start ?? w?.s ?? w?.t ?? 0;
-+                const txt = w?.word ?? w?.text ?? w?.w ?? '';
-+                return (
-+                  <button key={i} onClick={() => seekTo(videoRef, t)}
-+                    className="block text-left text-xs text-muted hover:text-ink w-full px-2 py-1 rounded hover:bg-background">
-+                    <span className="text-brass tabular-nums">{fmt(t)}</span> {txt}
-+                  </button>
-+                );
-+              })}
++              {(words || []).slice(0, 200).map((w, i) => (
++                <button key={i} onClick={() => seekTo(videoRef, w?.start ?? w?.s ?? w?.t ?? 0)}
++                  className="block text-left text-xs text-muted hover:text-ink w-full px-2 py-1 rounded hover:bg-background">
++                  <span className="text-brass tabular-nums">{fmt(w?.start ?? w?.s ?? w?.t ?? 0)}</span> {w?.word ?? w?.text ?? w?.w ?? ''}
++                </button>
++              ))}
 +              {words.length === 0 && <p className="text-xs text-muted">(no transcript)</p>}
 +            </div>
 +          </div>
-+
 +          <div className="space-y-2">
 +            <h3 className="font-display lowercase text-lg text-ink">scenes</h3>
 +            <div className="max-h-64 overflow-y-auto space-y-1">
-+              {(scenes || []).map((s, i) => {
-+                const t = s?.start ?? s?.t ?? 0;
-+                const label = s?.label ?? s?.scene ?? `scene ${i + 1}`;
-+                return (
-+                  <button key={i} onClick={() => seekTo(videoRef, t)}
-+                    className="block text-left text-xs text-muted hover:text-ink w-full px-2 py-1 rounded hover:bg-background">
-+                    <span className="text-brass tabular-nums">{fmt(t)}</span> {label}
-+                  </button>
-+                );
-+              })}
++              {(scenes || []).map((s, i) => (
++                <button key={i} onClick={() => seekTo(videoRef, s?.start ?? s?.t ?? 0)}
++                  className="block text-left text-xs text-muted hover:text-ink w-full px-2 py-1 rounded hover:bg-background">
++                  <span className="text-brass tabular-nums">{fmt(s?.start ?? s?.t ?? 0)}</span> {s?.label ?? s?.scene ?? `scene ${i + 1}`}
++                </button>
++              ))}
 +              {scenes.length === 0 && <p className="text-xs text-muted">(no scenes)</p>}
 +            </div>
 +          </div>
@@ -326,6 +371,16 @@ index 0000000..b1940a6
 +      </main>
 +    </div>
 +  );
++}
++
++function buildSummary(caption, reframe) {
++  const parts = [];
++  if (reframe?.framing && reframe.framing !== 'auto') parts.push(`reframe=${reframe.framing}`);
++  if (caption?.text?.trim()) parts.push('caption text changed');
++  if (caption?.position !== 'bottom') parts.push(`position=${caption.position}`);
++  if (caption?.style !== 'classic') parts.push(`style=${caption.style}`);
++  if (caption?.uppercase) parts.push('uppercase');
++  return parts.length ? parts.join(', ') : 'manual edit (trim)';
 +}
 diff --git a/dashboard/src/main.jsx b/dashboard/src/main.jsx
 index 0dbf4cb..18b83d6 100644
