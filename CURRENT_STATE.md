@@ -1,6 +1,6 @@
 # LOOM — Current State (handoff)
 
-*Updated: 2026-09-13 (EDT) — Segment 5A–5D storage spine COMPLETE (fixture registered)*
+*Updated: 2026-09-13 (EDT) — Segment 5A–5D storage spine COMPLETE; Segment 6 pre-distribution DEPLOYED & verified*
 
 ## ✅ Segment 4 — Discord QC — COMPLETE (runtime verified end-to-end)
 
@@ -52,6 +52,28 @@ Candidate identity is **zero-based**: `clip_id = <job_id>:<clip_index>` where
 filenames must disambiguate explicitly, e.g.:
 `index-01__ordinal-02__render-1.0` (zero-based index, human ordinal, render version).
 
+## ✅ Segment 6 pre-distribution — reaction-lane identity + durable tokens (DEPLOYED & verified)
+
+Migrations applied + code deployed (2026-09-13):
+
+- **004** — `loom_media` explicit lineage + publication eligibility
+  (`clip_index`, `human_ordinal`, `source_filename`, `publication_status`,
+  `publication_review_id`, `publication_approved_at`) + Segment 6 distribution guard.
+- **005** — `loom_reviews` reaction-lane identity: `asset_version` + `review_stage`
+  (`moment` | `final_publication`); composite unique
+  `(tenant_id, clip_id, asset_version, review_stage)`; first-terminal-decision-wins per stage.
+- **006** — `loom_review_tokens` durable review tokens (restart-survivable; only the
+  token hash is stored, never the raw token).
+- Adapter + Workflow 04 deployed: composite review key, `ignore-duplicates` first-wins,
+  durable token resolution, publication guard (moment decisions never touch publication).
+
+Runtime verified end-to-end:
+- Restart-survival: a card created before an adapter restart resolved its durable token
+  correctly afterward (Hold persisted).
+- Exactly one composite decision; a competing terminal action was ignored (first-wins).
+- Moment Hold left `loom_media` publication state untouched.
+- Test records cleaned; Segment 5 fixture remains `fixture` / `not_approved`.
+
 ## Next segment
 
 **Segment 6A — GHL Social Planner / distribution.** Do NOT begin until a real
@@ -72,4 +94,6 @@ Segment 3 is closed and must not be reopened.
 - `10214` — WF04 review-decision webhook (Hold), success. (Segment 4)
 
 ## Commit / push status
-- Segment 5A–5D: migration `002`, registration `003`, and this handoff — committed and pushed.
+- Segment 5A–5D: migration `002`, registration `003` — committed and pushed.
+- Segment 6 pre-distribution: migrations `004`/`005`/`006`, adapter, Workflow 04 — committed and pushed (`PREPARED (NOT DEPLOYED)` labels during drafting; now deployed).
+- This handoff update — committed and pushed.
