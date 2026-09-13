@@ -1,6 +1,6 @@
 # LOOM — Current State (handoff)
 
-*Updated: 2026-09-13 (EDT) — Segment 5A–5D storage spine COMPLETE; Segment 6 pre-distribution DEPLOYED & verified*
+*Updated: 2026-09-13 (EDT) — Segment 5A–5D storage spine COMPLETE; Segment 6 pre-distribution DEPLOYED; Segment 6A tenant mapping COMPLETE*
 
 ## ✅ Segment 4 — Discord QC — COMPLETE (runtime verified end-to-end)
 
@@ -74,10 +74,28 @@ Runtime verified end-to-end:
 - Moment Hold left `loom_media` publication state untouched.
 - Test records cleaned; Segment 5 fixture remains `fixture` / `not_approved`.
 
+## ✅ Segment 6A — Tenant Distribution Mapping — COMPLETE
+
+GHL Social Planner API (`GET /social-media-posting/:locationId/accounts`, `Version: v3`)
+verified read-only. One Dreemzy YouTube profile discovered + persisted.
+
+- Migration **007** — `tenant_distribution_profiles` (idempotent key
+  `(tenant_id, ghl_location_id, platform, profile_id)`).
+- Mapping (exactly one row): tenant `dreemzy` · platform `youtube` ·
+  profile `UCt1eM01Nyp0xC-mIAxfByBw` · display `Bryan Petty` ·
+  connection `active` · `enabled_for_distribution=false` (fail-closed).
+- Idempotency: repeat upsert → still exactly one row.
+- Fail-closed verified: unknown tenant → empty; mismatched location → empty;
+  expired Instagram (`be_petty_`) not mapped/enabled.
+- Zero posts created/scheduled/published (read-only discovery only).
+
 ## Next segment
 
-**Segment 6A — GHL Social Planner / distribution.** Do NOT begin until a real
-*approved* candidate exists (the current fixture is storage-acceptance only).
+**Segment 6B — Distribution scheduling/publishing.** Gated; do NOT begin until:
+1. a real `final_publication` **approved** candidate exists (the fixture is storage-acceptance only),
+2. `enabled_for_distribution` is explicitly set true for this mapping, and
+3. the distribution guard (tenant + clip + asset_version match, non-fixture, approved) passes.
+
 Segment 3 is closed and must not be reopened.
 
 ## Adapter / infra (unchanged this round, still correct)
@@ -95,5 +113,5 @@ Segment 3 is closed and must not be reopened.
 
 ## Commit / push status
 - Segment 5A–5D: migration `002`, registration `003` — committed and pushed.
-- Segment 6 pre-distribution: migrations `004`/`005`/`006`, adapter, Workflow 04 — committed and pushed (`PREPARED (NOT DEPLOYED)` labels during drafting; now deployed).
-- This handoff update — committed and pushed.
+- Segment 6 pre-distribution: migrations `004`/`005`/`006`, adapter, Workflow 04 — committed and pushed.
+- Segment 6A: migration `007` + this handoff — committed and pushed.
