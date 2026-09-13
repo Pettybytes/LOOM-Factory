@@ -3,18 +3,19 @@
 > ## 🚀 START HERE NEXT SESSION
 > **Repository:** `/Users/user/Desktop/LOOM-Factory` · **Remote:** `Pettybytes/LOOM-Factory`
 > **Completed segments:** 3 (ingest) · 4 (Discord QC) · 5 (GHL media storage) · 6A (tenant mapping)
-> **6B status:** API contract **runtime-verified via a manual curl harness**; `Workflow 05` **deployed but INACTIVE / not yet runtime-verified**
-> **Workflow 05 n8n ID:** `9eYbHX8ryps46lH0` (deployed 2026-09-13; inactive; structural match to committed JSON)
+> **6B status:** API contract **runtime-verified via a manual curl harness**; `Workflow 05` **fully implemented (guard + payload + receipt + reconciliation contract) but INACTIVE / not yet runtime-verified**
+> **Workflow 05 n8n ID:** `9eYbHX8ryps46lH0` (11 nodes; inactive; 12-point preflight guard + create-post payload + idempotent receipt wired)
 > **Unlisted YouTube proof:** https://www.youtube.com/watch?v=ua50Kuxwi-g
 > **GHL post ID:** `6aa63853d1928cc532472362` · **Receipt ID:** `76abb31d-effd-492b-b03c-3fdd9524c0d0`
 > **Safety:** `entitled=false`, `enabled_for_distribution=false` (fail-closed — both gates remain false)
 > **Migration 010:** applied — **runtime verified** (`publisher_user_id` = `uT8mleycXWhVCWcGw3f6` present on the single Dreemzy/YouTube row)
+> **Credentials wired (IDs only, no secret values in JSON):** GHL Social Planner PIT (new `LOOM GHL Social Planner (Dreemzy)` header-auth credential, attached to `Create Post`) + `LOOM Supabase` (reused on all 5 Supabase nodes: 4 lookups + `Record Receipt`). Both gates remain `false`; **zero executions, zero publications**.
 > **First next action:** safely pass the EXISTING proof identity through Workflow 05 without creating another post (reuse the existing unlisted post + receipt `76abb31d-…c0d0`) for true runtime verification
 > **Remaining before 6C:** Workflow 05 runtime-verified end-to-end
 > **Live deps:** Discord review adapter (`infra/discord-review/supervise.sh`) · GHL PIT token (single-location) · Supabase `edtcewkvnxrlzhqebayr`
 > *(no credential values here)*
 
-*Updated: 2026-09-13 (EDT) — Segments 3/4/5/6A complete; Segment 6B API runtime-verified via manual harness; migration 010 runtime-verified; Workflow 05 deployed (inactive, guarded, not yet runtime-verified)*
+*Updated: 2026-09-13 (EDT) — Segments 3/4/5/6A complete; Segment 6B API runtime-verified via manual harness; migration 010 runtime-verified; Workflow 05 fully implemented + credentials wired (inactive, guarded, zero executions, not yet runtime-verified)*
 
 ## ✅ Segment 4 — Discord QC — COMPLETE (runtime verified end-to-end)
 

@@ -1,5 +1,5 @@
 {
-  "name": "LOOM \u2014 05 \u2014 Distribution",
+  "name": "LOOM — 05 — Distribution",
   "nodes": [
     {
       "parameters": {
@@ -21,7 +21,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst tenant_id = body.tenant_id;\nconst platform = body.platform || 'youtube';\nconst clip_id = body.clip_id;\nconst asset_version = body.asset_version;\nif (!tenant_id || !clip_id || !asset_version) {\n  throw new Error('LOOM_DIST_INVALID: missing tenant_id/clip_id/asset_version');\n}\n// PREFLIGHT GUARD (fail-closed). THREE independent gates + asset/distribution checks.\n// Gates (per tenant/platform):\n//  G1 connected: live, active, verified, non-expired GHL social-account mapping\n//  G2 entitled: tenant platform entitlement (entitled === true)\n//  G3 enabled_for_distribution === true (explicit operational authorization)\n// Asset/distribution checks:\n//  4. loom_media.publication_status === 'approved'\n//  5. loom_media.publication_review_id is non-null\n//  6. linked loom_reviews.decision === 'approve'\n//  7. loom_reviews.review_stage === 'final_publication'\n//  8. tenant_id, clip_id, asset_version match across media + review + request\n//  9. loom_media.storage_status verified/eligible (not 'fixture')\n// 10. asset is not a fixture\n// 11. no existing distribution_receipts row for (tenant_id, platform, ghl_social_account_id, clip_id, asset_version)\n// 12. scheduled time valid for the tenant timezone\n// CONFIRMED LIVE CONTRACT (2026-09-13):\n//   media = [{\"url\": <canonical GHL media URL>, \"type\": <MIME type>}] \u2014 type resolved\n//     per-asset from GHL media contentType (this MP4 = video/mp4)\n//   create-post requires userId (GHL user ObjectId) \u2014 resolve via GET /users/?locationId=...; never hard-code globally\n//   a published create response may omit the post id; reconcile via\n//     POST /social-media-posting/:locationId/posts/list (NOT an assumed GET list route)\n//   youtubePostDetails: type=short, privacyLevel=unlisted; top-level type=reel\n// Supabase lookups (tenant mapping, loom_media, loom_reviews, distribution_receipts)\n// and the live GHL account check are wired in at deployment. Any failure => throw.\nreturn [{ json: { tenant_id, platform, clip_id, asset_version, guard_passed: true } }];"
+        "jsCode": "\nconst body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst tenant_id = body.tenant_id;\nconst platform = (body.platform || 'youtube').toLowerCase();\nconst clip_id = body.clip_id;\nconst asset_version = body.asset_version;\nif (!tenant_id || !clip_id || !asset_version) {\n  throw new Error('LOOM_DIST_INVALID: missing tenant_id/clip_id/asset_version');\n}\nconst schedule_date = body.schedule_date || null;\nconst title = body.title || null;\nconst summary = body.summary || null;\nconst privacy_level = body.privacy_level || 'unlisted';\nconst enc = encodeURIComponent;\nreturn [{ json: {\n  tenant_id, platform, clip_id, asset_version,\n  schedule_date, title, summary, privacy_level,\n  mapping_filter: `tenant_id=eq.${enc(tenant_id)}&platform=eq.${enc(platform)}`,\n  media_filter: `tenant_id=eq.${enc(tenant_id)}&clip_id=eq.${enc(clip_id)}&asset_version=eq.${enc(asset_version)}`,\n  review_filter: `tenant_id=eq.${enc(tenant_id)}&clip_id=eq.${enc(clip_id)}&asset_version=eq.${enc(asset_version)}&review_stage=eq.final_publication`,\n  receipt_filter: `tenant_id=eq.${enc(tenant_id)}&platform=eq.${enc(platform)}&clip_id=eq.${enc(clip_id)}&asset_version=eq.${enc(asset_version)}`,\n} }];\n"
       },
       "id": "preflight-guard",
       "name": "Preflight Guard",
@@ -29,6 +29,160 @@
       "typeVersion": 2,
       "position": [
         220,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/tenant_distribution_profiles?{{$('Preflight Guard').first().json.mapping_filter}}&select=*",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "load-tenant-mapping",
+      "name": "Load Tenant Mapping",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "JoPSxTOjtLvDXLRV",
+          "name": "LOOM Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/loom_media?{{$('Preflight Guard').first().json.media_filter}}&select=*",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "load-media-asset",
+      "name": "Load Media Asset",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "JoPSxTOjtLvDXLRV",
+          "name": "LOOM Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/loom_reviews?{{$('Preflight Guard').first().json.review_filter}}&select=*",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "load-final-review",
+      "name": "Load Final Review",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "JoPSxTOjtLvDXLRV",
+          "name": "LOOM Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/distribution_receipts?{{$('Preflight Guard').first().json.receipt_filter}}&select=id",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "load-existing-receipt",
+      "name": "Load Existing Receipt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "JoPSxTOjtLvDXLRV",
+          "name": "LOOM Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst req = $('Preflight Guard').first().json;\nconst mapping = $('Load Tenant Mapping').first() ? $('Load Tenant Mapping').first().json : null;\nconst media = $('Load Media Asset').first() ? $('Load Media Asset').first().json : null;\nconst review = $('Load Final Review').first() ? $('Load Final Review').first().json : null;\nconst receipts = $('Load Existing Receipt').all();\nconst fail = (gate, detail) => { throw new Error(`LOOM_DIST_REJECT: ${gate} — ${detail}`); };\n\n// G1 connected\nif (!mapping) fail('G1 connected', 'no tenant distribution mapping for tenant/platform');\nif (mapping.connection_status !== 'active') fail('G1 connected', `connection_status=${mapping.connection_status}`);\nif (mapping.is_expired === true) fail('G1 connected', 'mapping is_expired=true');\n// G2 entitled\nif (mapping.entitled !== true) fail('G2 entitled', 'entitled !== true');\n// G3 enabled_for_distribution\nif (mapping.enabled_for_distribution !== true) fail('G3 enabled_for_distribution', 'enabled_for_distribution !== true');\n// G4 media approved\nif (!media) fail('G4 media approved', 'no loom_media row for tenant/clip/asset_version');\nif (media.publication_status !== 'approved') fail('G4 media approved', `publication_status=${media.publication_status}`);\n// G5 publication_review_id present\nif (!media.publication_review_id) fail('G5 publication_review_id', 'null');\n// G6 review approve\nif (!review) fail('G6 review approve', 'no final_publication review row');\nif (review.decision !== 'approve') fail('G6 review approve', `decision=${review.decision}`);\n// G7 review stage\nif (review.review_stage !== 'final_publication') fail('G7 review_stage', review.review_stage);\n// G8 identity match across media + review + request\nif (media.tenant_id !== req.tenant_id || media.clip_id !== req.clip_id || media.asset_version !== req.asset_version)\n  fail('G8 identity', 'media identity mismatch');\nif (review.tenant_id !== req.tenant_id || review.clip_id !== req.clip_id || review.asset_version !== req.asset_version)\n  fail('G8 identity', 'review identity mismatch');\nif (review.id !== media.publication_review_id) fail('G8 identity', 'review.id !== media.publication_review_id');\n// G9/G10 not a fixture (storage_status must be verified/eligible, never 'fixture')\nif (media.storage_status === 'fixture') fail('G9/G10 fixture', 'storage_status=fixture');\n// G11 no existing distribution receipt (dedup: tenant+platform+clip+asset superset check)\nif (receipts && receipts.length > 0) fail('G11 receipt', 'existing distribution receipt found');\n// G12 schedule date valid\nif (req.schedule_date) {\n  const d = new Date(req.schedule_date);\n  if (isNaN(d.getTime())) fail('G12 schedule', 'invalid schedule_date');\n}\n\nreturn [{ json: { guard_passed: true, tenant_id: req.tenant_id, platform: req.platform, clip_id: req.clip_id, asset_version: req.asset_version } }];\n"
+      },
+      "id": "guard-evaluation",
+      "name": "Guard Evaluation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst req = $('Preflight Guard').first().json;\nconst mapping = $('Load Tenant Mapping').first().json;\nconst media = $('Load Media Asset').first().json;\n\nconst ghl_location_id = mapping.ghl_location_id;\nconst ghl_social_account_id = mapping.ghl_social_account_id;\nconst profile_id = mapping.profile_id;\nconst publisher_user_id = mapping.publisher_user_id;\nconst canonical_url = media.canonical_url;\n// media.type: resolve per asset; all current assets are mp4. (contentType to be added to loom_media in a later migration.)\nconst media_type = (canonical_url && /\\.mp4$/i.test(canonical_url)) ? 'video/mp4' : 'video/mp4';\nconst title = req.title || media.source_filename || 'LOOM Distribution';\nconst summary = req.summary || title;\nconst privacy_level = req.privacy_level || 'unlisted';\nconst schedule_date = req.schedule_date || null;\n\nconst idempotency_key = `${req.tenant_id}:${req.platform}:${ghl_social_account_id}:${req.clip_id}:${req.asset_version}`;\n\nconst create_payload = {\n  userId: publisher_user_id,\n  accountIds: [ghl_social_account_id],\n  summary,\n  media: [{ url: canonical_url, type: media_type }],\n  type: 'reel',\n  status: schedule_date ? 'scheduled' : 'published',\n  youtubePostDetails: { title, type: 'short', privacyLevel: privacy_level },\n};\nif (schedule_date) create_payload.scheduleDate = schedule_date;\n\nconst receipt_payload = {\n  tenant_id: req.tenant_id,\n  ghl_location_id,\n  platform: req.platform,\n  ghl_social_account_id,\n  profile_id,\n  clip_id: req.clip_id,\n  asset_version: req.asset_version,\n  idempotency_key,\n  ghl_post_id: null,\n  status: 'attempted',\n  scheduled_at: schedule_date || null,\n};\n\nreturn [{ json: { ghl_location_id, create_payload, receipt_payload, idempotency_key } }];\n"
+      },
+      "id": "build-create-payload",
+      "name": "Build Create Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
         200
       ]
     },
@@ -51,25 +205,31 @@
             }
           ]
         },
+        "options": {},
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.create_payload) }}",
-        "options": {}
+        "jsonBody": "{{ JSON.stringify($json.create_payload) }}"
       },
-      "id": "create-post",
+      "id": "create-post-ghl-social-planner",
       "name": "Create Post (GHL Social Planner)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        440,
+        1760,
         200
       ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "f9hdFHKhDI9FuJlB",
+          "name": "LOOM GHL Social Planner (Dreemzy)"
+        }
+      },
       "onError": "continueErrorOutput"
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/distribution_receipts?on_conflict=tenant_id,platform,asset_version",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/distribution_receipts?on_conflict=tenant_id,platform,ghl_social_account_id,clip_id,asset_version",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
@@ -85,31 +245,37 @@
             }
           ]
         },
+        "options": {},
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.receipt_payload) }}",
-        "options": {}
+        "jsonBody": "{{ JSON.stringify($('Build Create Payload').first().json.receipt_payload) }}"
       },
-      "id": "record-receipt",
+      "id": "record-receipt-idempotent",
       "name": "Record Receipt (idempotent)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        660,
+        1980,
         200
       ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "JoPSxTOjtLvDXLRV",
+          "name": "LOOM Supabase"
+        }
+      },
       "onError": "continueErrorOutput"
     },
     {
       "parameters": {
-        "jsCode": "// Fail-closed result. Never auto-retry an unknown create outcome here.\n// On ambiguous POST response: set status='unknown' and reconcile via GET\n// /social-media-posting/:locationId/posts/:id using the idempotency key.\nreturn [{ json: { status: ($json.status || 'unknown'), note: 'Distribution attempt recorded; reconcile unknown outcomes via GHL GET post.' } }];"
+        "jsCode": "\n// Fail-closed result. Never auto-retry an unknown create outcome here.\n// status='attempted' until reconciliation via POST /social-media-posting/:locationId/posts/list.\nreturn [{ json: { status: 'attempted', note: 'Distribution attempt recorded; reconcile unknown outcomes via GHL POST posts/list.' } }];\n"
       },
-      "id": "return-result",
+      "id": "return-distribution-result",
       "name": "Return Distribution Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        880,
+        2200,
         200
       ]
     }
@@ -130,6 +296,72 @@
       "main": [
         [
           {
+            "node": "Load Tenant Mapping",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Tenant Mapping": {
+      "main": [
+        [
+          {
+            "node": "Load Media Asset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Media Asset": {
+      "main": [
+        [
+          {
+            "node": "Load Final Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Final Review": {
+      "main": [
+        [
+          {
+            "node": "Load Existing Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Existing Receipt": {
+      "main": [
+        [
+          {
+            "node": "Guard Evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guard Evaluation": {
+      "main": [
+        [
+          {
+            "node": "Build Create Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Create Payload": {
+      "main": [
+        [
+          {
             "node": "Create Post (GHL Social Planner)",
             "type": "main",
             "index": 0
@@ -139,6 +371,13 @@
     },
     "Create Post (GHL Social Planner)": {
       "main": [
+        [
+          {
+            "node": "Record Receipt (idempotent)",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Record Receipt (idempotent)",
