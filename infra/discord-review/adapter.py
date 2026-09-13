@@ -23,6 +23,12 @@ Endpoint and n8n. It does exactly three things:
 Secrets are read from environment variables (never printed, never logged).
 The service binds 127.0.0.1 only; Caddy fronts it via the Tailscale Funnel.
 
+Reaction-lane identity (Segment 6 pre-distribution):
+    review_stage='moment'             -> approve enters the reaction queue.
+    review_stage='final_publication'  -> approve may mark media publication-approved
+                                         (guarded: exactly one matching non-fixture
+                                         loom_media row, matching tenant/clip/asset_version).
+
 Endpoints:
     POST /discord/interactions   -> Discord Interactions Endpoint (Ed25519)
     POST /discord/card           -> internal card send (auth'd by Caddy)
@@ -35,11 +41,13 @@ import hmac
 import json
 import os
 import re
+import secrets
 import subprocess
 import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -69,6 +77,8 @@ CLIP_REVIEW_CHANNEL_NAME = _env("LOOM_CLIP_REVIEW_CHANNEL", "clip-review")
 PROXY_MAX_BYTES     = 23 * 1024 * 1024  # Discord upload ceiling (Boosts raise it; stay safe)
 
 DISCORD_API = "https://discord.com/api/v10"
+
+REVIEW_STAGES = ("moment", "final_publication")
 
 REJECTION_CATEGORIES = [
     "hook_issue", "caption_issue", "content_issue", "audio_issue",
@@ -134,14 +144,42 @@ def verify_signature(public_key_hex: str, signature_hex: str, timestamp: str, ra
 
 
 # ---------------------------------------------------------------------------
-# Opaque custom_id (no secrets). Compact: decision + clip_id only, so it stays
-# under Discord's 100-char custom_id limit. Tenant, asset version and reviewer
-# are resolved from the ledger + interaction payload at decision time, never
-# embedded here.
+# Opaque review tokens (server-side identity map)
+# ---------------------------------------------------------------------------
+# custom_id carries only {decision, token}; the full identity (tenant_id,
+# clip_id, asset_version, review_stage) is resolved SERVER-SIDE here at
+# decision time — never trusted from the client, never truncated. The mapping
+# is in-memory: an adapter restart invalidates pending cards (they must be
+# re-sent), which is acceptable for the review flow.
 # ---------------------------------------------------------------------------
 
-def make_custom_id(clip_id: str, decision: str) -> str:
-    payload = {"d": decision, "c": clip_id}
+_review_tokens = {}
+_REVIEW_TOKEN_TTL_SECONDS = 3600
+
+def register_review_token(identity: dict) -> str:
+    token = secrets.token_urlsafe(9)  # ~12 chars, opaque, non-guessable
+    _review_tokens[token] = {"identity": identity, "ts": time.time()}
+    return token
+
+
+def resolve_review_token(token: str):
+    entry = _review_tokens.get(token)
+    if not entry:
+        return None
+    if time.time() - entry["ts"] > _REVIEW_TOKEN_TTL_SECONDS:
+        _review_tokens.pop(token, None)
+        return None
+    return entry["identity"]
+
+
+# ---------------------------------------------------------------------------
+# Opaque custom_id (no secrets). Compact: decision + opaque token only, so it
+# stays well under Discord's 100-char custom_id limit. The full identity is
+# resolved from the server-side token map, never embedded or trusted here.
+# ---------------------------------------------------------------------------
+
+def make_custom_id(token: str, decision: str) -> str:
+    payload = {"d": decision, "t": token}
     raw = json.dumps(payload, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
@@ -170,29 +208,68 @@ def http_json(method, url, token=None, body=None, timeout=15):
         return resp.status, json.loads(resp.read().decode() or "{}")
 
 
-def supabase_get(table, clip_id):
-    url = f"{SUPABASE_URL}/rest/v1/{table}?clip_id=eq.{clip_id}&select=*"
-    req = Request(url, headers={
+def _supabase_headers():
+    return {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "User-Agent": "LOOMReviewAdapter/1.0",
-    }, method="GET")
+    }
+
+
+def supabase_filter_get(table, filters):
+    qs = "&".join(f"{k}=eq.{v}" for k, v in filters.items())
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{qs}&select=*"
+    req = Request(url, headers=_supabase_headers(), method="GET")
     with urlopen(req, timeout=15) as resp:
         return json.loads(resp.read().decode() or "[]")
 
 
+def supabase_get(table, clip_id):
+    """Single-clip lookup (loom_scores, which remains keyed by clip_id)."""
+    return supabase_filter_get(table, {"clip_id": clip_id})
+
+
+def supabase_get_review(identity):
+    """Lookup an existing decision by the full reaction-lane identity."""
+    return supabase_filter_get("loom_reviews", {
+        "tenant_id": identity["tenant_id"],
+        "clip_id": identity["clip_id"],
+        "asset_version": identity["asset_version"],
+        "review_stage": identity["review_stage"],
+    })
+
+
+def supabase_query_media(identity):
+    """Find loom_media rows matching tenant + clip + asset_version."""
+    return supabase_filter_get("loom_media", {
+        "tenant_id": identity["tenant_id"],
+        "clip_id": identity["clip_id"],
+        "asset_version": identity["asset_version"],
+    })
+
+
 def supabase_upsert(table, payload, ignore_duplicates=False):
-    url = f"{SUPABASE_URL}/rest/v1/{table}?on_conflict=clip_id"
+    conflict = ("tenant_id,clip_id,asset_version,review_stage" if table == "loom_reviews"
+                else "clip_id")
+    url = f"{SUPABASE_URL}/rest/v1/{table}?on_conflict={conflict}"
     data = json.dumps(payload).encode()
     prefer = ("resolution=ignore-duplicates,return=representation" if ignore_duplicates
               else "resolution=merge-duplicates,return=representation")
-    req = Request(url, data=data, headers={
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "User-Agent": "LOOMReviewAdapter/1.0",
-        "Prefer": prefer,
-    }, method="POST")
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    headers["Prefer"] = prefer
+    req = Request(url, data=data, headers=headers, method="POST")
+    with urlopen(req, timeout=15) as resp:
+        return resp.status, json.loads(resp.read().decode() or "{}")
+
+
+def supabase_patch_media(media_id, updates):
+    url = f"{SUPABASE_URL}/rest/v1/loom_media?id=eq.{media_id}"
+    data = json.dumps(updates).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    headers["Prefer"] = "return=representation"
+    req = Request(url, data=data, headers=headers, method="PATCH")
     with urlopen(req, timeout=15) as resp:
         return resp.status, json.loads(resp.read().decode() or "{}")
 
@@ -278,9 +355,15 @@ def send_review_card(payload: dict):
     proposed_shorts_title, caption, hook, overall_score, decision,
     duration_seconds, source_url, tenant_id, run_id, captions_applied,
     hook_applied, no_speech, transcript_segment_count, render_version,
-    asset_version, rights_policy (optional), publication_enabled (optional)."""
+    asset_version, review_stage, rights_policy (optional),
+    publication_enabled (optional)."""
     clip_id = payload["clip_id"]
     job_id = payload.get("job_id", "")
+    tenant_id = payload.get("tenant_id")
+    asset_version = payload.get("asset_version")
+    review_stage = payload.get("review_stage") or "moment"
+    if review_stage not in REVIEW_STAGES:
+        review_stage = "moment"
     ready_file = payload.get("ready_file") or payload.get("master_asset")
     # Locate master on disk (renderer-declared final asset).
     master_path = payload.get("master_path")
@@ -291,6 +374,15 @@ def send_review_card(payload: dict):
 
     channel_id = resolve_clip_review_channel()
 
+    # Register opaque token -> full identity (server-side, never in custom_id).
+    identity = {
+        "tenant_id": tenant_id,
+        "clip_id": clip_id,
+        "asset_version": asset_version,
+        "review_stage": review_stage,
+    }
+    token = register_review_token(identity)
+
     # 1) Generate review proxy (master untouched).
     tmpdir = tempfile.mkdtemp(prefix="loom-review-")
     try:
@@ -299,15 +391,21 @@ def send_review_card(payload: dict):
         proxy_size = os.path.getsize(proxy_path)
 
         # 2) Upload as Discord attachment + post message with buttons.
-        #    (multipart/form-data via urllib; file + payload_json)
-        approve_id = make_custom_id(clip_id, "approve")
-        reject_id  = make_custom_id(clip_id, "reject")
-        hold_id    = make_custom_id(clip_id, "hold")
+        approve_id = make_custom_id(token, "approve")
+        reject_id  = make_custom_id(token, "reject")
+        hold_id    = make_custom_id(token, "hold")
 
         # Source title vs proposed Shorts title: shown SEPARATELY. The
         # imported source-video title is NOT the candidate title.
         source_title = payload.get("source_title") or "Unavailable"
         proposed_title = payload.get("proposed_shorts_title") or "Not generated"
+
+        # Stage-aware labeling (never show a moment approval as publication).
+        is_final = review_stage == "final_publication"
+        stage_heading = "Final Review — Approve for Publication" if is_final \
+            else "Moment Review — Approve for Reaction Queue"
+        approve_label = "Approve for Publication" if is_final \
+            else "Approve for Reaction Queue"
 
         # Display safety: mask explicit terms on the card; preserve raw
         # internally (already persisted in Supabase by the pipeline).
@@ -318,6 +416,7 @@ def send_review_card(payload: dict):
         explicit_terms = sorted(set(hook_terms) | set(caption_terms))
 
         fields = [
+            {"name": "Review", "value": stage_heading, "inline": False},
             {"name": "Source title", "value": (source_title or "Unavailable")[:1000], "inline": False},
             {"name": "Proposed Shorts title", "value": (proposed_title or "Not generated")[:1000], "inline": False},
             {"name": "Hook", "value": (hook_display or "—")[:400], "inline": False},
@@ -326,9 +425,10 @@ def send_review_card(payload: dict):
             {"name": "Disposition", "value": str(payload.get("decision") or "—"), "inline": True},
             {"name": "Duration", "value": f"{payload.get('duration_seconds', '—')}s", "inline": True},
             {"name": "Source", "value": (payload.get("source_url") or "—")[:800], "inline": False},
-            {"name": "Tenant", "value": str(payload.get("tenant_id") or "—"), "inline": True},
+            {"name": "Tenant", "value": str(tenant_id or "—"), "inline": True},
             {"name": "Run ID", "value": str(payload.get("run_id") or "—"), "inline": True},
             {"name": "Clip ID", "value": str(clip_id), "inline": True},
+            {"name": "Asset version", "value": str(asset_version or "—"), "inline": True},
             {"name": "Captions", "value": f"expected={payload.get('captions_expected', '—')} applied={payload.get('captions_applied', '—')}", "inline": True},
             {"name": "Hook", "value": f"expected={payload.get('hook_expected', '—')} applied={payload.get('hook_applied', '—')}", "inline": True},
             {"name": "no_speech", "value": str(payload.get("no_speech", False)), "inline": True},
@@ -356,14 +456,14 @@ def send_review_card(payload: dict):
         components = [{
             "type": 1,
             "components": [
-                {"type": 2, "style": 3, "label": "Approve", "custom_id": approve_id},
+                {"type": 2, "style": 3, "label": approve_label, "custom_id": approve_id},
                 {"type": 2, "style": 4, "label": "Reject", "custom_id": reject_id},
                 {"type": 2, "style": 2, "label": "Hold", "custom_id": hold_id},
             ],
         }]
 
         message_payload = {
-            "content": f"🎬 **LOOM Candidate Review** — {clip_id}",
+            "content": f"🎬 **{stage_heading}** — {clip_id}",
             "embeds": [embed],
             "components": components,
         }
@@ -407,6 +507,7 @@ def send_review_card(payload: dict):
             "attachment_url": attachment_url,
             "proxy_name": proxy_name,
             "proxy_size": proxy_size,
+            "review_stage": review_stage,
         }
     finally:
         # Delete only the local throwaway proxy; preserve master + metadata.
@@ -415,21 +516,23 @@ def send_review_card(payload: dict):
 
 
 # ---------------------------------------------------------------------------
-# Decision persistence (idempotent; first terminal decision wins)
+# Decision persistence (idempotent; first terminal decision wins per stage)
 # ---------------------------------------------------------------------------
 
-def persist_decision(clip_id, decision, reviewer, category=None, instructions=None,
-                     asset_url=None, tenant_id=None):
+def persist_decision(identity, decision, reviewer, category=None, instructions=None,
+                     asset_url=None):
     """Persist a human decision to Supabase loom_reviews. Idempotent and
-    first-terminal-decision-wins AT THE DATABASE LEVEL: the INSERT uses
-    ON CONFLICT (clip_id) DO NOTHING, so a duplicate delivery or a second
-    click cannot create a second decision or overwrite the first. Returns
-    (row, created)."""
+    first-terminal-decision-wins AT THE DATABASE LEVEL per reaction-lane stage:
+    the INSERT uses ON CONFLICT (tenant_id,clip_id,asset_version,review_stage)
+    DO NOTHING, so a duplicate delivery or a second click cannot create a
+    second decision or overwrite the first. Returns (row, created)."""
     final_status = {"approve": "approved", "reject": "rejected", "hold": "on_hold"}[decision]
     payload = {
-        "clip_id": clip_id,
+        "tenant_id": identity["tenant_id"],
+        "clip_id": identity["clip_id"],
+        "asset_version": identity["asset_version"],
+        "review_stage": identity["review_stage"],
         "asset_url": asset_url,
-        "tenant_id": tenant_id,
         "reviewer": reviewer,
         "decision": decision,
         "rejection_category": category if decision == "reject" else None,
@@ -443,10 +546,35 @@ def persist_decision(clip_id, decision, reviewer, category=None, instructions=No
     if inserted:
         return rows[0], True
     # Already decided: return the existing authoritative row without overwriting.
-    existing = supabase_get("loom_reviews", clip_id)
+    existing = supabase_get_review(identity)
     if existing:
         return existing[0], False
     return payload, True
+
+
+def approve_publication(identity, review_row):
+    """Media publication guard. Only a final_publication approval with exactly
+    ONE matching non-fixture loom_media row may mark the asset
+    publication-approved. Missing / mismatched / ambiguous / multiple / fixture
+    matches are all rejected (no publication state change)."""
+    tenant_id, clip_id, asset_version = (identity["tenant_id"], identity["clip_id"],
+                                          identity["asset_version"])
+    if not (tenant_id and clip_id and asset_version):
+        return {"ok": False, "reason": "missing identity"}
+    media = supabase_query_media(identity)
+    if len(media) != 1:
+        return {"ok": False, "reason": f"{len(media)} matching media rows (need exactly 1)"}
+    row = media[0]
+    if row.get("storage_status") == "fixture":
+        return {"ok": False, "reason": "asset is a fixture (not publication-eligible)"}
+    review_id = review_row.get("id")
+    status, _ = supabase_patch_media(row["id"], {
+        "publication_status": "approved",
+        "publication_review_id": review_id,
+        "publication_approved_at": datetime.now(timezone.utc).isoformat(),
+    })
+    ok = status in (200, 204)
+    return {"ok": ok, "media_id": row["id"], "reason": None if ok else f"patch status {status}"}
 
 
 def forward_to_n8n(normalized_event: dict):
@@ -538,6 +666,10 @@ class Handler(BaseHTTPRequestHandler):
         # Acknowledge unknown interactions quickly.
         self._send_json(200, {"type": 4, "data": {"content": "Unsupported interaction.", "flags": 64}})
 
+    def _resolve_identity(self, parsed):
+        token = parsed.get("t")
+        return resolve_review_token(token) if token else None
+
     def _handle_button(self, interaction):
         data = interaction.get("data", {})
         custom_id = data.get("custom_id", "")
@@ -547,22 +679,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         decision = parsed.get("d")
-        clip_id = parsed.get("c")
-        if decision not in ("approve", "reject", "hold") or not clip_id:
+        identity = self._resolve_identity(parsed)
+        if decision not in ("approve", "reject", "hold") or not identity:
             self._send_json(200, {"type": 4, "data": {"content": "Invalid action.", "flags": 64}})
-            return
-
-        # Resolve + validate the candidate exists in the ledger.
-        scores = supabase_get("loom_scores", clip_id)
-        if not scores:
-            self._send_json(200, {"type": 4, "data": {"content": "Unknown candidate.", "flags": 64}})
             return
 
         reviewer = self._reviewer_name(interaction)
 
         if decision == "reject":
             # Open a modal to collect a structured category + optional notes.
-            modal_custom_id = make_custom_id(clip_id, "reject")
+            modal_custom_id = make_custom_id(parsed["t"], "reject")
             self._send_json(200, {
                 "type": 9,
                 "data": {
@@ -587,7 +713,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # approve / hold: persist, then update the card to "decided".
-        self._decide_and_update(interaction, clip_id, decision, reviewer,
+        self._decide_and_update(interaction, identity, decision, reviewer,
                                 category=None, instructions=None)
 
     def _handle_modal_submit(self, interaction):
@@ -598,7 +724,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"type": 4, "data": {"content": "Invalid modal.", "flags": 64}})
             return
 
-        clip_id = parsed.get("c")
+        identity = self._resolve_identity(parsed)
+        if not identity:
+            self._send_json(200, {"type": 4, "data": {"content": "Unknown candidate.", "flags": 64}})
+            return
+
         values = {}
         for row in data.get("components", []):
             for comp in row.get("components", []):
@@ -615,48 +745,73 @@ class Handler(BaseHTTPRequestHandler):
 
         instructions = (values.get("reject_instructions") or "").strip() or None
         reviewer = self._reviewer_name(interaction)
-        self._decide_and_update(interaction, clip_id, "reject", reviewer,
+        self._decide_and_update(interaction, identity, "reject", reviewer,
                                 category=category, instructions=instructions)
 
-    def _decide_and_update(self, interaction, clip_id, decision, reviewer,
+    def _decide_and_update(self, interaction, identity, decision, reviewer,
                            category, instructions):
+        clip_id = identity["clip_id"]
         scores = supabase_get("loom_scores", clip_id)
-        tenant = (scores[0].get("tenant_id") if scores else None)
+        # tenant_id is authoritative from the token; fall back to the ledger.
+        tenant_id = identity.get("tenant_id") or (scores[0].get("tenant_id") if scores else None)
         asset_url = (scores[0].get("asset_url") if scores else None)
+        identity = {**identity, "tenant_id": tenant_id}
 
         row, created = persist_decision(
-            clip_id, decision, reviewer, category=category,
-            instructions=instructions, asset_url=asset_url, tenant_id=tenant)
+            identity, decision, reviewer, category=category,
+            instructions=instructions, asset_url=asset_url)
+
+        # Publication guard: only a final_publication approval may touch media
+        # publication state; moment decisions never do.
+        pub = None
+        if decision == "approve" and identity["review_stage"] == "final_publication":
+            pub = approve_publication(identity, row)
 
         # Forward the verified normalized event to n8n (idempotent there too).
         forward_to_n8n({
-            "clip_id": clip_id,
+            "clip_id": identity["clip_id"],
+            "tenant_id": identity["tenant_id"],
+            "asset_version": identity["asset_version"],
+            "review_stage": identity["review_stage"],
             "decision": decision,
             "reviewer": reviewer,
             "rejection_category": category if decision == "reject" else None,
             "reviewer_instructions": instructions,
-            "tenant_id": tenant,
             "asset_url": asset_url,
+            "publication_updated": bool(pub and pub.get("ok")),
         })
 
         # Build the "decided" card update: show reviewer/decision/timestamp,
-        # disable controls.
+        # disable controls. Never display a moment approval as "publication".
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
         final_status = row.get("final_status") or {
             "approve": "approved", "reject": "rejected", "hold": "on_hold"}[decision]
+        is_final = identity["review_stage"] == "final_publication"
+        if decision == "approve":
+            decision_label = "approve (publication)" if is_final else "approve (reaction queue)"
+        else:
+            decision_label = f"{decision} ({final_status})"
+
+        fields = [
+            {"name": "Decision", "value": decision_label, "inline": True},
+            {"name": "Review", "value": "Final (publication)" if is_final else "Moment", "inline": True},
+            {"name": "Reviewer", "value": reviewer, "inline": True},
+            {"name": "Timestamp", "value": ts, "inline": True},
+        ]
+        if pub is not None and not pub.get("ok"):
+            fields.append({"name": "⚠️ Publication", "value": f"Not approved: {pub.get('reason')}", "inline": False})
+        elif pub is not None and pub.get("ok"):
+            fields.append({"name": "Publication", "value": "Media marked publication-approved", "inline": False})
+        if decision == "reject" and category:
+            fields.append({"name": "Category", "value": category, "inline": True})
+        if instructions:
+            fields.append({"name": "Instructions", "value": instructions, "inline": False})
+
         decided_embed = {
             "title": "✅ Decision recorded" if created else "ℹ️ Already decided",
             "color": 0x2ecc71 if decision == "approve" else (0xe74c3c if decision == "reject" else 0xf1c40f),
-            "fields": [
-                {"name": "Decision", "value": f"{decision} ({final_status})", "inline": True},
-                {"name": "Reviewer", "value": reviewer, "inline": True},
-                {"name": "Timestamp", "value": ts, "inline": True},
-            ],
+            "fields": fields,
         }
-        if decision == "reject" and category:
-            decided_embed["fields"].append({"name": "Category", "value": category, "inline": True})
-        if instructions:
-            decided_embed["fields"].append({"name": "Instructions", "value": instructions, "inline": False})
 
         update_data = {
             "embeds": [decided_embed],
