@@ -14,7 +14,7 @@ index 207759a..a76488f 100644
    <link rel="preconnect" href="https://fonts.googleapis.com" />
 diff --git a/dashboard/src/components/ManualTrimEditor.jsx b/dashboard/src/components/ManualTrimEditor.jsx
 new file mode 100644
-index 0000000..d0e081f
+index 0000000..b1940a6
 --- /dev/null
 +++ b/dashboard/src/components/ManualTrimEditor.jsx
 @@ -0,0 +1,309 @@
@@ -261,7 +261,7 @@ index 0000000..d0e081f
 +
 +            {/* Optional written instruction (LLM assist only when non-empty) */}
 +            <label className="block text-xs text-muted">
-+              written instruction (optional — no Gemini when empty)
++              written instruction (captured, not yet applied — LLM edit not wired end-to-end)
 +              <textarea
 +                value={instruction}
 +                onChange={(e) => setInstruction(e.target.value)}

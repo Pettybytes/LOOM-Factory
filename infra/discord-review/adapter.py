@@ -322,6 +322,18 @@ def resolve_editor_token(token: str):
     }
 
 
+def register_edited_asset_rpc(payload: dict):
+    """Call the atomic register_edited_asset RPC (one transaction: next
+    asset_version + lineage row + immutable correction log + session complete)."""
+    url = f"{SUPABASE_URL}/rest/v1/rpc/register_edited_asset"
+    data = json.dumps(payload).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    req = Request(url, data=data, headers=headers, method="POST")
+    with urlopen(req, timeout=30) as resp:
+        return resp.status, json.loads(resp.read().decode() or "{}")
+
+
 # ---------------------------------------------------------------------------
 # Opaque custom_id (no secrets). Compact: decision + opaque token only, so it
 # stays well under Discord's 100-char custom_id limit. The full identity is
@@ -599,6 +611,10 @@ def send_review_card(payload: dict):
         pub_enabled = bool(payload.get("publication_enabled"))
         fields.append({"name": "Publication", "value": "enabled" if pub_enabled else "disabled", "inline": True})
         fields.append({"name": "Versions", "value": f"master={payload.get('master_asset') or '—'} | render={payload.get('render_version') or '—'} | proxy={proxy_name}", "inline": False})
+        if payload.get("lineage"):
+            fields.append({"name": "Lineage", "value": str(payload["lineage"]), "inline": False})
+        if payload.get("correction_summary"):
+            fields.append({"name": "Corrections", "value": str(payload["correction_summary"])[:800], "inline": False})
 
         embed = {
             "title": (proposed_title or "LOOM Candidate")[:256],
@@ -799,6 +815,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/discord/editor/exchange":
             self._handle_editor_exchange()
             return
+        if path == "/discord/editor/complete":
+            self._handle_editor_complete()
+            return
         self._send_json(404, {"error": "not found"})
 
     # -- Interactions Endpoint --------------------------------------------
@@ -951,6 +970,80 @@ class Handler(BaseHTTPRequestHandler):
         session["job_id"] = job_id
         session["clip_index"] = clip_index
         self._send_json(200, {"ok": True, "session": session})
+
+    def _handle_editor_complete(self):
+        """Finalize an edit: atomically register the new asset_version (RPC) and
+        send a fresh final_publication review card for that exact version. The
+        edited render is NOT promoted/approved/distributed — it is
+        final_review_pending until the new card is approved."""
+        try:
+            raw = self._read_body()
+            body = json.loads(raw.decode() or "{}")
+        except Exception:
+            self._send_json(400, {"ok": False, "error": "bad json"})
+            return
+
+        edit_session_id = body.get("edit_session_id")
+        if not edit_session_id:
+            self._send_json(400, {"ok": False, "error": "missing edit_session_id"})
+            return
+
+        rpc_payload = {
+            "p_edit_session_id": edit_session_id,
+            "p_content_type": body.get("content_type") or "video/mp4",
+            "p_file_hash": body.get("file_hash"),
+            "p_size_bytes": body.get("size_bytes"),
+            "p_trim_start": body.get("trim_start"),
+            "p_trim_end": body.get("trim_end"),
+            "p_caption_changes": body.get("caption_changes"),
+            "p_crop_reframe_changes": body.get("crop_reframe_changes"),
+            "p_instruction": body.get("instruction"),
+            "p_llm_assist_used": bool(body.get("llm_assist_used")),
+            "p_edl_metadata": body.get("edl_metadata"),
+        }
+        try:
+            status, result = register_edited_asset_rpc(rpc_payload)
+        except Exception as e:
+            self._send_json(502, {"ok": False, "error": f"registration RPC failed: {e}"})
+            return
+        if status not in (200, 201) or not isinstance(result, dict):
+            self._send_json(502, {"ok": False, "error": f"registration failed (status {status})"})
+            return
+
+        # Idempotent replay: the session was already completed; no new card.
+        if result.get("idempotent"):
+            self._send_json(200, {"ok": True, "idempotent": True, "result": result})
+            return
+
+        new_version = result.get("asset_version")
+        source_version = result.get("source_asset_version")
+        clip_id = result.get("clip_id")
+        tenant_id = result.get("tenant_id")
+        job_id = body.get("job_id", "")
+        ready_file = body.get("ready_file", "")
+
+        try:
+            card = send_review_card({
+                "clip_id": clip_id,
+                "job_id": job_id,
+                "tenant_id": tenant_id,
+                "asset_version": new_version,
+                "review_stage": "final_publication",
+                "ready_file": ready_file,
+                "proposed_shorts_title": body.get("proposed_title") or "Edited candidate",
+                "hook": body.get("hook") or "",
+                "caption": body.get("caption") or "",
+                "overall_score": body.get("overall_score") or "—",
+                "duration_seconds": body.get("duration_seconds") or 0,
+                "source_url": body.get("source_url") or "—",
+                "lineage": f"{source_version} → {new_version}",
+                "correction_summary": body.get("correction_summary") or "manual edit (trim/reframe/caption)",
+            })
+        except Exception as e:
+            self._send_json(200, {"ok": True, "result": result, "card_error": str(e)})
+            return
+
+        self._send_json(200, {"ok": True, "result": result, "card": card})
 
     def _handle_modal_submit(self, interaction):
         data = interaction.get("data", {})
