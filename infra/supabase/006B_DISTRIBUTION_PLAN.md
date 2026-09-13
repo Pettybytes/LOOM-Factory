@@ -32,16 +32,19 @@ The `media` object array references media by URL (or GHL media id). The exact
 limits are). To be confirmed against the live API at deployment time before the
 first real create.
 
-## Idempotency key (exact)
+## Idempotency key (exact — CORRECTED 2026-09-13)
 
 GHL Social Planner has NO native idempotency key. The `distribution_receipts`
 ledger is the source of truth. Exact key:
 
 ```
-idempotency_key = "{tenant_id}:{platform}:{asset_version}"
+idempotency_key = "{tenant_id}:{platform}:{ghl_social_account_id}:{clip_id}:{asset_version}"
 ```
 
-Enforced by `distribution_receipts` unique `(tenant_id, platform, asset_version)`.
+Enforced by `distribution_receipts` unique
+`(tenant_id, platform, ghl_social_account_id, clip_id, asset_version)`.
+A duplicate means the SAME tenant, destination account, clip AND asset version —
+NOT merely the same render-version label (different clips can share render-1.0).
 A duplicate request with the same key must resolve to the existing receipt —
 never re-POST to GHL unless reconciliation proves the prior POST did not create a post.
 
@@ -110,3 +113,23 @@ GHL/YouTube SUPPORTS nonpublic posts via `youtubePostDetails.privacyLevel` = `pr
 - **C** (nonpublic method): SUPPORTED. Safest = **unlisted** YouTube test post via `privacyLevel: unlisted`.
 
 Recommendation (Bryan chooses; I do not publish): **C — unlisted** test post, combined with a harmless test video generated later (B), once 6B is authorized.
+
+## Three independent gates (per tenant/platform) — added 2026-09-13
+
+1. **connected** — a live, active, verified, non-expired GHL social-account mapping exists.
+2. **entitled** — the tenant's configuration/payment tier permits that platform (minimal MVP field `entitled`, fail-closed default `false`; full plan/tier = future Segment 7/33).
+3. **enabled_for_distribution** — explicit operational authorization is `true`.
+
+For the MVP controlled test: Dreemzy YouTube may be entitled; TikTok/Instagram/Facebook remain disabled; the expired Instagram is NOT eligible; other platforms do not gate the initial YouTube proof. Schema/workflow stays platform-neutral.
+
+## Media payload schema — NOT yet confirmed
+
+The GHL v3 `media` object property names are NOT exposed in the public docs (the field is shown as `object[]` with the nested schema client-side-rendered). Do NOT guess property names during the live post. At deployment time, before the live post, confirm the media shape via a safe validation mechanism — a non-publishing `status: draft` create that is then inspected via `GET /posts/:id` (draft skips publishing; its normalized response reveals the accepted media fields).
+
+## Generated test asset identity (2026-09-13)
+
+- file: `/tmp/loom6b/loom_distribution_test.mp4`
+- codec/h264, 1080×1920, 8.0s, 29,163 bytes
+- sha256: `b753eced6e06c319ee10588ef80123e245471955583e378a35f76e54c8f69107`
+- content: plain branded background + text "LOOM Distribution Test / Unlisted" (silent, no copyrighted material)
+- NOT the Segment 5 copyrighted fixture; registered as a controlled distribution-test asset (unique tenant/clip/asset_version) before use.

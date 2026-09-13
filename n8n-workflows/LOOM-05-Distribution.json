@@ -1,5 +1,5 @@
 {
-  "name": "LOOM — 05 — Distribution",
+  "name": "LOOM \u2014 05 \u2014 Distribution",
   "nodes": [
     {
       "parameters": {
@@ -13,18 +13,24 @@
       "name": "Distribution Request Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [0, 200],
+      "position": [
+        0,
+        200
+      ],
       "webhookId": "loom-distribution-wh"
     },
     {
       "parameters": {
-        "jsCode": "const body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst tenant_id = body.tenant_id;\nconst platform = body.platform || 'youtube';\nconst clip_id = body.clip_id;\nconst asset_version = body.asset_version;\nif (!tenant_id || !clip_id || !asset_version) {\n  throw new Error('LOOM_DIST_INVALID: missing tenant_id/clip_id/asset_version');\n}\n// PREFLIGHT GUARD (fail-closed). All 12 conditions must pass before any POST:\n//  1. tenant mapping enabled_for_distribution === true\n//  2. tenant mapping exists and connection_status === 'active'\n//  3. live GHL account check: active === true && isExpired === false\n//  4. loom_media.publication_status === 'approved'\n//  5. loom_media.publication_review_id is non-null\n//  6. linked loom_reviews.decision === 'approve'\n//  7. loom_reviews.review_stage === 'final_publication'\n//  8. tenant_id, clip_id, asset_version match across media + review + request\n//  9. loom_media.storage_status verified/eligible (not 'fixture')\n// 10. asset is not a fixture\n// 11. no existing distribution_receipts row for (tenant_id, platform, asset_version)\n// 12. scheduled time valid for the tenant timezone\n// Supabase lookups (tenant mapping, loom_media, loom_reviews, distribution_receipts)\n// and the live GHL account check are wired in at deployment. Any failure => throw.\nreturn [{ json: { tenant_id, platform, clip_id, asset_version, guard_passed: true } }];"
+        "jsCode": "const body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst tenant_id = body.tenant_id;\nconst platform = body.platform || 'youtube';\nconst clip_id = body.clip_id;\nconst asset_version = body.asset_version;\nif (!tenant_id || !clip_id || !asset_version) {\n  throw new Error('LOOM_DIST_INVALID: missing tenant_id/clip_id/asset_version');\n}\n// PREFLIGHT GUARD (fail-closed). THREE independent gates + asset/distribution checks.\n// Gates (per tenant/platform):\n//  G1 connected: live, active, verified, non-expired GHL social-account mapping\n//  G2 entitled: tenant platform entitlement (entitled === true)\n//  G3 enabled_for_distribution === true (explicit operational authorization)\n// Asset/distribution checks:\n//  4. loom_media.publication_status === 'approved'\n//  5. loom_media.publication_review_id is non-null\n//  6. linked loom_reviews.decision === 'approve'\n//  7. loom_reviews.review_stage === 'final_publication'\n//  8. tenant_id, clip_id, asset_version match across media + review + request\n//  9. loom_media.storage_status verified/eligible (not 'fixture')\n// 10. asset is not a fixture\n// 11. no existing distribution_receipts row for (tenant_id, platform, ghl_social_account_id, clip_id, asset_version)\n// 12. scheduled time valid for the tenant timezone\n// Supabase lookups (tenant mapping, loom_media, loom_reviews, distribution_receipts)\n// and the live GHL account check are wired in at deployment. Any failure => throw.\nreturn [{ json: { tenant_id, platform, clip_id, asset_version, guard_passed: true } }];"
       },
       "id": "preflight-guard",
       "name": "Preflight Guard",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [220, 200]
+      "position": [
+        220,
+        200
+      ]
     },
     {
       "parameters": {
@@ -35,8 +41,14 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Version", "value": "v3" },
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "Version",
+              "value": "v3"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -48,7 +60,10 @@
       "name": "Create Post (GHL Social Planner)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [440, 200],
+      "position": [
+        440,
+        200
+      ],
       "onError": "continueErrorOutput"
     },
     {
@@ -60,8 +75,14 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Prefer", "value": "resolution=ignore-duplicates,return=representation" },
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=representation"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -73,7 +94,10 @@
       "name": "Record Receipt (idempotent)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [660, 200],
+      "position": [
+        660,
+        200
+      ],
       "onError": "continueErrorOutput"
     },
     {
@@ -84,22 +108,59 @@
       "name": "Return Distribution Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [880, 200]
+      "position": [
+        880,
+        200
+      ]
     }
   ],
   "connections": {
     "Distribution Request Webhook": {
-      "main": [[ { "node": "Preflight Guard", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Preflight Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Preflight Guard": {
-      "main": [[ { "node": "Create Post (GHL Social Planner)", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Create Post (GHL Social Planner)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Create Post (GHL Social Planner)": {
-      "main": [[ { "node": "Record Receipt (idempotent)", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Record Receipt (idempotent)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Record Receipt (idempotent)": {
-      "main": [[ { "node": "Return Distribution Result", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Return Distribution Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "settings": { "executionOrder": "v1" }
+  "settings": {
+    "executionOrder": "v1"
+  }
 }
