@@ -75,6 +75,7 @@ LISTEN_HOST         = _env("LOOM_DISCORD_LISTEN_HOST", "127.0.0.1")
 LISTEN_PORT         = int(_env("LOOM_DISCORD_LISTEN_PORT", "8090"))
 CLIP_REVIEW_CHANNEL_NAME = _env("LOOM_CLIP_REVIEW_CHANNEL", "clip-review")
 PROXY_MAX_BYTES     = 23 * 1024 * 1024  # Discord upload ceiling (Boosts raise it; stay safe)
+EDITOR_BASE_URL     = _env("LOOM_EDITOR_BASE_URL", "http://localhost:5173")  # dev scaffold; final = Discord Activity
 
 DISCORD_API = "https://discord.com/api/v10"
 
@@ -155,6 +156,7 @@ def verify_signature(public_key_hex: str, signature_hex: str, timestamp: str, ra
 # ---------------------------------------------------------------------------
 
 REVIEW_TOKEN_TTL_SECONDS = 72 * 3600  # 72h. Expired cards revert to manual Hold (never auto-approve).
+EDITOR_TOKEN_TTL_SECONDS = 15 * 60     # 15 min single-use editor session (hash-only).
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -251,6 +253,31 @@ def consume_review_token(token_hash: str):
     headers = _supabase_headers()
     headers["Content-Type"] = "application/json"
     req = Request(url, data=data, headers=headers, method="PATCH")
+    with urlopen(req, timeout=15) as resp:
+        return resp.status
+
+
+def register_editor_token(token: str, identity: dict, reviewer: str):
+    """Create a single-use editor-session row. The raw token is used only for
+    the editor launch; the DB stores only its SHA-256 hash. 15-minute expiry,
+    replay-protected (status flips from 'active' on first use)."""
+    token_hash = hash_token(token)
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=EDITOR_TOKEN_TTL_SECONDS)).isoformat()
+    payload = {
+        "token_hash": token_hash,
+        "tenant_id": identity["tenant_id"],
+        "clip_id": identity["clip_id"],
+        "source_asset_version": identity["asset_version"],
+        "reviewer": reviewer,
+        "status": "active",
+        "expires_at": expires_at,
+    }
+    url = f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
+    data = json.dumps(payload).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    headers["Prefer"] = "return=representation"
+    req = Request(url, data=data, headers=headers, method="POST")
     with urlopen(req, timeout=15) as resp:
         return resp.status
 
@@ -479,6 +506,7 @@ def send_review_card(payload: dict):
         approve_id = make_custom_id(token, "approve")
         reject_id  = make_custom_id(token, "reject")
         hold_id    = make_custom_id(token, "hold")
+        edit_id    = make_custom_id(token, "edit")
 
         # Source title vs proposed Shorts title: shown SEPARATELY. The
         # imported source-video title is NOT the candidate title.
@@ -544,6 +572,7 @@ def send_review_card(payload: dict):
                 {"type": 2, "style": 3, "label": approve_label, "custom_id": approve_id},
                 {"type": 2, "style": 4, "label": "Reject", "custom_id": reject_id},
                 {"type": 2, "style": 2, "label": "Hold", "custom_id": hold_id},
+                {"type": 2, "style": 1, "label": "Edit", "custom_id": edit_id},
             ],
         }]
 
@@ -768,13 +797,17 @@ class Handler(BaseHTTPRequestHandler):
 
         decision = parsed.get("d")
         resolved = self._resolve_identity(parsed)
-        if decision not in ("approve", "reject", "hold") or not resolved:
+        if decision not in ("approve", "reject", "hold", "edit") or not resolved:
             self._send_json(200, {"type": 4, "data": {"content": "Invalid action.", "flags": 64}})
             return
         identity = resolved["identity"]
         token_hash = resolved["token_hash"]
 
         reviewer = self._reviewer_name(interaction)
+
+        if decision == "edit":
+            self._handle_edit(interaction, identity, token_hash, reviewer)
+            return
 
         if decision == "reject":
             # Open a modal to collect a structured category + optional notes.
@@ -805,6 +838,36 @@ class Handler(BaseHTTPRequestHandler):
         # approve / hold: persist, then update the card to "decided".
         self._decide_and_update(interaction, identity, token_hash, decision, reviewer,
                                 category=None, instructions=None)
+
+    def _handle_edit(self, interaction, identity, token_hash, reviewer):
+        """Edit is NOT a terminal review decision. Mint a single-use 15-minute
+        editor token (the review token stays 'pending') and return the editor
+        launch. Dev scaffold uses a deep-link; the final endpoint is a Discord
+        Activity (same token validated server-side). Only the token hash is
+        stored; the raw token is short-lived and single-use."""
+        editor_token = secrets.token_urlsafe(18)  # ~24 chars, opaque
+        status = register_editor_token(editor_token, identity, reviewer)
+        if status not in (200, 201):
+            self._send_json(200, {"type": 4, "data": {
+                "content": "⚠️ Could not create an editor session (is migration 012 applied?).",
+                "flags": 64}})
+            return
+
+        clip_id = identity["clip_id"]
+        job_id, sep, clip_index = clip_id.rpartition(":")
+        if not sep:
+            job_id, clip_index = clip_id, "0"
+        base = EDITOR_BASE_URL.rstrip("/")
+        launch_url = f"{base}/edit?job_id={job_id}&clip_index={clip_index}&token={editor_token}"
+
+        self._send_json(200, {"type": 4, "data": {
+            "content": (
+                f"✏️ **Edit session opened** (single-use, 15 min)\n"
+                f"Tenant `{identity['tenant_id']}` · `{clip_id}` · `{identity['asset_version']}`\n"
+                f"Open the editor: {launch_url}\n"
+                f"_(The review stays open; the edited render becomes a NEW asset version for re-review.)_"
+            ),
+            "flags": 64}})
 
     def _handle_modal_submit(self, interaction):
         data = interaction.get("data", {})
