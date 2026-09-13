@@ -1204,3 +1204,16 @@ one-based renderer filename ordinal.
   `index-01__ordinal-02__render-1.0`  (zero-based index, human ordinal, render version).
 - `asset_version` uses the `render-<major>.<minor>` form (e.g. `render-1.0`).
 - `storage_status='fixture'` = storage-acceptance only; NOT publication-approved.
+
+## Segment 6 distribution guard (eligibility for scheduling)
+
+An asset is eligible for scheduling **only** when ALL of:
+
+1. storage verification succeeded (retrieval OK + size/hash match);
+2. `publication_status = 'approved'`;
+3. a durable final-review decision exists (`publication_review_id`) and belongs to
+   the same tenant + clip (+ asset version where tracked);
+4. the asset is not a fixture (`storage_status <> 'fixture'`);
+5. no prior scheduling/publication receipt exists for that tenant/platform/asset version.
+
+For Bryan's reaction lane, **moment approval never satisfies this guard**.
