@@ -76,6 +76,7 @@ LISTEN_PORT         = int(_env("LOOM_DISCORD_LISTEN_PORT", "8090"))
 CLIP_REVIEW_CHANNEL_NAME = _env("LOOM_CLIP_REVIEW_CHANNEL", "clip-review")
 PROXY_MAX_BYTES     = 23 * 1024 * 1024  # Discord upload ceiling (Boosts raise it; stay safe)
 EDITOR_BASE_URL     = _env("LOOM_EDITOR_BASE_URL", "http://localhost:5173")  # dev scaffold; final = Discord Activity
+EDITOR_ORIGIN       = _env("LOOM_EDITOR_ORIGIN", "http://localhost:5173")  # CORS allow for the dev editor
 
 DISCORD_API = "https://discord.com/api/v10"
 
@@ -280,6 +281,45 @@ def register_editor_token(token: str, identity: dict, reviewer: str):
     req = Request(url, data=data, headers=headers, method="POST")
     with urlopen(req, timeout=15) as resp:
         return resp.status
+
+
+def consume_editor_token(token_hash: str):
+    """Atomically consume a single-use editor token (first exchange wins).
+    PATCH consumed_at only where status='active' AND consumed_at IS NULL; a
+    competing/replayed exchange affects zero rows."""
+    url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
+           f"?token_hash=eq.{token_hash}&status=eq.active&consumed_at=is.null")
+    data = json.dumps({"consumed_at": now_iso()}).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    headers["Prefer"] = "return=representation"
+    req = Request(url, data=data, headers=headers, method="PATCH")
+    with urlopen(req, timeout=15) as resp:
+        return resp.status, json.loads(resp.read().decode() or "[]")
+
+
+def resolve_editor_token(token: str):
+    """Validate + consume a single-use editor token (one-time exchange). Returns
+    the session identity or None. Consumes immediately."""
+    token_hash = hash_token(token)
+    status, rows = consume_editor_token(token_hash)
+    if status not in (200, 204) or not isinstance(rows, list) or not rows:
+        return None
+    row = rows[0]
+    expires_at = row.get("expires_at")
+    if expires_at:
+        try:
+            exp = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if exp < datetime.now(timezone.utc):
+                return None
+        except Exception:
+            pass
+    return {
+        "edit_session_id": row.get("id"),
+        "tenant_id": row.get("tenant_id"),
+        "clip_id": row.get("clip_id"),
+        "source_asset_version": row.get("source_asset_version"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -715,8 +755,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        # Dev-scaffold CORS for the editor exchange. Discord interactions are
+        # server-to-server and unaffected. Final Activity path uses the SDK.
+        self.send_header("Access-Control-Allow-Origin", EDITOR_ORIGIN)
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(data)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", EDITOR_ORIGIN)
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", 0))
@@ -742,6 +795,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/discord/card":
             self._handle_card_send()
+            return
+        if path == "/discord/editor/exchange":
+            self._handle_editor_exchange()
             return
         self._send_json(404, {"error": "not found"})
 
@@ -868,6 +924,33 @@ class Handler(BaseHTTPRequestHandler):
                 f"_(The review stays open; the edited render becomes a NEW asset version for re-review.)_"
             ),
             "flags": 64}})
+
+    def _handle_editor_exchange(self):
+        """One-time launch-token exchange. Consumes the single-use token
+        immediately and returns the editor session identity. The raw token never
+        leaves this exchange; the editor strips it from its URL via
+        history.replaceState and applies Referrer-Policy: no-referrer."""
+        try:
+            raw = self._read_body()
+            body = json.loads(raw.decode() or "{}")
+        except Exception:
+            self._send_json(400, {"ok": False, "error": "bad json"})
+            return
+        token = body.get("token")
+        if not token:
+            self._send_json(400, {"ok": False, "error": "missing token"})
+            return
+        session = resolve_editor_token(token)
+        if not session:
+            self._send_json(403, {"ok": False, "error": "invalid, consumed, or expired token"})
+            return
+        clip_id = session["clip_id"]
+        job_id, sep, clip_index = clip_id.rpartition(":")
+        if not sep:
+            job_id, clip_index = clip_id, "0"
+        session["job_id"] = job_id
+        session["clip_index"] = clip_index
+        self._send_json(200, {"ok": True, "session": session})
 
     def _handle_modal_submit(self, interaction):
         data = interaction.get("data", {})
