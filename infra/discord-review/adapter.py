@@ -75,6 +75,47 @@ REJECTION_CATEGORIES = [
     "visual_issue", "context_issue", "rights_risk", "other",
 ]
 
+# Deterministic explicit-language terms (display-mask only). Lowercase;
+# matched on full word boundaries. The RAW text is always preserved in the
+# payload / Supabase for traceability — this only masks what is shown on the
+# Discord review card. Never used to silently change a decision.
+EXPLICIT_TERMS = frozenset({
+    # racial/ethnic slurs
+    "nigga", "niggaz", "nigger", "niggers", "nigguh",
+    # homophobic slurs
+    "faggot", "faggots", "fag", "fags",
+    # ableist slurs
+    "retard", "retards", "retarded",
+    # sexist/sexual slurs
+    "cunt", "cunts", "bitch", "bitches",
+    # strong profanity
+    "fuck", "fucking", "fucker", "fucked", "fucks",
+    "shit", "shits", "shitty",
+})
+
+
+def mask_explicit(text):
+    """Return (masked_text, found_terms). Deterministic: replaces any matched
+    explicit term with its first letter followed by asterisks, preserving the
+    raw text everywhere else. No model call; no decision change."""
+    if not text:
+        return text, []
+    found = []
+    seen = set()
+
+    def _repl(m):
+        word = m.group(0)
+        key = word.lower()
+        if key in EXPLICIT_TERMS:
+            if key not in seen:
+                seen.add(key)
+                found.append(key)
+            return word[0] + "*" * (len(word) - 1)
+        return word
+
+    masked = re.sub(r"[A-Za-z]+", _repl, text)
+    return masked, found
+
 # ---------------------------------------------------------------------------
 # Ed25519 verification (Discord spec)
 # ---------------------------------------------------------------------------
@@ -233,10 +274,11 @@ def resolve_clip_review_channel() -> str:
 # ---------------------------------------------------------------------------
 
 def send_review_card(payload: dict):
-    """payload: clip_id, job_id, ready_file, master_asset, youtube_title,
-    caption, hook, overall_score, decision, duration_seconds, source_url,
-    tenant_id, run_id, captions_applied, hook_applied, no_speech,
-    transcript_segment_count, render_version, asset_version."""
+    """payload: clip_id, job_id, ready_file, master_asset, source_title,
+    proposed_shorts_title, caption, hook, overall_score, decision,
+    duration_seconds, source_url, tenant_id, run_id, captions_applied,
+    hook_applied, no_speech, transcript_segment_count, render_version,
+    asset_version, rights_policy (optional), publication_enabled (optional)."""
     clip_id = payload["clip_id"]
     job_id = payload.get("job_id", "")
     ready_file = payload.get("ready_file") or payload.get("master_asset")
@@ -258,29 +300,57 @@ def send_review_card(payload: dict):
 
         # 2) Upload as Discord attachment + post message with buttons.
         #    (multipart/form-data via urllib; file + payload_json)
-        tenant = payload.get("tenant_id") or ""
         approve_id = make_custom_id(clip_id, "approve")
         reject_id  = make_custom_id(clip_id, "reject")
         hold_id    = make_custom_id(clip_id, "hold")
 
+        # Source title vs proposed Shorts title: shown SEPARATELY. The
+        # imported source-video title is NOT the candidate title.
+        source_title = payload.get("source_title") or "Unavailable"
+        proposed_title = payload.get("proposed_shorts_title") or "Not generated"
+
+        # Display safety: mask explicit terms on the card; preserve raw
+        # internally (already persisted in Supabase by the pipeline).
+        hook_raw = payload.get("hook") or ""
+        caption_raw = payload.get("caption") or ""
+        hook_display, hook_terms = mask_explicit(hook_raw)
+        caption_display, caption_terms = mask_explicit(caption_raw)
+        explicit_terms = sorted(set(hook_terms) | set(caption_terms))
+
+        fields = [
+            {"name": "Source title", "value": (source_title or "Unavailable")[:1000], "inline": False},
+            {"name": "Proposed Shorts title", "value": (proposed_title or "Not generated")[:1000], "inline": False},
+            {"name": "Hook", "value": (hook_display or "—")[:400], "inline": False},
+            {"name": "Caption", "value": (caption_display or "—")[:1000], "inline": False},
+            {"name": "LOOM Score", "value": str(payload.get("overall_score", "—")), "inline": True},
+            {"name": "Disposition", "value": str(payload.get("decision") or "—"), "inline": True},
+            {"name": "Duration", "value": f"{payload.get('duration_seconds', '—')}s", "inline": True},
+            {"name": "Source", "value": (payload.get("source_url") or "—")[:800], "inline": False},
+            {"name": "Tenant", "value": str(payload.get("tenant_id") or "—"), "inline": True},
+            {"name": "Run ID", "value": str(payload.get("run_id") or "—"), "inline": True},
+            {"name": "Clip ID", "value": str(clip_id), "inline": True},
+            {"name": "Captions", "value": f"expected={payload.get('captions_expected', '—')} applied={payload.get('captions_applied', '—')}", "inline": True},
+            {"name": "Hook", "value": f"expected={payload.get('hook_expected', '—')} applied={payload.get('hook_applied', '—')}", "inline": True},
+            {"name": "no_speech", "value": str(payload.get("no_speech", False)), "inline": True},
+        ]
+        # Explicit-language warning (visible, structured). Never converts a
+        # policy-risk candidate into publishable; it is display-only.
+        if explicit_terms:
+            fields.append({"name": "⚠️ Explicit language",
+                           "value": "Detected (masked): " + ", ".join(explicit_terms), "inline": False})
+        # Rights/policy warning when already available (never invented here).
+        rights = payload.get("rights_policy")
+        if rights:
+            fields.append({"name": "⚠️ Rights/policy", "value": str(rights)[:400], "inline": False})
+        # Publication status (MVP: always disabled unless explicitly enabled).
+        pub_enabled = bool(payload.get("publication_enabled"))
+        fields.append({"name": "Publication", "value": "enabled" if pub_enabled else "disabled", "inline": True})
+        fields.append({"name": "Versions", "value": f"master={payload.get('master_asset') or '—'} | render={payload.get('render_version') or '—'} | proxy={proxy_name}", "inline": False})
+
         embed = {
-            "title": payload.get("youtube_title") or "Untitled candidate",
+            "title": (proposed_title or "LOOM Candidate")[:256],
             "color": 0xC9A227,  # brass/gold
-            "fields": [
-                {"name": "Caption", "value": (payload.get("caption") or "—")[:1000], "inline": False},
-                {"name": "Hook", "value": (payload.get("hook") or "—")[:400], "inline": False},
-                {"name": "LOOM Score", "value": str(payload.get("overall_score", "—")), "inline": True},
-                {"name": "Disposition", "value": str(payload.get("decision") or "—"), "inline": True},
-                {"name": "Duration", "value": f"{payload.get('duration_seconds', '—')}s", "inline": True},
-                {"name": "Source", "value": (payload.get("source_url") or "—")[:800], "inline": False},
-                {"name": "Tenant", "value": str(payload.get("tenant_id") or "—"), "inline": True},
-                {"name": "Run ID", "value": str(payload.get("run_id") or "—"), "inline": True},
-                {"name": "Clip ID", "value": str(clip_id), "inline": True},
-                {"name": "Captions", "value": f"expected={payload.get('captions_expected', '—')} applied={payload.get('captions_applied', '—')}", "inline": True},
-                {"name": "Hook", "value": f"expected={payload.get('hook_expected', '—')} applied={payload.get('hook_applied', '—')}", "inline": True},
-                {"name": "no_speech", "value": str(payload.get("no_speech", False)), "inline": True},
-                {"name": "Versions", "value": f"master={payload.get('master_asset') or '—'} | render={payload.get('render_version') or '—'} | proxy={proxy_name}", "inline": False},
-            ],
+            "fields": fields,
         }
 
         components = [{
@@ -415,13 +485,17 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path == "/health":
+        path = self.path.rstrip("/") or "/"
+        if path == "/health":
             self._send_json(200, {"status": "ok"})
             return
-        if self.path == "/discord/interactions":
+        # Tailscale Funnel --set-path strips the public prefix before proxying,
+        # so the adapter sees "/" for the public /discord/interactions route.
+        # Accept both the bare root and the full path.
+        if path in ("/discord/interactions", "/"):
             self._handle_interaction()
             return
-        if self.path == "/discord/card":
+        if path == "/discord/card":
             self._handle_card_send()
             return
         self._send_json(404, {"error": "not found"})
