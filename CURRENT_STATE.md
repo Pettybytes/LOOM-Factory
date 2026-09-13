@@ -130,3 +130,18 @@ confirmed nonempty; values never printed/committed.
 00 `IYB1Pp8cTMrghaoK`, 01 `Vttea1FqX4TVn4yH`, 02 `6RNa6TXeppCQ7bhh`,
 03 `x1ZYzsLc6Jaow0Wm`, 04 `3yUBe8H14TjwDCGw` — all `active=True`. Jasmine/Derm
 workflows untouched.
+
+## Commit / push status (this session)
+- **LOOM-Factory repo (pushed):** `cfc16f6` on `master` →
+  `github.com/Pettybytes/LOOM-Factory`. Includes the adapter
+  (`infra/discord-review/`), Caddyfile, sanitized workflow exports, and this
+  handoff.
+- **OpenShorts repo (local-only commit, NOT pushed):** `9c4450a` on branch
+  `loom/factory-mvp-baseline-fixes`. Push to `origin`
+  (`github.com/mutonby/openshorts`) returned 403 — this clone's only remote is
+  the upstream repo and `Pettybytes` has no push permission / no fork remote
+  configured. Same local-only state as prior sessions on this branch. To
+  publish: fork `mutonby/openshorts` and add it as a remote, or open a PR.
+  (Note: `docker-compose.yml` + `security_utils.py` also remain locally
+  modified — pre-existing changes from prior LOOM sessions, not made this
+  session.)
