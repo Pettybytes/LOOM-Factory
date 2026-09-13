@@ -2,13 +2,18 @@
 -- Idempotent: repeated runs resolve to the same row (upsert on identity key).
 -- This file records a real, verified GHL Media Storage object (not a fabricated record).
 --
--- Verified 2026-09-13 (read-only):
---   retrieval HTTP 200, size 13,821,831 bytes (matches GHL size field exactly),
---   sha256 = 2b0b1e2ae88c877148b790b8057ef6adcf1c7fa5162a9bbf61ef876ca0f6dfed.
+-- Identity resolution (verified 2026-09-13):
+--   LOOM candidate identity is ZERO-BASED: clip_id = "<uuid>:<clip_index>".
+--   clip_index=0 -> OpenShorts "clip_1" (first short); clip_index=1 -> "clip_2" (second short).
+--   This asset: clip_id = 6c46c3ef-…:1  =>  clip_index=1, human/display ordinal=2.
+--   Authoritative OpenShorts render: subtitled_…_clip_2.mp4 ("I'm clownin'" candidate).
+--   The GHL filename token "clip1" is the zero-based clip_index=1 (technically consistent).
 --
--- Identity note: clip_id uses the same "<uuid>:<index>" form as loom_reviews /
--- CURRENT_STATE.md ("6c46c3ef-...:1"); asset_version "r1" derives from the
--- filename token "r1_0". GHL folder/media IDs are the live values.
+-- Content match (verified, read-only): size 13,821,831 bytes and sha256
+--   2b0b1e2ae88c877148b790b8057ef6adcf1c7fa5162a9bbf61ef876ca0f6dfed
+--   are byte-identical to openshorts/output/6c46c3ef-…/subtitled_…_clip_2.mp4.
+--
+-- storage_status='fixture' = storage-acceptance only, NOT publication-approved.
 
 insert into public.loom_media (
   tenant_id, clip_id, asset_version, file_hash, size_bytes,
@@ -17,7 +22,7 @@ insert into public.loom_media (
 ) values (
   'dreemzy',
   '6c46c3ef-5eba-40bc-9b50-8f3457d1db79:1',
-  'r1',
+  'render-1.0',
   '2b0b1e2ae88c877148b790b8057ef6adcf1c7fa5162a9bbf61ef876ca0f6dfed',
   13821831,
   'GNhV1OyhFLzcl67XwTBV',
@@ -25,7 +30,7 @@ insert into public.loom_media (
   '6aa61533c9a6c7937b6a3f6f',
   'dreemzy__6c46c3ef-5eba-40bc-9b50-8f3457d1db79__clip1__r1_0.mp4',
   'https://assets.cdn.filesafe.space/GNhV1OyhFLzcl67XwTBV/media/6fd1f93b-b143-4b0f-abfe-4556b9b29a37.mp4',
-  'uploaded'
+  'fixture'
 )
 on conflict (tenant_id, clip_id, asset_version) do update set
   file_hash = excluded.file_hash,
@@ -33,4 +38,5 @@ on conflict (tenant_id, clip_id, asset_version) do update set
   ghl_media_id = excluded.ghl_media_id,
   ghl_filename = excluded.ghl_filename,
   canonical_url = excluded.canonical_url,
+  storage_status = excluded.storage_status,
   updated_at = now();

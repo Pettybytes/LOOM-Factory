@@ -1192,3 +1192,15 @@ LOOM’s advantage is not volume alone. It is the combination of:
 Every new component must either complete the current spine, satisfy a documented business requirement, or fix a measured defect.
 
 No feature enters production merely because it is impressive.
+
+## Media filename naming contract (Segment 5A, 2026-09-13)
+
+Candidate identity is **zero-based** and must never be confused with the
+one-based renderer filename ordinal.
+
+- `clip_id = <job_id>:<clip_index>` (zero-based). `:0` = first short, `:1` = second short.
+- OpenShorts renderer filenames are **one-based**: `clip_1` = `:0`, `clip_2` = `:1`.
+- GHL media filenames must disambiguate explicitly, e.g.:
+  `index-01__ordinal-02__render-1.0`  (zero-based index, human ordinal, render version).
+- `asset_version` uses the `render-<major>.<minor>` form (e.g. `render-1.0`).
+- `storage_status='fixture'` = storage-acceptance only; NOT publication-approved.
