@@ -1,5 +1,5 @@
--- LOOM Segment 7 (editor): atomic, immutable version registration (Step 4).
--- Idempotent: safe to re-run. No secret values.
+-- LOOM Stage 2 — Editor (Discord-centered OpenShorts): atomic, immutable
+-- version registration (Step 4). Idempotent: safe to re-run. No secret values.
 --
 -- One transactional RPC registers an edited render as a NEW asset_version:
 --   * never overwrites the source asset or mutates its approval;
@@ -130,14 +130,22 @@ begin
 end;
 $$;
 
--- Expose via Supabase REST /rpc (service role + anon for the local adapter).
+-- Security: this RPC is server-side ONLY. The browser/Discord Activity NEVER
+-- calls it directly — it calls the adapter's /discord/editor/complete, which
+-- validates the active session and invokes the RPC with the service_role key.
+-- PUBLIC and anon are explicitly revoked; only service_role may execute.
+revoke execute on function public.register_edited_asset(
+  uuid, text, text, bigint, numeric, numeric, jsonb, jsonb, text, boolean, jsonb,
+  text, text, text, text, text
+) from public, anon;
+
 grant execute on function public.register_edited_asset(
   uuid, text, text, bigint, numeric, numeric, jsonb, jsonb, text, boolean, jsonb,
   text, text, text, text, text
-) to anon, authenticated, service_role;
+) to service_role;
 
 comment on function public.register_edited_asset(
   uuid, text, text, bigint, numeric, numeric, jsonb, jsonb, text, boolean, jsonb,
   text, text, text, text, text
 ) is
-  'Atomic, idempotent edited-asset registration (Segment 7 Step 4). Allocates the next asset_version deterministically, writes lineage + immutable correction log, and marks the edit session completed in one transaction. The new asset is final_review_pending — never approved, never promoted, never distributed.';
+  'Atomic, idempotent edited-asset registration (Stage 2 Editor Step 4, server-side only). Allocates the next asset_version deterministically, writes lineage + immutable correction log, and marks the edit session completed in one transaction. The new asset is final_review_pending — never approved, never promoted, never distributed. Execute is restricted to service_role; the browser/Activity never calls this directly.';

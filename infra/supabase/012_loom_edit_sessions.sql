@@ -1,5 +1,5 @@
--- LOOM Segment 7 (Discord-centered editor): edit sessions, correction log,
--- and asset-version lineage. Idempotent: safe to re-run. No secret values.
+-- LOOM Stage 2 — Editor (Discord-centered OpenShorts): edit sessions,
+-- correction log, and asset-version lineage. Idempotent: safe to re-run. No secrets.
 --
 -- The editor is a lightweight MANUAL correction interface (trim/reframe/caption),
 -- NOT a full nonlinear editor. OpenShorts has no manual timeline editor today;

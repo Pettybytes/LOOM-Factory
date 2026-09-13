@@ -51,8 +51,8 @@ Construction is not runtime proof.
 
 **Current stage:** Stage 1 — Factory Spine
 **Current segment:** Segment 6B — GHL Social Planner Distribution (ACCEPTED)
-**Current subsegment:** none — 6B accepted; next Stage 1 priority is the Discord-centered OpenShorts editor (bounded inspection first)
-**Next segment:** Stage 1 priority — Discord-centered OpenShorts editor (add Edit to Approve/Reject/Hold)
+**Current subsegment:** none — 6B accepted; next work is the Stage 2 Discord-centered OpenShorts editor (active)
+**Next segment:** Stage 2 — Discord-Centered OpenShorts Editor (add Edit to Approve/Reject/Hold)
 **Runtime execution approval:** Segment 6B accepted on combined evidence (automated harness + Workflow 05 exec `10296` `already_distributed`, zero GHL). Workflow 05 Create Post/reconciliation branches are statically implemented; first workflow-native runtime proof awaits the first genuine approved asset.
 
 **Roadmap changes (2026-09-13, authorized):** Segment 6C Scheduling Rules moved to Stage 2 (Stage 1 keeps only minimum publish-mode/time validation via G12). Added Stage 2 "Automated Discord Tenant Provisioning" (one bot, tenant categories/channels auto-created, channel IDs in tenant config, cards routed by `tenant_id`, one shared interaction endpoint, keep `#clip-review` for Stage 1).

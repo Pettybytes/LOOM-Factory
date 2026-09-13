@@ -322,6 +322,38 @@ def resolve_editor_token(token: str):
     }
 
 
+def resolve_edit_session(edit_session_id: str):
+    """Pre-flight session validation before the version RPC. The session must
+    exist, be 'active', and have its launch token already consumed (i.e. it went
+    through the one-time exchange). Returns the session identity or None. The RPC
+    re-validates under its own advisory lock; this is defense-in-depth so the
+    adapter never blindly forwards an arbitrary edit_session_id."""
+    url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
+           f"?id=eq.{edit_session_id}&status=eq.active&select=*")
+    req = Request(url, headers=_supabase_headers(), method="GET")
+    with urlopen(req, timeout=15) as resp:
+        rows = json.loads(resp.read().decode() or "[]")
+    if not rows:
+        return None
+    row = rows[0]
+    if not row.get("consumed_at"):
+        return None  # launch token was never exchanged — reject
+    expires_at = row.get("expires_at")
+    if expires_at:
+        try:
+            exp = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if exp < datetime.now(timezone.utc):
+                return None
+        except Exception:
+            pass
+    return {
+        "edit_session_id": row.get("id"),
+        "tenant_id": row.get("tenant_id"),
+        "clip_id": row.get("clip_id"),
+        "source_asset_version": row.get("source_asset_version"),
+    }
+
+
 def register_edited_asset_rpc(payload: dict):
     """Call the atomic register_edited_asset RPC (one transaction: next
     asset_version + lineage row + immutable correction log + session complete)."""
@@ -986,6 +1018,14 @@ class Handler(BaseHTTPRequestHandler):
         edit_session_id = body.get("edit_session_id")
         if not edit_session_id:
             self._send_json(400, {"ok": False, "error": "missing edit_session_id"})
+            return
+
+        # Pre-flight: validate the active, already-exchanged session before
+        # invoking the RPC. The browser/Discord Activity NEVER calls the RPC
+        # directly — only this endpoint does, after validation.
+        session = resolve_edit_session(edit_session_id)
+        if not session:
+            self._send_json(403, {"ok": False, "error": "invalid or inactive editor session"})
             return
 
         rpc_payload = {

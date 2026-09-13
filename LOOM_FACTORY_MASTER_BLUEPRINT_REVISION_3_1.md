@@ -366,6 +366,18 @@ Multi-tenant Discord QC without manual per-tenant wiring:
 
 **Victory:** A new tenant's Discord review lane is provisioned by configuration, not by hand-creating channels and webhooks.
 
+### Stage 2 — Discord-Centered Editor (OpenShorts) — ACTIVE (2026-09-13)
+
+Lightweight manual correction interface launched from the Discord review card's
+"Edit" action (adds Edit to Approve/Reject/Hold). Reuses OpenShorts transcript/
+scenes/EDL/reframe/subtitle/rerender; adds trim + caption + reframe controls and
+an immutable rerender that mints a NEW `asset_version` (never overwrites the
+source) and returns to `final_publication` review. Single-use 15-min editor token
+(hash-only, server-side only); browser deep-link scaffold → Discord Activity embed.
+
+**Victory:** Bryan edits a reviewed clip from Discord; the edited render becomes a
+new, re-reviewable asset version without touching the original.
+
 ### Segment 9 — Topic Intelligence — PLANNED
 
 - Monitor recent velocity, channel outliers, recurrence, freshness, saturation, emotional strength, Bryan fit, and advertiser suitability.
