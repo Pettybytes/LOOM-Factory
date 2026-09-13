@@ -14,10 +14,10 @@ index 207759a..a76488f 100644
    <link rel="preconnect" href="https://fonts.googleapis.com" />
 diff --git a/dashboard/src/components/ManualTrimEditor.jsx b/dashboard/src/components/ManualTrimEditor.jsx
 new file mode 100644
-index 0000000..4e57a3d
+index 0000000..1d19786
 --- /dev/null
 +++ b/dashboard/src/components/ManualTrimEditor.jsx
-@@ -0,0 +1,364 @@
+@@ -0,0 +1,375 @@
 +import React, { useState, useEffect, useRef, useCallback } from 'react';
 +import { getApiUrl } from '../config';
 +import { apiFetch } from '../lib/api';
@@ -41,6 +41,17 @@ index 0000000..4e57a3d
 +  const v = videoRef.current;
 +  if (!v) return;
 +  try { v.currentTime = Math.max(0, Number(t)); } catch (_) { /* ignore */ }
++}
++
++// Normalize an OpenShorts render-output URL to a safe basename (the shared
++// contract with the adapter's normalize_ready_file). URL-parse + decode the
++// pathname; never naive string splitting.
++function outputBasename(url) {
++  if (!url) return '';
++  try {
++    const u = new URL(url, 'http://localhost');
++    return decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || '');
++  } catch (_) { return ''; }
 +}
 +
 +export default function ManualTrimEditor() {
@@ -217,7 +228,7 @@ index 0000000..4e57a3d
 +          llm_assist_used: false,
 +          edl_metadata: { caption_applied: captionApplied, framing, segments },
 +          job_id,
-+          ready_file: rrData?.filename || rrData?.ready_file || '',
++          ready_file: outputBasename(rrData?.new_video_url),
 +          duration_seconds: Number(trimEnd) - Number(trimStart),
 +          correction_summary: buildSummary(caption_changes, crop_reframe_changes),
 +        }),

@@ -323,13 +323,12 @@ def resolve_editor_token(token: str):
 
 
 def resolve_edit_session(edit_session_id: str):
-    """Pre-flight session validation before the version RPC. The session must
-    exist, be 'active', and have its launch token already consumed (i.e. it went
-    through the one-time exchange). Returns the session identity or None. The RPC
-    re-validates under its own advisory lock; this is defense-in-depth so the
-    adapter never blindly forwards an arbitrary edit_session_id."""
+    """Resolve an editor session (active OR completed) to its identity. A
+    completed session is resolved for idempotent completion replay — never
+    reopened for new mutations. Requires the launch token to have been consumed
+    (consumed_at set). Returns the session identity + status + target, or None."""
     url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
-           f"?id=eq.{edit_session_id}&status=eq.active&select=*")
+           f"?id=eq.{edit_session_id}&select=*")
     req = Request(url, headers=_supabase_headers(), method="GET")
     with urlopen(req, timeout=15) as resp:
         rows = json.loads(resp.read().decode() or "[]")
@@ -338,20 +337,51 @@ def resolve_edit_session(edit_session_id: str):
     row = rows[0]
     if not row.get("consumed_at"):
         return None  # launch token was never exchanged — reject
-    expires_at = row.get("expires_at")
-    if expires_at:
-        try:
-            exp = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-            if exp < datetime.now(timezone.utc):
-                return None
-        except Exception:
-            pass
     return {
         "edit_session_id": row.get("id"),
         "tenant_id": row.get("tenant_id"),
         "clip_id": row.get("clip_id"),
         "source_asset_version": row.get("source_asset_version"),
+        "status": row.get("status"),
+        "target_asset_version": row.get("target_asset_version"),
     }
+
+
+def normalize_ready_file(ready_file, job_id):
+    """Normalize a rendered-output reference to a safe, existing basename within
+    the job's output directory. Rejects path traversal, separators, unexpected
+    origins, and files outside the job directory. Returns the basename or None."""
+    if not ready_file or not job_id:
+        return None
+    from urllib.parse import urlparse, unquote
+    s = str(ready_file).strip()
+    # If a URL/path was passed (defense in depth), reduce to its pathname basename.
+    if s.startswith("/") or "://" in s:
+        parsed = urlparse(s)
+        if parsed.scheme and parsed.netloc and parsed.netloc.split(":")[0] not in ("127.0.0.1", "localhost"):
+            return None
+        s = os.path.basename(unquote(parsed.path))
+    base = os.path.basename(s)
+    if (not base or base in (".", "..") or base != s
+            or "/" in base or "\\" in base):
+        return None
+    full = os.path.join(OPENSHORTS_OUTPUT, job_id, base)
+    if not os.path.exists(full):
+        return None
+    return base
+
+
+def check_existing_card(tenant_id, clip_id, asset_version):
+    """Return existing final_publication review-token rows (with delivery
+    status) for the exact tenant/clip/asset_version — used to prevent a
+    duplicate review token / Discord card on replay."""
+    url = (f"{SUPABASE_URL}/rest/v1/loom_review_tokens"
+           f"?tenant_id=eq.{tenant_id}&clip_id=eq.{clip_id}"
+           f"&asset_version=eq.{asset_version}&review_stage=eq.final_publication"
+           f"&select=id,status,discord_message_id")
+    req = Request(url, headers=_supabase_headers(), method="GET")
+    with urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode() or "[]")
 
 
 def register_edited_asset_rpc(payload: dict):
@@ -1007,7 +1037,8 @@ class Handler(BaseHTTPRequestHandler):
         """Finalize an edit: atomically register the new asset_version (RPC) and
         send a fresh final_publication review card for that exact version. The
         edited render is NOT promoted/approved/distributed — it is
-        final_review_pending until the new card is approved."""
+        final_review_pending until the new card is approved. Replay-safe:
+        completed sessions resolve idempotently and never duplicate a card."""
         try:
             raw = self._read_body()
             body = json.loads(raw.decode() or "{}")
@@ -1020,9 +1051,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": "missing edit_session_id"})
             return
 
-        # Pre-flight: validate the active, already-exchanged session before
-        # invoking the RPC. The browser/Discord Activity NEVER calls the RPC
-        # directly — only this endpoint does, after validation.
+        # Resolve the session (active OR completed for idempotent replay).
         session = resolve_edit_session(edit_session_id)
         if not session:
             self._send_json(403, {"ok": False, "error": "invalid or inactive editor session"})
@@ -1050,24 +1079,35 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(502, {"ok": False, "error": f"registration failed (status {status})"})
             return
 
-        # Idempotent replay: the session was already completed; no new card.
-        if result.get("idempotent"):
-            self._send_json(200, {"ok": True, "idempotent": True, "result": result})
+        target_version = result.get("asset_version")
+        tenant_id = result.get("tenant_id") or session.get("tenant_id")
+        clip_id = result.get("clip_id") or session.get("clip_id")
+
+        # Card dedup: if a final_publication card already exists for this exact
+        # tenant/clip/asset_version, return the existing delivery — no duplicate.
+        existing = check_existing_card(tenant_id, clip_id, target_version)
+        delivered = [c for c in existing if c.get("discord_message_id")] if isinstance(existing, list) else []
+        if delivered:
+            self._send_json(200, {"ok": True, "idempotent": True,
+                                 "card": {"already_delivered": True,
+                                          "message_id": delivered[0].get("discord_message_id")},
+                                 "result": result})
             return
 
-        new_version = result.get("asset_version")
-        source_version = result.get("source_asset_version")
-        clip_id = result.get("clip_id")
-        tenant_id = result.get("tenant_id")
-        job_id = body.get("job_id", "")
-        ready_file = body.get("ready_file", "")
+        # Normalize + verify the rendered file exists before sending the card.
+        ready_file = normalize_ready_file(body.get("ready_file"), body.get("job_id", ""))
+        if not ready_file:
+            self._send_json(502, {"ok": False, "error": "rendered file not found or invalid"})
+            return
 
+        source_version = result.get("source_asset_version") or session.get("source_asset_version")
+        job_id = body.get("job_id", "")
         try:
             card = send_review_card({
                 "clip_id": clip_id,
                 "job_id": job_id,
                 "tenant_id": tenant_id,
-                "asset_version": new_version,
+                "asset_version": target_version,
                 "review_stage": "final_publication",
                 "ready_file": ready_file,
                 "proposed_shorts_title": body.get("proposed_title") or "Edited candidate",
@@ -1076,7 +1116,7 @@ class Handler(BaseHTTPRequestHandler):
                 "overall_score": body.get("overall_score") or "—",
                 "duration_seconds": body.get("duration_seconds") or 0,
                 "source_url": body.get("source_url") or "—",
-                "lineage": f"{source_version} → {new_version}",
+                "lineage": f"{source_version} → {target_version}",
                 "correction_summary": body.get("correction_summary") or "manual edit (trim/reframe/caption)",
             })
         except Exception as e:
