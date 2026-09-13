@@ -115,8 +115,8 @@ Secret values never belong in this blueprint. The regenerated September 8, 2026 
 ## 4. Current location
 
 **Current stage:** Stage 1 — Factory Spine  
-**Current segment:** Segment 3 — n8n Callback-First Orchestration  
-**Exact position:** 3D and 3E were Bentley-reported as constructed, but Workflow 03 contains the superseded polling design. The next authorized engineering work is the narrow callback correction, followed by one controlled end-to-end acceptance run.
+**Current segment:** Segment 6B — GHL Social Planner Distribution (ACCEPTED)  
+**Exact position:** Segment 6B accepted on combined evidence (automated harness: Create Post → unlisted YouTube → reconciliation → durable receipt; plus Workflow 05 exec `10296`: tenant-driven existing-receipt lookup → `already_distributed`, zero GHL calls, no duplicate). Next Stage 1 priority: the Discord-centered OpenShorts editor (bounded inspection first). Workflow 05's Create Post/reconciliation branches are statically implemented and receive their first workflow-native runtime proof with the first genuine approved asset.
 
 ### Progress snapshot
 
@@ -124,11 +124,16 @@ Secret values never belong in this blueprint. The regenerated September 8, 2026 
 |---|---|---|
 | 0 — Machine Preparation | Complete | Runtime verified |
 | 1 — OpenShorts Baseline | Complete | Runtime verified |
-| 2 — OpenRouter/Qwen Scoring | Functionally complete; one calibration run open | Runtime verified before final static prompt correction |
-| 3 — n8n Orchestration | In progress | 3A–3C runtime verified; 3D/3E require verification/correction |
-| 4 — Discord QC | In progress/blocked by Segment 3 | Server exists; 4B Bryan-reported; 4C/4D pending |
-| 5–8 | Locked/pending | Not yet built |
-| 9–16 | Planned | Newly minted Ranking/Reaction Engine |
+| 2 — OpenRouter/Qwen Scoring | Complete | Runtime verified |
+| 3 — n8n Orchestration (ingest) | Complete | Runtime verified; closed — not reopened |
+| 4 — Discord QC | Complete | Runtime verified end-to-end (signed Hold) |
+| 5 — GHL Media Storage | Complete | Runtime verified (storage-acceptance fixture) |
+| 6A — Tenant Distribution Mapping | Complete | Runtime verified (Dreemzy YouTube) |
+| 6B — Distribution | Accepted | Combined evidence: harness + exec 10296 `already_distributed` |
+| 6C — Scheduling rules | Moved to Stage 2 | Stage 1 keeps min publish-mode/time validation (G12) |
+| 6D — Distribution receipt | Pending | Schema live; reconciliation static-verified |
+| 7–8 | Pending | Not yet built |
+| 9–16 (+ tenant provisioning) | Planned | Ranking/Reaction Engine |
 | 17–33 | Planned/deferred by entry gates | Evidence-led improvement and scale |
 
 ## 5. Stage 1 — Factory Spine
@@ -291,14 +296,9 @@ Validate format, title/caption, selected account, schedule, public result, and r
 
 The matrix must also validate platform-specific duration and monetization rules. Do not force every clip to one duration. Maintain a tested mix of concise retention-first Shorts and, where the current platform program requires it, eligible 60+ second outputs.
 
-#### 6C — Scheduling rules
+#### 6C — Scheduling rules — MOVED TO STAGE 2 (2026-09-13)
 
-- Tenant timezone and approved windows
-- Configurable spacing, including a 45-minute test cadence
-- Daily account maximums
-- Duplicate prevention
-- Platform-specific metadata
-- Failure notification
+Full scheduling rules — tenant timezone/approved windows, configurable spacing (including the 45-minute test cadence), daily account maximums, duplicate prevention, platform-specific metadata, and failure notification — are deferred to Stage 2. Stage 1 preserves only the minimum explicit publish-mode/time validation: a schedule date, when present, must be a valid ISO-8601 timestamp, and publish mode must be an explicit supported value. This is enforced by the distribution workflow's preflight gate (G12) only.
 
 #### 6D — Distribution receipt
 
@@ -351,6 +351,20 @@ Campaign opportunity alerts and marketplace monitoring are a later input adapter
 ## 6. Stage 2 — Ranking and Reaction Growth Engine
 
 **Mission:** Turn proven viral interests into a daily reaction queue and multiple publishable ranking/reaction Shorts without replacing the Stage 1 spine.
+
+### Automated Discord Tenant Provisioning — PLANNED (Stage 2, added 2026-09-13)
+
+Multi-tenant Discord QC without manual per-tenant wiring:
+
+- One LOOM Discord bot/application.
+- Automatically create tenant categories and review channels.
+- Store channel IDs in tenant configuration.
+- Route review cards dynamically by `tenant_id`.
+- One shared interaction endpoint (the existing `/discord/interactions` funnel) — no per-tenant webhook.
+- Avoid one manually configured webhook per tenant/channel.
+- Keep the existing shared `#clip-review` channel for Stage 1.
+
+**Victory:** A new tenant's Discord review lane is provisioned by configuration, not by hand-creating channels and webhooks.
 
 ### Segment 9 — Topic Intelligence — PLANNED
 
