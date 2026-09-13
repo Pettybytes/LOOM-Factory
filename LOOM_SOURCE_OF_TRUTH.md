@@ -50,9 +50,18 @@ Construction is not runtime proof.
 # Current Position
 
 **Current stage:** Stage 1 — Factory Spine
-**Current segment:** Segment 3 — Callback-First n8n Orchestration
-**Current subsegment:** Segment 3E — Final Callback Cleanup
-**Runtime execution approval:** Not granted
+**Current segment:** Segment 4 — Discord QC (COMPLETE, runtime verified)
+**Current subsegment:** Segment 4D — Durable Decision Record (verified)
+**Next segment:** Segment 5A — GHL Media Storage
+**Runtime execution approval:** Granted for the single controlled Segment 3 acceptance + Segment 4 Discord QC (completed)
+
+## Current immediate objective
+
+Segment 4 is complete: the native Discord review gate is runtime-verified
+end-to-end (bot card → signed button click → durable Hold decision → card
+update + disabled controls). Next is Segment 5A — GHL Media Storage —
+beginning with GHL authentication and the media-upload plane, only after the
+(now-proven) decision gate.
 
 ## Current immediate objective
 
@@ -364,9 +373,9 @@ Collect and normalize performance, improve source/topic selection, improve bound
 | 3E — Callback-First Orchestrator              | In progress                                      | Polling removed; callback constructed; final three-item cleanup underway |
 | Segment 3 Acceptance Test                     | Pending                                          | Runtime approval not granted                                             |
 | 4A — Qwen 0–100 Calibration                   | Static correction complete                       | Runtime check pending                                                    |
-| 4B — Discord Candidate Card                   | Bryan reported complete                          | Current runtime verification pending                                     |
-| 4C — Approve/Reject/Hold/Retry                | Pending                                          | Not built/verified                                                       |
-| 4D — Durable Decision Record                  | Pending                                          | Supabase implementation pending                                          |
+| 4B — Discord Candidate Card                   | Complete                                         | Runtime verified (bot-delivered card w/ attachment + buttons)            |
+| 4C — Approve/Reject/Hold/Retry                | Complete                                         | Runtime verified (Bryan clicked Hold once; signed path verified)         |
+| 4D — Durable Decision Record                  | Complete                                         | Runtime verified (one Hold persisted to Supabase loom_reviews, idempotent)|
 | 5 — GHL Media Storage                         | Pending                                          | Not started                                                              |
 | 6 — GHL Social Planner Distribution           | Pending                                          | Not started                                                              |
 | 7 — Tenant Control Plane                      | Pending                                          | Not started                                                              |
@@ -566,25 +575,61 @@ None of these have been runtime-verified. Workflow 03 remains inactive.
 
 # Segment 4 — Discord QC
 
+## Runtime verification — COMPLETE (2026-09-13)
+
+Segment 4 is complete and runtime-verified end-to-end with a real Discord
+interaction. Evidence:
+
+- **4B Candidate card** — bot-delivered to #clip-review (message
+  `1548515929871360020`) with a Docker-independent review-proxy attachment
+  (16.37 MB MP4, plays from Discord CDN, no localhost) and genuine
+  Approve/Reject/Hold buttons (opaque `custom_id`, no secrets).
+- **4C Approve/Reject/Hold** — Bryan personally clicked **Hold** exactly once
+  (2026-09-13 02:52 UTC). Discord's signed interaction reached the adapter via
+  the public Interactions Endpoint (`https://users-macbook-pro-1.taild000b2.ts.net/discord/interactions`),
+  was Ed25519-verified over the raw body, acknowledged within Discord's 3s
+  deadline (card updated ~1s later), and resolved the correct clip
+  (`6c46c3ef-…:1`), tenant (`loom-acceptance-test`), and reviewer
+  (`passportpetty#688976899094872148`).
+- **4D Durable decision record** — exactly one Hold decision
+  (`final_status: on_hold`) persisted to Supabase `loom_reviews`; n8n's
+  review-decision webhook re-persisted idempotently. First-terminal-decision-wins
+  is enforced AT THE DATABASE LEVEL (`ON CONFLICT (clip_id) DO NOTHING`), so a
+  repeated delivery or duplicate click cannot create or overwrite a second
+  terminal decision. The card was edited to show the decision/reviewer/timestamp
+  and its controls were disabled. No publication, GHL upload, retry, model call,
+  or media regeneration occurred (`publication_enabled: false` throughout).
+- The clearly-labeled test decision was **removed after recording evidence**;
+  `loom_reviews` is empty. Bryan has NOT made a production review decision.
+
+**Next: Segment 5A — GHL Media Storage** (GHL authentication + media upload
+plane; only after the decision gate, which is now proven).
+
 ## Current Discord state
 
 * Server: `Clippy Factory`
 * LOOM Factory alerts webhook rotated by Bryan.
 * Updated n8n Discord credential saved successfully.
-* Bryan authorized a labeled LOOM test candidate card on 2026-09-11. The send was attempted via the `LOOM Discord Alerts` webhook (blocked on a Discord v2 node `operation` parameter error — the node config is identical to the working `Send Discord Alert` node, but a fresh copy throws `Could not get parameter "operation"` at the router).
+* Public Interactions Endpoint URL registered and accepted by Discord
+  (2026-09-13): `https://users-macbook-pro-1.taild000b2.ts.net/discord/interactions`.
+* Adapter (`infra/discord-review/adapter.py`) supervised via `supervise.sh`.
 
 ## Candidate card fields
 
 Every candidate must show:
 
 * Preview or URL
-* Source
-* Hook
+* Source title (full source-video title)
+* Proposed Shorts title (candidate-specific; "Not generated" when absent)
+* Hook (explicit-language masked on the card; raw preserved internally)
 * Proposed caption
 * LOOM score
 * Duration
 * Tenant
 * Run ID
+* Caption/hook status
+* Explicit-language warning (when detected)
+* Publication status (disabled in MVP)
 
 ## Human actions
 
