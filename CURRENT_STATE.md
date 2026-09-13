@@ -9,14 +9,14 @@
 > **GHL post ID:** `6aa63853d1928cc532472362` · **Receipt ID:** `76abb31d-effd-492b-b03c-3fdd9524c0d0`
 > **Safety:** `entitled=false`, `enabled_for_distribution=false` (fail-closed — both gates remain false)
 > **Migration 010:** applied — **runtime verified** (`publisher_user_id` = `uT8mleycXWhVCWcGw3f6` present on the single Dreemzy/YouTube row)
-> **Migration 011 (`011_loom_media_content_type.sql`):** written + committed — **PENDING manual application in SQL Editor** (DDL not reachable via REST). Fail-closed: `loom_media.content_type` does not exist yet, so the MIME gate rejects until applied + a real asset's `content_type` is populated.
+> **Migration 011 (`011_loom_media_content_type.sql`):** **applied + runtime verified** (2026-09-13) — `loom_media.content_type` column exists; both existing rows (`fixture` + `loom-distribution-test:0`) are `NULL` (fail-closed, no guessed MIME). A real approved asset must populate `content_type` from the GHL media-library `contentType` during storage verification.
 > **Credentials wired (IDs only, no secret values in JSON):** GHL Social Planner PIT (`LOOM GHL Social Planner (Dreemzy)`, on `Create Post` + `Reconcile Post (GHL posts/list)`) + `LOOM Supabase` (reused on 5 Supabase nodes: 4 lookups + `Record Receipt`). Both gates remain `false`; **zero executions, zero publications**.
 > **First next action (runtime test):** use the EXISTING receipt identity only (tenant `dreemzy`, proof clip/asset) to prove the no-duplicate guard returns `already_distributed` — without another YouTube upload.
-> **Remaining before 6C:** apply migration 011 (SQL Editor) → runtime-verify Workflow 05 end-to-end.
+> **Remaining before 6C:** runtime-verify Workflow 05 end-to-end (existing-receipt no-duplicate guard first, then a real approved asset).
 > **Live deps:** Discord review adapter (`infra/discord-review/supervise.sh`) · GHL PIT token (single-location) · Supabase `edtcewkvnxrlzhqebayr`
 > *(no credential values here)*
 
-*Updated: 2026-09-13 (EDT) — Segments 3/4/5/6A complete; Segment 6B API runtime-verified via manual harness; migration 010 runtime-verified; Workflow 05 corrected (receipt short-circuit + reconciliation + MIME gate, 20 nodes) + credentials wired (inactive, guarded, zero executions, not yet runtime-verified); migration 011 written (pending SQL Editor)*
+*Updated: 2026-09-13 (EDT) — Segments 3/4/5/6A complete; Segment 6B API runtime-verified via manual harness; migration 010 runtime-verified; migration 011 applied + runtime-verified; Workflow 05 corrected (receipt short-circuit + reconciliation + MIME gate, 20 nodes) + credentials wired (inactive, guarded, zero executions, not yet runtime-verified)*
 
 ## ✅ Segment 4 — Discord QC — COMPLETE (runtime verified end-to-end)
 
