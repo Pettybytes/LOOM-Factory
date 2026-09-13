@@ -3,20 +3,21 @@
 > ## 🚀 START HERE NEXT SESSION
 > **Repository:** `/Users/user/Desktop/LOOM-Factory` · **Remote:** `Pettybytes/LOOM-Factory`
 > **Completed segments:** 3 (ingest) · 4 (Discord QC) · 5 (GHL media storage) · 6A (tenant mapping)
-> **6B status:** API contract **runtime-verified via a manual curl harness**; `Workflow 05` **corrected + fully implemented (receipt check BEFORE create-auth gates → idempotent replay; POST /posts/list reconciliation; canonical MIME gate) but INACTIVE / not yet runtime-verified**
-> **Workflow 05 n8n ID:** `9eYbHX8ryps46lH0` (20 nodes; inactive; receipt router runs **before** media/MIME/entitlement → `already_distributed`/`failed` short-circuit + reconciliation paths; MIME/create-auth gates fire only on the `none` branch)
+> **6B status:** API contract **runtime-verified via a manual curl harness**; `Workflow 05` **corrected + fully implemented (receipt check BEFORE create-auth gates → idempotent replay; POST /posts/list reconciliation; canonical MIME gate). Existing-receipt/idempotent replay is RUNTIME-PROVEN (exec `10296`); Create Post/reconciliation branches remain statically implemented, not yet runtime-proven.**
+> **Workflow 05 n8n ID:** `9eYbHX8ryps46lH0` (21 nodes; inactive; `Build Receipt Filter` (encodeURIComponent 5-field, after mapping) → `Load Existing Receipt` (`alwaysOutputData`) → receipt router before media/MIME/entitlement → `already_distributed`/`failed` short-circuit + reconciliation; MIME/create-auth gates on `none` branch only)
 > **Unlisted YouTube proof:** https://www.youtube.com/watch?v=ua50Kuxwi-g
 > **GHL post ID:** `6aa63853d1928cc532472362` · **Receipt ID:** `76abb31d-effd-492b-b03c-3fdd9524c0d0`
 > **Safety:** `entitled=false`, `enabled_for_distribution=false` (fail-closed — both gates remain false)
 > **Migration 010:** applied — **runtime verified** (`publisher_user_id` = `uT8mleycXWhVCWcGw3f6` present on the single Dreemzy/YouTube row)
 > **Migration 011 (`011_loom_media_content_type.sql`):** **applied + runtime verified** (2026-09-13) — `loom_media.content_type` column exists; both existing rows (`fixture` + `loom-distribution-test:0`) are `NULL` (fail-closed, no guessed MIME). A real approved asset must populate `content_type` from the GHL media-library `contentType` during storage verification.
-> **Credentials wired (IDs only, no secret values in JSON):** GHL Social Planner PIT (`LOOM GHL Social Planner (Dreemzy)`, on `Create Post` + `Reconcile Post (GHL posts/list)`) + `LOOM Supabase` (reused on 5 Supabase nodes: 4 lookups + `Record Receipt`). Both gates remain `false`; **zero executions, zero publications**.
-> **First next action (runtime test):** use the EXISTING receipt identity only (tenant `dreemzy`, `loom-distribution-test:0` / `test-1`) — its receipt is `status=published` (maps to `distributed`), so the workflow must return `already_distributed` with **zero GHL calls**, proving the no-duplicate guard live — without another YouTube upload.
-> **Remaining before 6C:** runtime-verify Workflow 05 end-to-end (existing-receipt no-duplicate guard first, then a real approved asset).
+> **Credentials wired (IDs only, no secret values in JSON):** GHL Social Planner PIT (`LOOM GHL Social Planner (Dreemzy)`, on `Create Post` + `Reconcile Post (GHL posts/list)`) + `LOOM Supabase` (reused on 5 Supabase nodes: 4 lookups + `Record Receipt`). Both gates remain `false`.
+> **Runtime evidence (2026-09-13):** exec `10294` = **safe failed lookup attempt** (receipt lookup returned empty → branch terminated early; zero GHL, receipt unchanged — the deviation that motivated the correction); exec `10296` = **successful idempotent replay proof** (`already_distributed`, 8 nodes, zero GHL, receipt unchanged). **Zero publications** throughout.
+> **First next action:** runtime-verify the Create Post + reconciliation branches — requires a real approved asset with populated `content_type` and a temporarily flipped gate (6C territory; not yet authorized).
+> **Remaining before 6C:** runtime-verify Create Post + reconciliation end-to-end with a real approved asset.
 > **Live deps:** Discord review adapter (`infra/discord-review/supervise.sh`) · GHL PIT token (single-location) · Supabase `edtcewkvnxrlzhqebayr`
 > *(no credential values here)*
 
-*Updated: 2026-09-13 (EDT) — Segments 3/4/5/6A complete; Segment 6B API runtime-verified via manual harness; migrations 010+011 applied + runtime-verified; Workflow 05 corrected (receipt-first ordering + short-circuit + reconciliation + MIME gate, 20 nodes) + credentials wired (inactive, guarded, zero executions, not yet runtime-verified)*
+*Updated: 2026-09-13 (EDT) — Segments 3/4/5/6A complete; Segment 6B API runtime-verified via manual harness; migrations 010+011 applied + runtime-verified; Workflow 05 corrected (receipt-first ordering + Build Receipt Filter + alwaysOutputData + short-circuit + reconciliation + MIME gate, 21 nodes) + credentials wired (inactive, guarded); existing-receipt/idempotent replay RUNTIME-PROVEN (exec 10296); Create Post/reconciliation statically implemented, not yet runtime-proven*
 
 ## ✅ Segment 4 — Discord QC — COMPLETE (runtime verified end-to-end)
 

@@ -66,8 +66,21 @@
     },
     {
       "parameters": {
+        "jsCode": "\nconst req = $('Preflight Guard').first().json;\nconst mapping = $('Load Tenant Mapping').first().json;\nconst enc = encodeURIComponent;\nconst receipt_filter = [\n  `tenant_id=eq.${enc(req.tenant_id)}`,\n  `platform=eq.${enc(req.platform)}`,\n  `ghl_social_account_id=eq.${enc(mapping.ghl_social_account_id)}`,\n  `clip_id=eq.${enc(req.clip_id)}`,\n  `asset_version=eq.${enc(req.asset_version)}`,\n].join('&');\nreturn [{ json: { receipt_filter } }];\n"
+      },
+      "id": "build-receipt-filter",
+      "name": "Build Receipt Filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
         "method": "GET",
-        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/distribution_receipts?tenant_id=eq.{{$('Preflight Guard').first().json.tenant_id}}&platform=eq.{{$('Preflight Guard').first().json.platform}}&ghl_social_account_id=eq.{{$('Load Tenant Mapping').first().json.ghl_social_account_id}}&clip_id=eq.{{$('Preflight Guard').first().json.clip_id}}&asset_version=eq.{{$('Preflight Guard').first().json.asset_version}}&select=*",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/distribution_receipts?{{$('Build Receipt Filter').first().json.receipt_filter}}&select=*",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
@@ -86,7 +99,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        660,
+        880,
         200
       ],
       "credentials": {
@@ -94,18 +107,19 @@
           "id": "JoPSxTOjtLvDXLRV",
           "name": "LOOM Supabase"
         }
-      }
+      },
+      "alwaysOutputData": true
     },
     {
       "parameters": {
-        "jsCode": "\nconst receipts = $('Load Existing Receipt').all();\nconst successful = ['created','scheduled','published','reconciled'];\nlet receipt_state = 'none';\nlet existing_receipt = null;\nif (receipts && receipts.length > 0) {\n  existing_receipt = receipts[0].json;\n  const st = (existing_receipt.status || '').toLowerCase();\n  if (successful.includes(st)) receipt_state = 'distributed';\n  else if (st === 'failed') receipt_state = 'failed';\n  else receipt_state = 'ambiguous';\n}\nreturn [{ json: { receipt_state, existing_receipt } }];\n"
+        "jsCode": "\nconst rows = $('Load Existing Receipt').all() || [];\nconst successful = ['created','scheduled','published','reconciled'];\nlet receipt_state = 'none';\nlet existing_receipt = null;\n// genuine receipt rows carry an id\nconst genuine = rows.filter(r => r && r.json && typeof r.json === 'object' && r.json.id);\nif (genuine.length > 0) {\n  existing_receipt = genuine[0].json;\n  const st = (existing_receipt.status || '').toLowerCase();\n  if (successful.includes(st)) receipt_state = 'distributed';\n  else if (st === 'failed') receipt_state = 'failed';\n  else receipt_state = 'ambiguous';\n} else {\n  // no genuine row: malformed (non-empty object without id) => ambiguous; empty placeholder => none\n  const malformed = rows.filter(r => r && r.json && typeof r.json === 'object' && Object.keys(r.json).length > 0 && !r.json.id);\n  receipt_state = malformed.length > 0 ? 'ambiguous' : 'none';\n}\nreturn [{ json: { receipt_state, existing_receipt } }];\n"
       },
       "id": "receipt-state",
       "name": "Receipt State",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        880,
+        1100,
         200
       ]
     },
@@ -220,7 +234,7 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
-        1100,
+        1320,
         200
       ]
     },
@@ -246,7 +260,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1320,
+        1540,
         200
       ],
       "credentials": {
@@ -278,7 +292,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1540,
+        1760,
         200
       ],
       "credentials": {
@@ -297,7 +311,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1760,
+        1980,
         200
       ]
     },
@@ -310,7 +324,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1320,
+        1540,
         200
       ]
     },
@@ -323,7 +337,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1320,
+        1540,
         200
       ]
     },
@@ -336,7 +350,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1980,
+        2200,
         200
       ]
     },
@@ -369,7 +383,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2200,
+        2420,
         200
       ],
       "credentials": {
@@ -389,7 +403,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2420,
+        2640,
         200
       ]
     },
@@ -456,7 +470,7 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
-        2640,
+        2860,
         200
       ]
     },
@@ -489,7 +503,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2860,
+        3080,
         200
       ],
       "credentials": {
@@ -509,7 +523,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3080,
+        3300,
         200
       ]
     },
@@ -522,7 +536,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3300,
+        3520,
         200
       ]
     },
@@ -555,7 +569,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3520,
+        3740,
         200
       ],
       "credentials": {
@@ -575,7 +589,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3740,
+        3960,
         200
       ]
     }
@@ -604,6 +618,17 @@
       ]
     },
     "Load Tenant Mapping": {
+      "main": [
+        [
+          {
+            "node": "Build Receipt Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Receipt Filter": {
       "main": [
         [
           {
