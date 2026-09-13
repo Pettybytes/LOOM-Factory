@@ -1,4 +1,23 @@
 :8081 {
+	# Discord Interactions Endpoint — PUBLIC (no tunnel token). Discord posts
+	# here; Ed25519 signature verification happens in the local adapter
+	# (infra/discord-review/adapter.py), never in this proxy. Do NOT add the
+	# tunnel-token auth gate to this path.
+	handle /discord/interactions* {
+		reverse_proxy host.docker.internal:8090
+	}
+
+	# Internal card-send endpoint — auth'd by the same tunnel token as the
+	# OpenShorts proxy so only n8n (which holds LOOM Tunnel Proxy Token) can
+	# trigger a bot card. Routed to the local adapter.
+	@card {
+		path /discord/card*
+		header Authorization "Bearer {$LOOM_TUNNEL_TOKEN}"
+	}
+	handle @card {
+		reverse_proxy host.docker.internal:8090
+	}
+
 	# Auth-gated reverse proxy in front of the self-hosted OpenShorts backend.
 	# OpenShorts itself has ZERO authentication on any endpoint (confirmed by
 	# reading app.py's _assert_job_owner(), which is a hard no-op when

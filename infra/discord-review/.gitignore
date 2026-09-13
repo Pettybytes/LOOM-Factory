@@ -1,0 +1,5 @@
+# Secrets / runtime artifacts (never commit)
+.env
+*.log
+__pycache__/
+*.pyc
