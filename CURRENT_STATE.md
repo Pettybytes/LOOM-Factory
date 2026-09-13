@@ -3,19 +3,20 @@
 > ## 🚀 START HERE NEXT SESSION
 > **Repository:** `/Users/user/Desktop/LOOM-Factory` · **Remote:** `Pettybytes/LOOM-Factory`
 > **Completed segments:** 3 (ingest) · 4 (Discord QC) · 5 (GHL media storage) · 6A (tenant mapping)
-> **6B status:** API contract **runtime-verified via a manual curl harness**; `Workflow 05` **fully implemented (guard + payload + receipt + reconciliation contract) but INACTIVE / not yet runtime-verified**
-> **Workflow 05 n8n ID:** `9eYbHX8ryps46lH0` (11 nodes; inactive; 12-point preflight guard + create-post payload + idempotent receipt wired)
+> **6B status:** API contract **runtime-verified via a manual curl harness**; `Workflow 05` **corrected + fully implemented (no-duplicate receipt short-circuit + POST /posts/list reconciliation + canonical MIME gate) but INACTIVE / not yet runtime-verified**
+> **Workflow 05 n8n ID:** `9eYbHX8ryps46lH0` (20 nodes; inactive; 12-point guard + receipt router → `already_distributed`/`failed` short-circuit + reconciliation paths + MIME gate)
 > **Unlisted YouTube proof:** https://www.youtube.com/watch?v=ua50Kuxwi-g
 > **GHL post ID:** `6aa63853d1928cc532472362` · **Receipt ID:** `76abb31d-effd-492b-b03c-3fdd9524c0d0`
 > **Safety:** `entitled=false`, `enabled_for_distribution=false` (fail-closed — both gates remain false)
 > **Migration 010:** applied — **runtime verified** (`publisher_user_id` = `uT8mleycXWhVCWcGw3f6` present on the single Dreemzy/YouTube row)
-> **Credentials wired (IDs only, no secret values in JSON):** GHL Social Planner PIT (new `LOOM GHL Social Planner (Dreemzy)` header-auth credential, attached to `Create Post`) + `LOOM Supabase` (reused on all 5 Supabase nodes: 4 lookups + `Record Receipt`). Both gates remain `false`; **zero executions, zero publications**.
-> **First next action:** safely pass the EXISTING proof identity through Workflow 05 without creating another post (reuse the existing unlisted post + receipt `76abb31d-…c0d0`) for true runtime verification
-> **Remaining before 6C:** Workflow 05 runtime-verified end-to-end
+> **Migration 011 (`011_loom_media_content_type.sql`):** written + committed — **PENDING manual application in SQL Editor** (DDL not reachable via REST). Fail-closed: `loom_media.content_type` does not exist yet, so the MIME gate rejects until applied + a real asset's `content_type` is populated.
+> **Credentials wired (IDs only, no secret values in JSON):** GHL Social Planner PIT (`LOOM GHL Social Planner (Dreemzy)`, on `Create Post` + `Reconcile Post (GHL posts/list)`) + `LOOM Supabase` (reused on 5 Supabase nodes: 4 lookups + `Record Receipt`). Both gates remain `false`; **zero executions, zero publications**.
+> **First next action (runtime test):** use the EXISTING receipt identity only (tenant `dreemzy`, proof clip/asset) to prove the no-duplicate guard returns `already_distributed` — without another YouTube upload.
+> **Remaining before 6C:** apply migration 011 (SQL Editor) → runtime-verify Workflow 05 end-to-end.
 > **Live deps:** Discord review adapter (`infra/discord-review/supervise.sh`) · GHL PIT token (single-location) · Supabase `edtcewkvnxrlzhqebayr`
 > *(no credential values here)*
 
-*Updated: 2026-09-13 (EDT) — Segments 3/4/5/6A complete; Segment 6B API runtime-verified via manual harness; migration 010 runtime-verified; Workflow 05 fully implemented + credentials wired (inactive, guarded, zero executions, not yet runtime-verified)*
+*Updated: 2026-09-13 (EDT) — Segments 3/4/5/6A complete; Segment 6B API runtime-verified via manual harness; migration 010 runtime-verified; Workflow 05 corrected (receipt short-circuit + reconciliation + MIME gate, 20 nodes) + credentials wired (inactive, guarded, zero executions, not yet runtime-verified); migration 011 written (pending SQL Editor)*
 
 ## ✅ Segment 4 — Discord QC — COMPLETE (runtime verified end-to-end)
 

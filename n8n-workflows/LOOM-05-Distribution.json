@@ -21,7 +21,7 @@
     },
     {
       "parameters": {
-        "jsCode": "\nconst body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst tenant_id = body.tenant_id;\nconst platform = (body.platform || 'youtube').toLowerCase();\nconst clip_id = body.clip_id;\nconst asset_version = body.asset_version;\nif (!tenant_id || !clip_id || !asset_version) {\n  throw new Error('LOOM_DIST_INVALID: missing tenant_id/clip_id/asset_version');\n}\nconst schedule_date = body.schedule_date || null;\nconst title = body.title || null;\nconst summary = body.summary || null;\nconst privacy_level = body.privacy_level || 'unlisted';\nconst enc = encodeURIComponent;\nreturn [{ json: {\n  tenant_id, platform, clip_id, asset_version,\n  schedule_date, title, summary, privacy_level,\n  mapping_filter: `tenant_id=eq.${enc(tenant_id)}&platform=eq.${enc(platform)}`,\n  media_filter: `tenant_id=eq.${enc(tenant_id)}&clip_id=eq.${enc(clip_id)}&asset_version=eq.${enc(asset_version)}`,\n  review_filter: `tenant_id=eq.${enc(tenant_id)}&clip_id=eq.${enc(clip_id)}&asset_version=eq.${enc(asset_version)}&review_stage=eq.final_publication`,\n  receipt_filter: `tenant_id=eq.${enc(tenant_id)}&platform=eq.${enc(platform)}&clip_id=eq.${enc(clip_id)}&asset_version=eq.${enc(asset_version)}`,\n} }];\n"
+        "jsCode": "\nconst body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst tenant_id = body.tenant_id;\nconst platform = (body.platform || 'youtube').toLowerCase();\nconst clip_id = body.clip_id;\nconst asset_version = body.asset_version;\nif (!tenant_id || !clip_id || !asset_version) {\n  throw new Error('LOOM_DIST_INVALID: missing tenant_id/clip_id/asset_version');\n}\nconst schedule_date = body.schedule_date || null;\nconst title = body.title || null;\nconst summary = body.summary || null;\nconst privacy_level = body.privacy_level || 'unlisted';\nconst enc = encodeURIComponent;\nreturn [{ json: {\n  tenant_id, platform, clip_id, asset_version,\n  schedule_date, title, summary, privacy_level,\n  mapping_filter: `tenant_id=eq.${enc(tenant_id)}&platform=eq.${enc(platform)}`,\n  media_filter: `tenant_id=eq.${enc(tenant_id)}&clip_id=eq.${enc(clip_id)}&asset_version=eq.${enc(asset_version)}`,\n  review_filter: `tenant_id=eq.${enc(tenant_id)}&clip_id=eq.${enc(clip_id)}&asset_version=eq.${enc(asset_version)}&review_stage=eq.final_publication`,\n} }];\n"
       },
       "id": "preflight-guard",
       "name": "Preflight Guard",
@@ -130,8 +130,21 @@
     },
     {
       "parameters": {
+        "jsCode": "\nconst req = $('Preflight Guard').first().json;\nconst mapping = $('Load Tenant Mapping').first() ? $('Load Tenant Mapping').first().json : null;\nconst media = $('Load Media Asset').first() ? $('Load Media Asset').first().json : null;\nconst review = $('Load Final Review').first() ? $('Load Final Review').first().json : null;\nconst fail = (gate, detail) => { throw new Error(`LOOM_DIST_REJECT: ${gate} — ${detail}`); };\n\nif (!mapping) fail('G1 connected', 'no tenant distribution mapping');\nif (mapping.connection_status !== 'active') fail('G1 connected', `connection_status=${mapping.connection_status}`);\nif (mapping.is_expired === true) fail('G1 connected', 'mapping is_expired=true');\nif (mapping.entitled !== true) fail('G2 entitled', 'entitled !== true');\nif (mapping.enabled_for_distribution !== true) fail('G3 enabled_for_distribution', 'enabled_for_distribution !== true');\nif (!media) fail('G4 media approved', 'no loom_media row');\nif (media.publication_status !== 'approved') fail('G4 media approved', `publication_status=${media.publication_status}`);\nif (!media.publication_review_id) fail('G5 publication_review_id', 'null');\nif (!review) fail('G6 review approve', 'no final_publication review row');\nif (review.decision !== 'approve') fail('G6 review approve', `decision=${review.decision}`);\nif (review.review_stage !== 'final_publication') fail('G7 review_stage', review.review_stage);\nif (media.tenant_id !== req.tenant_id || media.clip_id !== req.clip_id || media.asset_version !== req.asset_version) fail('G8 identity', 'media identity mismatch');\nif (review.tenant_id !== req.tenant_id || review.clip_id !== req.clip_id || review.asset_version !== req.asset_version) fail('G8 identity', 'review identity mismatch');\nif (review.id !== media.publication_review_id) fail('G8 identity', 'review.id !== media.publication_review_id');\nif (media.storage_status === 'fixture') fail('G9/G10 fixture', 'storage_status=fixture');\n// G13 canonical MIME (correction 3): reject missing/unsupported; never URL-infer\nconst SUPPORTED_MIME = ['video/mp4','video/quicktime','video/webm','video/x-m4v'];\nif (!media.content_type) fail('G13 MIME', 'content_type is null/unknown');\nif (!SUPPORTED_MIME.includes(media.content_type)) fail('G13 MIME', `content_type=${media.content_type} unsupported`);\nif (req.schedule_date) {\n  const d = new Date(req.schedule_date);\n  if (isNaN(d.getTime())) fail('G12 schedule', 'invalid schedule_date');\n}\nreturn [{ json: { guard_passed: true } }];\n"
+      },
+      "id": "guard-evaluation",
+      "name": "Guard Evaluation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        200
+      ]
+    },
+    {
+      "parameters": {
         "method": "GET",
-        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/distribution_receipts?{{$('Preflight Guard').first().json.receipt_filter}}&select=id",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/distribution_receipts?tenant_id=eq.{{$('Preflight Guard').first().json.tenant_id}}&platform=eq.{{$('Preflight Guard').first().json.platform}}&ghl_social_account_id=eq.{{$('Load Tenant Mapping').first().json.ghl_social_account_id}}&clip_id=eq.{{$('Preflight Guard').first().json.clip_id}}&asset_version=eq.{{$('Preflight Guard').first().json.asset_version}}&select=*",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
@@ -150,7 +163,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1100,
+        1320,
         200
       ],
       "credentials": {
@@ -162,27 +175,168 @@
     },
     {
       "parameters": {
-        "jsCode": "\nconst req = $('Preflight Guard').first().json;\nconst mapping = $('Load Tenant Mapping').first() ? $('Load Tenant Mapping').first().json : null;\nconst media = $('Load Media Asset').first() ? $('Load Media Asset').first().json : null;\nconst review = $('Load Final Review').first() ? $('Load Final Review').first().json : null;\nconst receipts = $('Load Existing Receipt').all();\nconst fail = (gate, detail) => { throw new Error(`LOOM_DIST_REJECT: ${gate} — ${detail}`); };\n\n// G1 connected\nif (!mapping) fail('G1 connected', 'no tenant distribution mapping for tenant/platform');\nif (mapping.connection_status !== 'active') fail('G1 connected', `connection_status=${mapping.connection_status}`);\nif (mapping.is_expired === true) fail('G1 connected', 'mapping is_expired=true');\n// G2 entitled\nif (mapping.entitled !== true) fail('G2 entitled', 'entitled !== true');\n// G3 enabled_for_distribution\nif (mapping.enabled_for_distribution !== true) fail('G3 enabled_for_distribution', 'enabled_for_distribution !== true');\n// G4 media approved\nif (!media) fail('G4 media approved', 'no loom_media row for tenant/clip/asset_version');\nif (media.publication_status !== 'approved') fail('G4 media approved', `publication_status=${media.publication_status}`);\n// G5 publication_review_id present\nif (!media.publication_review_id) fail('G5 publication_review_id', 'null');\n// G6 review approve\nif (!review) fail('G6 review approve', 'no final_publication review row');\nif (review.decision !== 'approve') fail('G6 review approve', `decision=${review.decision}`);\n// G7 review stage\nif (review.review_stage !== 'final_publication') fail('G7 review_stage', review.review_stage);\n// G8 identity match across media + review + request\nif (media.tenant_id !== req.tenant_id || media.clip_id !== req.clip_id || media.asset_version !== req.asset_version)\n  fail('G8 identity', 'media identity mismatch');\nif (review.tenant_id !== req.tenant_id || review.clip_id !== req.clip_id || review.asset_version !== req.asset_version)\n  fail('G8 identity', 'review identity mismatch');\nif (review.id !== media.publication_review_id) fail('G8 identity', 'review.id !== media.publication_review_id');\n// G9/G10 not a fixture (storage_status must be verified/eligible, never 'fixture')\nif (media.storage_status === 'fixture') fail('G9/G10 fixture', 'storage_status=fixture');\n// G11 no existing distribution receipt (dedup: tenant+platform+clip+asset superset check)\nif (receipts && receipts.length > 0) fail('G11 receipt', 'existing distribution receipt found');\n// G12 schedule date valid\nif (req.schedule_date) {\n  const d = new Date(req.schedule_date);\n  if (isNaN(d.getTime())) fail('G12 schedule', 'invalid schedule_date');\n}\n\nreturn [{ json: { guard_passed: true, tenant_id: req.tenant_id, platform: req.platform, clip_id: req.clip_id, asset_version: req.asset_version } }];\n"
+        "jsCode": "\nconst receipts = $('Load Existing Receipt').all();\nconst successful = ['created','scheduled','published','reconciled'];\nlet receipt_state = 'none';\nlet existing_receipt = null;\nif (receipts && receipts.length > 0) {\n  existing_receipt = receipts[0].json;\n  const st = (existing_receipt.status || '').toLowerCase();\n  if (successful.includes(st)) receipt_state = 'distributed';\n  else if (st === 'failed') receipt_state = 'failed';\n  else receipt_state = 'ambiguous';\n}\nreturn [{ json: { receipt_state, existing_receipt } }];\n"
       },
-      "id": "guard-evaluation",
-      "name": "Guard Evaluation",
+      "id": "receipt-state",
+      "name": "Receipt State",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1320,
+        1540,
         200
       ]
     },
     {
       "parameters": {
-        "jsCode": "\nconst req = $('Preflight Guard').first().json;\nconst mapping = $('Load Tenant Mapping').first().json;\nconst media = $('Load Media Asset').first().json;\n\nconst ghl_location_id = mapping.ghl_location_id;\nconst ghl_social_account_id = mapping.ghl_social_account_id;\nconst profile_id = mapping.profile_id;\nconst publisher_user_id = mapping.publisher_user_id;\nconst canonical_url = media.canonical_url;\n// media.type: resolve per asset; all current assets are mp4. (contentType to be added to loom_media in a later migration.)\nconst media_type = (canonical_url && /\\.mp4$/i.test(canonical_url)) ? 'video/mp4' : 'video/mp4';\nconst title = req.title || media.source_filename || 'LOOM Distribution';\nconst summary = req.summary || title;\nconst privacy_level = req.privacy_level || 'unlisted';\nconst schedule_date = req.schedule_date || null;\n\nconst idempotency_key = `${req.tenant_id}:${req.platform}:${ghl_social_account_id}:${req.clip_id}:${req.asset_version}`;\n\nconst create_payload = {\n  userId: publisher_user_id,\n  accountIds: [ghl_social_account_id],\n  summary,\n  media: [{ url: canonical_url, type: media_type }],\n  type: 'reel',\n  status: schedule_date ? 'scheduled' : 'published',\n  youtubePostDetails: { title, type: 'short', privacyLevel: privacy_level },\n};\nif (schedule_date) create_payload.scheduleDate = schedule_date;\n\nconst receipt_payload = {\n  tenant_id: req.tenant_id,\n  ghl_location_id,\n  platform: req.platform,\n  ghl_social_account_id,\n  profile_id,\n  clip_id: req.clip_id,\n  asset_version: req.asset_version,\n  idempotency_key,\n  ghl_post_id: null,\n  status: 'attempted',\n  scheduled_at: schedule_date || null,\n};\n\nreturn [{ json: { ghl_location_id, create_payload, receipt_payload, idempotency_key } }];\n"
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "none-0",
+                    "leftValue": "={{ $json.receipt_state }}",
+                    "rightValue": "none",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "none"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "distributed-1",
+                    "leftValue": "={{ $json.receipt_state }}",
+                    "rightValue": "distributed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "distributed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "failed-2",
+                    "leftValue": "={{ $json.receipt_state }}",
+                    "rightValue": "failed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "failed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "ambiguous-3",
+                    "leftValue": "={{ $json.receipt_state }}",
+                    "rightValue": "ambiguous",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ambiguous"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": 3
+        }
+      },
+      "id": "receipt-router",
+      "name": "Receipt Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1760,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nreturn [{ json: { status: 'already_distributed', note: 'Existing successful/reconciled receipt present; no re-distribution.' } }];\n"
+      },
+      "id": "already-distributed",
+      "name": "Already Distributed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nreturn [{ json: { status: 'failed', note: 'Definite prior failure recorded; no automatic retry.' } }];\n"
+      },
+      "id": "return-failed",
+      "name": "Return Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst req = $('Preflight Guard').first().json;\nconst mapping = $('Load Tenant Mapping').first().json;\nconst media = $('Load Media Asset').first().json;\nconst ghl_location_id = mapping.ghl_location_id;\nconst ghl_social_account_id = mapping.ghl_social_account_id;\nconst profile_id = mapping.profile_id;\nconst publisher_user_id = mapping.publisher_user_id;\nconst canonical_url = media.canonical_url;\nconst media_type = media.content_type;  // canonical MIME (correction 3)\nconst title = req.title || media.source_filename || 'LOOM Distribution';\nconst summary = req.summary || title;\nconst privacy_level = req.privacy_level || 'unlisted';\nconst schedule_date = req.schedule_date || null;\nconst create_payload = {\n  userId: publisher_user_id,\n  accountIds: [ghl_social_account_id],\n  summary,\n  media: [{ url: canonical_url, type: media_type }],\n  type: 'reel',\n  status: schedule_date ? 'scheduled' : 'published',\n  youtubePostDetails: { title, type: 'short', privacyLevel: privacy_level },\n};\nif (schedule_date) create_payload.scheduleDate = schedule_date;\nreturn [{ json: { ghl_location_id, ghl_social_account_id, profile_id, create_payload } }];\n"
       },
       "id": "build-create-payload",
       "name": "Build Create Payload",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1540,
+        1980,
         200
       ]
     },
@@ -215,7 +369,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1760,
+        2200,
         200
       ],
       "credentials": {
@@ -228,16 +382,96 @@
     },
     {
       "parameters": {
+        "jsCode": "\nconst resp = $json;\nconst postId = resp && (resp.id || resp.postId || resp.post_id || (resp.post && resp.post.id));\nconst schedule_date = $('Preflight Guard').first().json.schedule_date;\nlet route, receipt_status;\nif (resp && !resp.error && postId) {\n  route = 'definitive';\n  receipt_status = schedule_date ? 'scheduled' : 'published';\n} else {\n  route = 'ambiguous';\n  receipt_status = 'unknown';\n}\nreturn [{ json: { route, receipt_status, ghl_post_id: postId || null, create_response: resp } }];\n"
+      },
+      "id": "create-outcome",
+      "name": "Create Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "definitive-0",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "definitive",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "definitive"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "ambiguous-1",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "ambiguous",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ambiguous"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": 1
+        }
+      },
+      "id": "create-router",
+      "name": "Create Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2640,
+        200
+      ]
+    },
+    {
+      "parameters": {
         "method": "POST",
-        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/distribution_receipts?on_conflict=tenant_id,platform,ghl_social_account_id,clip_id,asset_version",
+        "url": "https://services.leadconnectorhq.com/social-media-posting/{{$('Load Tenant Mapping').first().json.ghl_location_id}}/posts/list",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
-              "name": "Prefer",
-              "value": "resolution=ignore-duplicates,return=representation"
+              "name": "Version",
+              "value": "v3"
             },
             {
               "name": "Content-Type",
@@ -248,14 +482,80 @@
         "options": {},
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "{{ JSON.stringify($('Build Create Payload').first().json.receipt_payload) }}"
+        "jsonBody": "{{ JSON.stringify({ accountIds: [$('Load Tenant Mapping').first().json.ghl_social_account_id], limit: 20 }) }}"
+      },
+      "id": "reconcile-post-ghl-posts/list",
+      "name": "Reconcile Post (GHL posts/list)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2860,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "f9hdFHKhDI9FuJlB",
+          "name": "LOOM GHL Social Planner (Dreemzy)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst listResp = $json;\nlet posts = [];\nif (Array.isArray(listResp)) posts = listResp;\nelse if (listResp && Array.isArray(listResp.posts)) posts = listResp.posts;\nelse if (listResp && Array.isArray(listResp.data)) posts = listResp.data;\nelse if (listResp && Array.isArray(listResp.accounts)) posts = listResp.accounts;\nconst reqTitle = (($('Preflight Guard').first().json.title) || '').toLowerCase();\nlet matched = null;\nfor (const p of posts) {\n  const pid = p.id || p.postId || p._id;\n  const pt = (p.title || p.summary || p.caption || '').toLowerCase();\n  if (reqTitle && pt && pt.includes(reqTitle)) { matched = { id: pid, title: pt }; break; }\n  if (pid && !reqTitle) { matched = { id: pid, title: pt }; break; }\n}\nlet receipt_status, ghl_post_id, note;\nif (matched && matched.id) { receipt_status = 'reconciled'; ghl_post_id = matched.id; note = 'matching post found via /posts/list'; }\nelse { receipt_status = 'unknown'; ghl_post_id = null; note = 'no matching post found; outcome unknown; no blind retry'; }\nreturn [{ json: { receipt_status, ghl_post_id, reconcile_note: note, posts_seen: posts.length } }];\n"
+      },
+      "id": "reconcile-outcome",
+      "name": "Reconcile Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst req = $('Preflight Guard').first().json;\nconst mapping = $('Load Tenant Mapping').first().json;\nconst receipt_status = $json.receipt_status || 'unknown';\nconst ghl_post_id = $json.ghl_post_id || null;\nconst ghl_social_account_id = mapping.ghl_social_account_id;\nconst idempotency_key = `${req.tenant_id}:${req.platform}:${ghl_social_account_id}:${req.clip_id}:${req.asset_version}`;\nconst receipt_payload = {\n  tenant_id: req.tenant_id,\n  ghl_location_id: mapping.ghl_location_id,\n  platform: req.platform,\n  ghl_social_account_id,\n  profile_id: mapping.profile_id,\n  clip_id: req.clip_id,\n  asset_version: req.asset_version,\n  idempotency_key,\n  ghl_post_id,\n  status: receipt_status,\n  scheduled_at: req.schedule_date || null,\n  last_reconciled_at: (receipt_status === 'reconciled' || receipt_status === 'unknown') ? new Date().toISOString() : null,\n};\nreturn [{ json: { receipt_payload, receipt_status, ghl_post_id } }];\n"
+      },
+      "id": "finalize-receipt",
+      "name": "Finalize Receipt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3300,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://edtcewkvnxrlzhqebayr.supabase.co/rest/v1/distribution_receipts?on_conflict=tenant_id,platform,ghl_social_account_id,clip_id,asset_version",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=representation"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{{ JSON.stringify($json.receipt_payload) }}"
       },
       "id": "record-receipt-idempotent",
       "name": "Record Receipt (idempotent)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1980,
+        3520,
         200
       ],
       "credentials": {
@@ -268,14 +568,14 @@
     },
     {
       "parameters": {
-        "jsCode": "\n// Fail-closed result. Never auto-retry an unknown create outcome here.\n// status='attempted' until reconciliation via POST /social-media-posting/:locationId/posts/list.\nreturn [{ json: { status: 'attempted', note: 'Distribution attempt recorded; reconcile unknown outcomes via GHL POST posts/list.' } }];\n"
+        "jsCode": "\nreturn [{ json: { status: ($json.receipt_status || 'unknown'), note: 'Distribution finalized; reconcile unknown outcomes via GHL posts/list (no blind retry).' } }];\n"
       },
       "id": "return-distribution-result",
       "name": "Return Distribution Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2200,
+        3740,
         200
       ]
     }
@@ -329,17 +629,6 @@
       "main": [
         [
           {
-            "node": "Load Existing Receipt",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Load Existing Receipt": {
-      "main": [
-        [
-          {
             "node": "Guard Evaluation",
             "type": "main",
             "index": 0
@@ -351,7 +640,61 @@
       "main": [
         [
           {
+            "node": "Load Existing Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Existing Receipt": {
+      "main": [
+        [
+          {
+            "node": "Receipt State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Receipt State": {
+      "main": [
+        [
+          {
+            "node": "Receipt Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Receipt Router": {
+      "main": [
+        [
+          {
             "node": "Build Create Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Already Distributed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reconcile Post (GHL posts/list)",
             "type": "main",
             "index": 0
           }
@@ -373,11 +716,66 @@
       "main": [
         [
           {
-            "node": "Record Receipt (idempotent)",
+            "node": "Create Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Outcome": {
+      "main": [
+        [
+          {
+            "node": "Create Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Router": {
+      "main": [
+        [
+          {
+            "node": "Finalize Receipt",
             "type": "main",
             "index": 0
           }
         ],
+        [
+          {
+            "node": "Reconcile Post (GHL posts/list)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile Post (GHL posts/list)": {
+      "main": [
+        [
+          {
+            "node": "Reconcile Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile Outcome": {
+      "main": [
+        [
+          {
+            "node": "Finalize Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Receipt": {
+      "main": [
         [
           {
             "node": "Record Receipt (idempotent)",
