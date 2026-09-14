@@ -28,11 +28,15 @@ makes the editor recoverable now.
 
 ## Editor boundary (complete)
 
-Large 9:16 preview + Generated Shorts side panel. preview · trim · title · hook ·
-separate social caption + spoken subtitles · crop/reframe (auto/full/track) ·
-Auto Edit · save→render→register→card progress · secure download · full-field
-autosaved draft (server + session memory) · recoverable errors · idempotent retry ·
-exactly-one revised re-review card · "Return to Discord Review" (replaces Post).
+Large 9:16 preview + Generated Shorts side panel. preview · trim · title ·
+viral hook via HookModal (text / position / S·M·L size / 6 style presets /
+2–15s duration) · separate social caption + spoken subtitles via SubtitleModal
+(font / size / text+highlight+border+background colors / opacity / position /
+casing / classic+karaoke presets) · crop/reframe (auto/full/track) ·
+Auto Edit (save→rerender→hook→subtitle→register→card) · progress · secure
+download · full-field autosaved draft (server + session memory) · recoverable
+errors · idempotent retry · exactly-one revised re-review card ·
+"Return to Discord Review" (replaces Post).
 
 ## Security (launch token)
 
