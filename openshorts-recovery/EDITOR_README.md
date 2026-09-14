@@ -15,18 +15,22 @@ makes the editor recoverable now.
 - **Affected files (dashboard only):**
   - `dashboard/index.html` — `Referrer-Policy: no-referrer` meta (launch-token defense)
   - `dashboard/src/main.jsx` — `/edit` path route → `ManualTrimEditor`
-  - `dashboard/src/components/ManualTrimEditor.jsx` — NEW manual trim editor
+  - `dashboard/src/components/ManualTrimEditor.jsx` — the manual editor
+  - `dashboard/src/lib/discordActivity.js` — Discord Activity SDK (preserved, not critical path)
+  - `dashboard/src/lib/api.js` — editor session token + auth diagnostics
+  - `dashboard/src/lib/captionRealign.js` (+ test) — untracked in the nested repo; preserved here as **reference files** `captionRealign.js` / `captionRealign.test.mjs`
 
-## What the editor does
+## Editor critical path (current)
 
-- Reads `job_id`, `clip_index`, `token` from the `/edit` deep-link query string.
-- **One-time token exchange:** POSTs the launch token to the LOOM adapter's
-  `/discord/editor/exchange`; the adapter consumes the single-use token (hash-only)
-  and returns the editor session identity. The raw token never leaves the exchange.
-- Strips the token from the URL via `history.replaceState` on mount.
-- Loads the editable recipe (`/api/clip/{job}/{idx}/edl`), transcript, scenes, and
-  preview, then exposes trim (start/end), transcript/scene seeking, an optional
-  written instruction, and a rerender button (`POST /api/clip/rerender`, FAST path).
+- Discord "Edit" → adapter ACKs deferred (type 5) → ephemeral **Open Editor** link button to `{LOOM_EDITOR_PUBLIC_URL}/edit?token=<single-use>`.
+- `/edit` reads **token only** (no `job_id`/`clip_index` in the URL; those resolve server-side at exchange), strips it via `history.replaceState`, POSTs to `/discord/editor/exchange`, and mints a 4-hour session token for authenticated `/api/*` calls.
+
+## Editor boundary (complete)
+
+preview · trim · title · hook · separate social caption + spoken subtitles ·
+crop/reframe (auto/full/track) · save→render→register→card progress · secure
+download · full-field persistent draft · recoverable errors · idempotent retry ·
+exactly-one revised re-review card · "Return to Discord Review" link.
 
 ## Security (launch token)
 
@@ -38,29 +42,9 @@ makes the editor recoverable now.
 
 ## Reapplication instructions
 
-From the OpenShorts clone at `/Users/user/Desktop/LOOM-Factory/openshorts`
-(branch `loom/factory-mvp-baseline-fixes`):
-
-```bash
-cd /Users/user/Desktop/LOOM-Factory/openshorts
-git apply /Users/user/Desktop/LOOM-Factory/openshorts-recovery/0002-discord-editor.patch
-```
-
-Then rebuild the dashboard (Vite) and restart as needed.
-
-## Exclusions (do NOT include)
-
-- OpenShorts `/cloud`, generated media (`output/`), secrets/`.env`.
-- `docker-compose.yml` and `security_utils.py` — pre-existing uncommitted changes
-  from prior LOOM sessions, NOT part of the editor.
-- No backport to the adapter — the adapter lives in `infra/discord-review/` (this repo).
-
-## Remaining editor work (not in this patch)
-
-- **Version registration** (Step 4): new `asset_version` + correction log +
-  `final_review_pending` — lives in LOOM (Supabase/n8n), not OpenShorts.
-- **`final_publication` re-review card** (Step 5) — LOOM adapter/n8n.
-- **Discord Activity embed** (Step 6): scoped `frame-ancestors`, Embedded App SDK.
-- **Instruction-driven LLM edit**: the current `/api/edit` is autonomous Gemini;
-  wiring a written instruction through it is a follow-up (the editor captures the
-  instruction for the correction log in the meantime).
+1. In the nested `openshorts/` checkout (branch `loom/factory-mvp-baseline-fixes`):
+   `git apply 0002-discord-editor.patch`
+2. Copy `captionRealign.js` → `dashboard/src/lib/captionRealign.js` and
+   `captionRealign.test.mjs` → `dashboard/src/lib/captionRealign.test.mjs`
+   (they are untracked in the nested repo, so the patch does not carry them).
+3. Rebuild/verify: `docker exec openshorts-frontend sh -c 'cd /app && npx vite build --logLevel error'`
