@@ -347,6 +347,60 @@ def resolve_edit_session(edit_session_id: str):
     }
 
 
+MAX_EDITOR_BODY_BYTES = 1024 * 1024  # 1 MB — subtitle/reframe/rerender bodies are tiny
+
+
+def mint_session_token(edit_session_id: str):
+    """Mint a short-lived opaque editor session token (returned to the editor at
+    exchange; its SHA-256 is stored server-side). The raw token is the editor's
+    credential for authenticated /api/* calls. Returns the token or None."""
+    token = secrets.token_urlsafe(24)  # ~32 chars, opaque
+    token_hash = hash_token(token)
+    url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
+           f"?id=eq.{edit_session_id}&status=eq.active")
+    data = json.dumps({"session_token_hash": token_hash}).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    req = Request(url, data=data, headers=headers, method="PATCH")
+    with urlopen(req, timeout=15) as resp:
+        return token if resp.status in (200, 204) else None
+
+
+def resolve_editor_session_token(session_token: str):
+    """Validate a short-lived editor session token. Returns the session identity
+    (tenant/clip/asset_version/job/clip_index) or None. Active sessions only —
+    a completed/expired session cannot drive further /api/* calls."""
+    if not session_token:
+        return None
+    token_hash = hash_token(session_token)
+    url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
+           f"?session_token_hash=eq.{token_hash}&status=eq.active&select=*")
+    req = Request(url, headers=_supabase_headers(), method="GET")
+    with urlopen(req, timeout=15) as resp:
+        rows = json.loads(resp.read().decode() or "[]")
+    if not rows:
+        return None
+    row = rows[0]
+    expires_at = row.get("expires_at")
+    if expires_at:
+        try:
+            exp = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if exp < datetime.now(timezone.utc):
+                return None
+        except Exception:
+            pass
+    clip_id = row.get("clip_id") or ""
+    job_id, _, clip_index = clip_id.rpartition(":")
+    return {
+        "edit_session_id": row.get("id"),
+        "tenant_id": row.get("tenant_id"),
+        "clip_id": clip_id,
+        "source_asset_version": row.get("source_asset_version"),
+        "job_id": job_id,
+        "clip_index": clip_index,
+    }
+
+
 def normalize_ready_file(ready_file, job_id):
     """Normalize a rendered-output reference to a safe, existing basename within
     the job's output directory. Rejects path traversal, separators, unexpected
@@ -922,6 +976,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send_json(200, {"status": "ok"})
             return
+        # Authenticated editor API (read endpoints).
+        if self.path.startswith("/api/"):
+            self._handle_editor_api("GET")
+            return
         # Never allow state-changing GET links.
         self._send_json(404, {"error": "not found"})
 
@@ -929,6 +987,10 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.rstrip("/") or "/"
         if path == "/health":
             self._send_json(200, {"status": "ok"})
+            return
+        # Authenticated editor API (write endpoints).
+        if path.startswith("/api/"):
+            self._handle_editor_api("POST")
             return
         # Tailscale Funnel --set-path strips the public prefix before proxying,
         # so the adapter sees "/" for the public /discord/interactions route.
@@ -1150,7 +1212,89 @@ class Handler(BaseHTTPRequestHandler):
             job_id, clip_index = clip_id, "0"
         session["job_id"] = job_id
         session["clip_index"] = clip_index
+        # Mint the short-lived editor session token (authenticates /api/* calls).
+        session_token = mint_session_token(session["edit_session_id"])
+        if not session_token:
+            self._send_json(502, {"ok": False, "error": "could not mint session token"})
+            return
+        session["session_token"] = session_token
         self._send_json(200, {"ok": True, "session": session})
+
+    def _handle_editor_api(self, method):
+        """Authenticated, allowlisted editor API gateway. Only the endpoints the
+        editor needs are forwarded — and only for the session's own job/clip.
+        Arbitrary job IDs, unrelated /api/* routes, and unauthenticated requests
+        are rejected. The OpenShorts backend is never directly reachable."""
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            self._send_json(401, {"error": "missing session token"})
+            return
+        session = resolve_editor_session_token(auth[len("Bearer "):].strip())
+        if not session:
+            self._send_json(401, {"error": "invalid or expired session"})
+            return
+
+        # Request-size limit (before reading the body).
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length > MAX_EDITOR_BODY_BYTES:
+            self._send_json(413, {"error": "body too large"})
+            return
+        raw_body = self._read_body()
+
+        target = self._authorize_editor_path(method, self.path, raw_body,
+                                             session["job_id"], session["clip_index"])
+        if target is None:
+            self._send_json(403, {"error": "forbidden"})
+            return
+
+        self._forward_to_backend(method, target, raw_body)
+
+    def _authorize_editor_path(self, method, path, raw_body, job_id, clip_index):
+        """Allowlist the exact editor endpoints + enforce job/clip ownership.
+        Returns the backend path to forward (same as path) or None (reject)."""
+        m = re.match(r'^/api/status/([^/]+)$', path)
+        if m and method == "GET":
+            return path if m.group(1) == job_id else None
+        m = re.match(r'^/api/source/([^/]+)$', path)
+        if m and method == "GET":
+            return path if m.group(1) == job_id else None
+        m = re.match(r'^/api/clip/([^/]+)/([^/]+)/(transcript|edl|scenes)$', path)
+        if m and method == "GET":
+            return path if (m.group(1) == job_id and m.group(2) == str(clip_index)) else None
+        m = re.match(r'^/api/render/([^/]+)$', path)
+        if m and method == "GET":
+            return path  # render status (read-only; render_id is a UUID)
+        # POST body endpoints: job_id + clip_index must match the session.
+        if method == "POST" and path in ("/api/subtitle", "/api/clip/rerender", "/api/clip/reframe"):
+            try:
+                body = json.loads(raw_body.decode() or "{}")
+            except Exception:
+                return None
+            if body.get("job_id") == job_id and str(body.get("clip_index")) == str(clip_index):
+                return path
+            return None
+        return None
+
+    def _forward_to_backend(self, method, target, raw_body):
+        """Forward the authorized request to the loopback OpenShorts backend.
+        (The backend is bound to 127.0.0.1:8000 only — never directly public.)"""
+        url = f"http://127.0.0.1:8000{target}"
+        headers = {"Content-Type": self.headers.get("Content-Type", "application/json")}
+        req = Request(url, data=(raw_body or None), headers=headers, method=method)
+        try:
+            with urlopen(req, timeout=300) as resp:
+                status, body = resp.status, resp.read()
+        except HTTPError as e:
+            status, body = e.code, e.read()
+        except Exception as e:
+            self._send_json(502, {"error": f"backend error: {e}"})
+            return
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", EDITOR_ORIGIN)
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_editor_complete(self):
         """Finalize an edit: atomically register the new asset_version (RPC) and

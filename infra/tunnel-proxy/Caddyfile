@@ -22,16 +22,13 @@
 		reverse_proxy host.docker.internal:8090
 	}
 
-	# OpenShorts backend API — PUBLIC for the Activity editor's required /api/*
-	# calls (status/edl/transcript/scenes/subtitle/rerender).
-	# ⚠️ SECURITY NOTE: the OpenShorts backend has ZERO authentication (its
-	# _assert_job_owner is a no-op when BILLING_ENABLED is unset). Making /api/*
-	# public exposes it to the internet (bounded: job_ids are UUIDs, writes are
-	# per-job). Revisit (add an editor-session gate) before production use.
+	# Editor API — public path, but authenticated + allowlisted by the LOOM
+	# adapter, which validates the short-lived editor session token + tenant/job/
+	# clip ownership and forwards ONLY the required editor endpoints to the
+	# loopback backend (127.0.0.1:8000, never directly public). Arbitrary job IDs
+	# and unrelated /api/* routes are rejected by the adapter.
 	handle /api/* {
-		reverse_proxy host.docker.internal:8000 {
-			header_up X-Gemini-Key "{$LOOM_GEMINI_KEY}"
-		}
+		reverse_proxy host.docker.internal:8090
 	}
 
 	# Dashboard frontend (Vite dev on host 5175) — PUBLIC. Serves the SPA; the
