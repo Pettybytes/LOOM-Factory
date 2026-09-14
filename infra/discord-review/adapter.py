@@ -237,6 +237,15 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def token_fp(token: str) -> str:
+    """One-way SHA-256 fingerprint prefix of a token for diagnostics ONLY.
+    Never logs or returns the raw token — just the first 12 hex chars of its
+    hash, enough to compare two requests without exposing the secret."""
+    if not token:
+        return "none"
+    return hashlib.sha256(token.encode()).hexdigest()[:12]
+
+
 def register_review_token(token: str, identity: dict, discord_message_id=None):
     """Create a durable review-token row. Raw token is used only for the
     custom_id; the DB stores only its SHA-256 hash."""
@@ -488,6 +497,7 @@ def resolve_pending_launch(launch_user_id: str):
         "clip_id": row.get("clip_id"),
         "source_asset_version": row.get("source_asset_version"),
         "status": row.get("status"),
+        "draft": row.get("draft"),
     }
 
 
@@ -495,23 +505,35 @@ def resolve_editor_session_token(session_token: str):
     """Validate a short-lived editor session token. Returns the session identity
     (tenant/clip/asset_version/job/clip_index) or None. Active sessions only —
     a completed/expired session cannot drive further /api/* calls."""
+    session, _reason = resolve_editor_session_token_diag(session_token)
+    return session
+
+
+def resolve_editor_session_token_diag(session_token: str):
+    """Validate the editor session token and CLASSIFY the rejection reason for
+    diagnostics. Returns (session_or_None, reason) where reason is one of:
+    missing_token, hash_mismatch, inactive, expired, ok."""
     if not session_token:
-        return None
+        return None, "missing_token"
     token_hash = hash_token(session_token)
+    # Look up by hash WITHOUT the active filter first, so we can distinguish
+    # hash_mismatch (unknown token) from inactive (known but not active).
     url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
-           f"?session_token_hash=eq.{token_hash}&status=eq.active&select=*")
+           f"?session_token_hash=eq.{token_hash}&select=*")
     req = Request(url, headers=_supabase_headers(), method="GET")
     with urlopen(req, timeout=15) as resp:
         rows = json.loads(resp.read().decode() or "[]")
     if not rows:
-        return None
+        return None, "hash_mismatch"
     row = rows[0]
+    if row.get("status") != "active":
+        return None, "inactive"
     expires_at = row.get("expires_at")
     if expires_at:
         try:
             exp = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
             if exp < datetime.now(timezone.utc):
-                return None
+                return None, "expired"
         except Exception:
             pass
     clip_id = row.get("clip_id") or ""
@@ -523,7 +545,7 @@ def resolve_editor_session_token(session_token: str):
         "source_asset_version": row.get("source_asset_version"),
         "job_id": job_id,
         "clip_index": clip_index,
-    }
+    }, "ok"
 
 
 def normalize_ready_file(ready_file, job_id):
@@ -1153,6 +1175,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/discord/editor/pending":
             self._handle_editor_pending()
             return
+        if path == "/discord/editor/draft":
+            self._handle_editor_draft()
+            return
         self._send_json(404, {"error": "not found"})
 
     # -- Interactions Endpoint --------------------------------------------
@@ -1464,19 +1489,71 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[pending] resolved clip-specific session for user {launch_user_id} -> {clip_id}", flush=True)
         self._send_json(200, {"ok": True, "pending": True, "session": session})
 
+    def _handle_editor_draft(self):
+        """Persist the trim draft server-side BEFORE render starts, so an
+        Activity reload cannot erase an in-progress trim. Authenticated by the
+        short-lived editor session token (Bearer). Writes only the session's
+        own draft blob; never touches asset version / review state."""
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            self._send_json(401, {"ok": False, "error": "missing session token"})
+            return
+        session, reason = resolve_editor_session_token_diag(auth[len("Bearer "):].strip())
+        if not session:
+            print(f"[draft] reject={reason}", flush=True)
+            self._send_json(401, {"ok": False, "error": "invalid or expired session"})
+            return
+        try:
+            raw = self._read_body()
+            body = json.loads(raw.decode() or "{}")
+        except Exception:
+            self._send_json(400, {"ok": False, "error": "bad json"})
+            return
+        edit_session_id = body.get("edit_session_id")
+        draft = body.get("draft")
+        if not edit_session_id or not isinstance(draft, dict):
+            self._send_json(400, {"ok": False, "error": "missing edit_session_id or draft"})
+            return
+        if edit_session_id != session["edit_session_id"]:
+            self._send_json(403, {"ok": False, "error": "session mismatch"})
+            return
+        url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
+               f"?id=eq.{edit_session_id}&status=eq.active")
+        data = json.dumps({"draft": draft}).encode()
+        headers = _supabase_headers()
+        headers["Content-Type"] = "application/json"
+        req = Request(url, data=data, headers=headers, method="PATCH")
+        try:
+            with urlopen(req, timeout=15) as resp:
+                ok = resp.status in (200, 204)
+        except Exception as e:
+            self._send_json(502, {"ok": False, "error": f"draft save failed: {e}"})
+            return
+        if not ok:
+            self._send_json(502, {"ok": False, "error": "draft save failed"})
+            return
+        print(f"[draft] saved for session {edit_session_id}", flush=True)
+        self._send_json(200, {"ok": True})
+
     def _handle_editor_api(self, method):
         """Authenticated, allowlisted editor API gateway. Only the endpoints the
         editor needs are forwarded — and only for the session's own job/clip.
         Arbitrary job IDs, unrelated /api/* routes, and unauthenticated requests
         are rejected. The OpenShorts backend is never directly reachable."""
         auth = self.headers.get("Authorization", "")
+        req_fp = "none"
         if not auth.startswith("Bearer "):
+            print(f"[api-auth] {self.path} reject=missing_token", flush=True)
             self._send_json(401, {"error": "missing session token"})
             return
-        session = resolve_editor_session_token(auth[len("Bearer "):].strip())
+        raw_token = auth[len("Bearer "):].strip()
+        req_fp = token_fp(raw_token)
+        session, reason = resolve_editor_session_token_diag(raw_token)
         if not session:
+            print(f"[api-auth] {self.path} reject={reason} fp={req_fp}", flush=True)
             self._send_json(401, {"error": "invalid or expired session"})
             return
+        print(f"[api-auth] {self.path} ok fp={req_fp} session={session['edit_session_id']}", flush=True)
 
         # Request-size limit (before reading the body).
         length = int(self.headers.get("Content-Length", 0) or 0)
