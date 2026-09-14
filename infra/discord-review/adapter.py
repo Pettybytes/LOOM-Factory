@@ -414,6 +414,7 @@ def resolve_editor_token(token: str):
         "source_asset_version": row.get("source_asset_version"),
         "launch_guild_id": row.get("launch_guild_id"),
         "launch_channel_id": row.get("launch_channel_id"),
+        "draft": row.get("draft"),
     }
 
 
