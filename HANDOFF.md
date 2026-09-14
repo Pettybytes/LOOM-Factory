@@ -9,24 +9,27 @@
 ---
 
 ## Last Updated
-2026-09-14 00:10 EDT (America/Detroit)
+2026-09-14 00:20 EDT (America/Detroit)
 
 ## Session handoff — current objective
 
 Stage 2 editor is **paused pending read-only diagnosis** of a missing
 post-render completion. Do **not** retry the rerender until diagnosed.
 
-**First action next session:** read `CURRENT_STATE.md` §7 (exact evidence),
-then diagnose why `/discord/editor/complete` never fired after a successful
-200 rerender (session `502b89e7`, Activity went blank, no correction row, no
-card). This is the only blocking item.
+**First action next session:** restart the **adapter** (it is DOWN — not
+listening on `127.0.0.1:8090`, crash loop rc=1, `supervise.sh` stopped 20:54
+EDT Sep 13; `cd infra/discord-review && exec ./run.sh`). Then read
+`CURRENT_STATE.md` §7 (exact evidence) and diagnose why
+`/discord/editor/complete` never fired after a successful 200 rerender (session
+`502b89e7`, Activity went blank, no correction row, no card).
 
 ## Current engineering state (authoritative summary — see CURRENT_STATE.md for detail)
 
 - **Migrations 001–016 applied + live-verified** (see CURRENT_STATE.md §2).
-- **Services running:** adapter (127.0.0.1:8090), Caddy funnel
-  (loom-tunnel-proxy, 127.0.0.1:8081–8082), OpenShorts backend (127.0.0.1:8000
-  loopback-only), renderer (3100), frontend Vite dev (5175→5173).
+- **Services running:** Caddy funnel (loom-tunnel-proxy, 127.0.0.1:8081–8082),
+  OpenShorts backend (127.0.0.1:8000 loopback-only), renderer (3100), frontend
+  Vite dev (5175→5173). **Adapter is DOWN** (127.0.0.1:8090 not listening; crash
+  loop rc=1; supervisor stopped 20:54 EDT Sep 13).
 - **Public hostname:** `https://users-macbook-pro-1.taild000b2.ts.net` → `/` →
   Caddy 8081.
 - **Discord app:** "LOOM Clip Review" id `1548188833386995742`, guild

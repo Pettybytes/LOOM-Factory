@@ -5,8 +5,9 @@
 > **Repository:** `/Users/user/Desktop/LOOM-Factory` · **Remote:** `Pettybytes/LOOM-Factory`
 > **Nested frontend repo:** `/Users/user/Desktop/LOOM-Factory/openshorts` (upstream `mutonby/openshorts`, branch `loom/factory-mvp-baseline-fixes`)
 >
-> **⚠️ FIRST ACTION (read-only, do not mutate, do not retry the rerender):**
-> Diagnose the missing post-render completion. A clip-specific Activity edit ran end-to-end through the **successful 200 rerender**, but `/discord/editor/complete` **never fired** — no `target_asset_version`, no correction row, no revised card, and the Activity went blank. See the "Latest attempt — exact evidence" section below before any code change.
+> **⚠️ FIRST ACTION NEXT SESSION:**
+> 1. **Restart the adapter** — it is currently **DOWN** (not listening on `127.0.0.1:8090`; crash loop rc=1; `supervise.sh` stopped 20:54 EDT Sep 13). Run `cd infra/discord-review && exec ./run.sh` (or relaunch `supervise.sh`). No editor/Discord flow works until it is back up.
+> 2. **Diagnose the missing post-render completion (read-only, do not retry the rerender):** A clip-specific Activity edit ran end-to-end through the **successful 200 rerender**, but `/discord/editor/complete` **never fired** — no `target_asset_version`, no correction row, no revised card, and the Activity went blank. See the "Latest attempt — exact evidence" section below before any code change.
 >
 > **Completed segments:** 3 (ingest) · 4 (Discord QC) · 5 (GHL media storage) · 6A (tenant mapping) · 6B (distribution, accepted) · Stage 2 editor loop (runtime-proven on fixtures render-1.1/1.2)
 >
@@ -18,8 +19,9 @@
 
 ### LOOM-Factory — `master` — **clean**
 - Remote: `origin https://github.com/Pettybytes/LOOM-Factory.git`
-- HEAD: `8b2aecb` "Editor: auth diagnostics + draft persistence + 401 recovery"
+- HEAD: `becfed8` "Handoff: authoritative CURRENT_STATE + pruned HANDOFF"
 - Recent commits (newest → oldest):
+  - `becfed8` Handoff: authoritative CURRENT_STATE + pruned HANDOFF
   - `8b2aecb` Editor: auth diagnostics + draft persistence + 401 recovery
   - `ef0322c` adapter: respond LAUNCH_ACTIVITY immediately (fix timeout) + async persist + 4h session TTL
   - `1979cb2` Stage 2: Edit launches Discord Activity (type 12) + pending-context resolution
@@ -59,7 +61,7 @@ Live read-only verification confirmed `loom_edit_sessions` exposes: `id, launch_
 
 | Component | Container/process | Bind | Health |
 |-----------|-------------------|------|--------|
-| LOOM adapter | `adapter.py` (host, PID varies) | `127.0.0.1:8090` | ✅ 200 |
+| LOOM adapter | `adapter.py` (host, PID varies) | `127.0.0.1:8090` | ❌ DOWN (crash loop rc=1; supervise stopped 20:54 EDT) |
 | Caddy funnel | `loom-tunnel-proxy` | `127.0.0.1:8081–8082` | ✅ |
 | OpenShorts backend | `openshorts-backend` | `127.0.0.1:8000` (loopback-only) | ✅ healthy |
 | OpenShorts renderer | `openshorts-renderer` | `0.0.0.0:3100` | running |
@@ -157,11 +159,14 @@ Live read-only verification confirmed `loom_edit_sessions` exposes: `id, launch_
 | — | `POST /discord/editor/complete` | **NEVER FIRED** |
 | — | Activity UI | **became blank** |
 
-**Resulting state (verified):**
-- Session `502b89e7` still `status=active`, `target_asset_version=null`, `draft` present (trim 26→51.74).
+**Resulting state (verified 2026-09-14 00:20 EDT):**
+- Session `502b89e7` still `status=active`, `target_asset_version=null`, `draft` present.
+- Draft jsonb = `{trim_start: 26, trim_end: 51.74, framing: "full"}` — contains the **trim** change only.
+- **⚠️ Caption/subtitle addition is NOT in the draft.** It was applied via `POST /api/subtitle` (200), but the draft schema (`/discord/editor/draft` + migration 016) only persists trim/framing — no caption field. The caption edit is not recoverable from `draft`.
+- **Rendered artifact EXISTS despite no completion:** `recut_1789357887_51b854_…_clip_2.mp4` (22.4 MB) + `subtitled_1789358004_…` (21.4 MB), mtime 23:53 EDT.
 - **No** `loom_edit_corrections` row for this session.
 - **No** revised re-review card sent.
-- No `register_edited_asset` RPC invocation (no new `render-1.3`).
+- No `register_edited_asset` RPC invocation (no `render-1.3` in `loom_media`; only render-1.0/1.1/1.2 exist).
 
 **Most likely gap (hypothesis, to be confirmed read-only):** a frontend exception between `rrRes.json()` (rerender 200) and the `fetch(EDITOR_COMPLETE_URL)` call — likely in constructing the completion payload (`outputBasename(rrData?.new_video_url)` or a throw inside `handleRerender`), which is swallowed by the `catch` → `setError` but then the editor blanked. Confirm by reproducing with browser console open, or add completion-payload logging.
 
