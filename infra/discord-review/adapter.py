@@ -201,8 +201,10 @@ def discord_oauth_exchange(code: str):
     }
     if redirect:
         data["redirect_uri"] = redirect
-    body = json.dumps(data).encode()
-    headers = {"Content-Type": "application/json", "User-Agent": "LOOMReviewAdapter/1.0"}
+    # Discord's token endpoint requires form-encoded, NOT JSON.
+    from urllib.parse import urlencode
+    body = urlencode(data).encode()
+    headers = {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "LOOMReviewAdapter/1.0"}
     req = Request(f"{DISCORD_API}/oauth2/token", data=body, headers=headers, method="POST")
     try:
         with urlopen(req, timeout=15) as resp:
