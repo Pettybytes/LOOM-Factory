@@ -571,6 +571,65 @@ def resolve_clip_review_channel() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Compact card presentation helpers (Framer-inspired, conditional)
+# ---------------------------------------------------------------------------
+
+def _compact_duration(seconds):
+    try:
+        s = float(seconds)
+    except (TypeError, ValueError):
+        return None
+    if s < 60:
+        return f"{s:g}s"
+    m = int(s // 60)
+    sec = s % 60
+    return f"{m}:{sec:04.1f}"
+
+
+def _short_version(asset_version):
+    if not asset_version:
+        return None
+    v = str(asset_version)
+    return ("v" + v[len("render-"):]) if v.startswith("render-") else v
+
+
+def build_changes_summary(corrections):
+    """Build the compact Changes line from actual corrections (conditional).
+    Returns None when there is nothing meaningful to show."""
+    if not corrections:
+        return None
+    parts = []
+    ts = corrections.get("trim_start"); te = corrections.get("trim_end")
+    if ts is not None and te is not None:
+        try:
+            parts.append(f"{float(ts):g}–{float(te):g}s")
+        except (TypeError, ValueError):
+            pass
+    cap = corrections.get("caption_changes") or {}
+    align = cap.get("alignment")
+    changed = cap.get("changedCount")
+    if align == "redistributed" and changed:
+        parts.append(f"caption adjusted ({changed} words)")
+    elif align == "realignment_required":
+        parts.append("caption realignment required")
+    style_bits = []
+    pos = cap.get("position")
+    if pos and pos != "bottom": style_bits.append(str(pos))
+    sty = cap.get("style")
+    if sty and sty != "classic": style_bits.append(str(sty))
+    if style_bits: parts.append("/".join(style_bits))
+    reframe = corrections.get("crop_reframe_changes") or {}
+    framing = reframe.get("framing")
+    if framing and framing != "auto": parts.append(str(framing))
+    return " · ".join(parts) if parts else None
+
+
+def card_color(payload):
+    # Edited / final_publication = amber; new candidate = Discord blurple.
+    return 0xF59E0B if (payload.get("review_stage") == "final_publication") else 0x5865F2
+
+
+# ---------------------------------------------------------------------------
 # Card send (bot message + attachment + buttons)
 # ---------------------------------------------------------------------------
 
@@ -621,68 +680,73 @@ def send_review_card(payload: dict):
         reject_id  = make_custom_id(token, "reject")
         hold_id    = make_custom_id(token, "hold")
         edit_id    = make_custom_id(token, "edit")
+        details_id = make_custom_id(token, "details")
 
-        # Source title vs proposed Shorts title: shown SEPARATELY. The
-        # imported source-video title is NOT the candidate title.
-        source_title = payload.get("source_title") or "Unavailable"
-        proposed_title = payload.get("proposed_shorts_title") or "Not generated"
-
-        # Stage-aware labeling (never show a moment approval as publication).
+        # Compact, conditional card (Framer-inspired hierarchy). Only fields
+        # with meaningful data are shown — never "—"/"Unavailable"/debug states.
         is_final = review_stage == "final_publication"
-        stage_heading = "Final Review — Approve for Publication" if is_final \
-            else "Moment Review — Approve for Reaction Queue"
-        approve_label = "Approve for Publication" if is_final \
-            else "Approve for Reaction Queue"
+        header = "🎬 FINAL REVIEW · EDITED CUT" if is_final else "🎬 MOMENT REVIEW · CANDIDATE"
+        approve_label = "Approve for Publication" if is_final else "Approve for Reaction Queue"
 
-        # Display safety: mask explicit terms on the card; preserve raw
-        # internally (already persisted in Supabase by the pipeline).
-        hook_raw = payload.get("hook") or ""
-        caption_raw = payload.get("caption") or ""
-        hook_display, hook_terms = mask_explicit(hook_raw)
-        caption_display, caption_terms = mask_explicit(caption_raw)
+        # Display safety: mask explicit terms on the card (display-only).
+        hook_display, hook_terms = mask_explicit(payload.get("hook") or "")
+        caption_display, caption_terms = mask_explicit(payload.get("caption") or "")
         explicit_terms = sorted(set(hook_terms) | set(caption_terms))
 
-        fields = [
-            {"name": "Review", "value": stage_heading, "inline": False},
-            {"name": "Source title", "value": (source_title or "Unavailable")[:1000], "inline": False},
-            {"name": "Proposed Shorts title", "value": (proposed_title or "Not generated")[:1000], "inline": False},
-            {"name": "Hook", "value": (hook_display or "—")[:400], "inline": False},
-            {"name": "Caption", "value": (caption_display or "—")[:1000], "inline": False},
-            {"name": "LOOM Score", "value": str(payload.get("overall_score", "—")), "inline": True},
-            {"name": "Disposition", "value": str(payload.get("decision") or "—"), "inline": True},
-            {"name": "Duration", "value": f"{payload.get('duration_seconds', '—')}s", "inline": True},
-            {"name": "Source", "value": (payload.get("source_url") or "—")[:800], "inline": False},
-            {"name": "Tenant", "value": str(tenant_id or "—"), "inline": True},
-            {"name": "Run ID", "value": str(payload.get("run_id") or "—"), "inline": True},
-            {"name": "Clip ID", "value": str(clip_id), "inline": True},
-            {"name": "Asset version", "value": str(asset_version or "—"), "inline": True},
-            {"name": "Captions", "value": f"expected={payload.get('captions_expected', '—')} applied={payload.get('captions_applied', '—')}", "inline": True},
-            {"name": "Hook", "value": f"expected={payload.get('hook_expected', '—')} applied={payload.get('hook_applied', '—')}", "inline": True},
-            {"name": "no_speech", "value": str(payload.get("no_speech", False)), "inline": True},
-        ]
-        # Explicit-language warning (visible, structured). Never converts a
-        # policy-risk candidate into publishable; it is display-only.
+        # Candidate/source title (conditional, ~2 lines max).
+        title = (payload.get("proposed_shorts_title") or payload.get("source_title") or "").strip()
+
+        fields = []
+        if hook_display.strip():
+            fields.append({"name": "Hook", "value": hook_display[:120], "inline": False})
+        if caption_display.strip():
+            fields.append({"name": "Caption", "value": caption_display[:160], "inline": False})
+
+        stats = []
+        score = payload.get("overall_score")
+        if score not in (None, "", "—"):
+            stats.append(f"**{score}**")
+        dur = _compact_duration(payload.get("duration_seconds"))
+        if dur:
+            stats.append(dur)
+        ver = _short_version(asset_version)
+        if ver:
+            stats.append(ver)
+        if stats:
+            fields.append({"name": "Score · Duration · Version", "value": " · ".join(stats), "inline": False})
+
+        changes = build_changes_summary(payload.get("corrections"))
+        if changes:
+            fields.append({"name": "Changes", "value": changes[:400], "inline": False})
+
+        # Warnings (conditional, display-only).
         if explicit_terms:
-            fields.append({"name": "⚠️ Explicit language",
-                           "value": "Detected (masked): " + ", ".join(explicit_terms), "inline": False})
-        # Rights/policy warning when already available (never invented here).
+            fields.append({"name": "⚠️ Explicit language", "value": "Detected (masked): " + ", ".join(explicit_terms), "inline": False})
         rights = payload.get("rights_policy")
         if rights:
             fields.append({"name": "⚠️ Rights/policy", "value": str(rights)[:400], "inline": False})
-        # Publication status (MVP: always disabled unless explicitly enabled).
-        pub_enabled = bool(payload.get("publication_enabled"))
-        fields.append({"name": "Publication", "value": "enabled" if pub_enabled else "disabled", "inline": True})
-        fields.append({"name": "Versions", "value": f"master={payload.get('master_asset') or '—'} | render={payload.get('render_version') or '—'} | proxy={proxy_name}", "inline": False})
+
+        # Footer: tenant · lineage · fixture badge · publication state.
+        footer = []
+        if tenant_id:
+            footer.append(str(tenant_id))
         if payload.get("lineage"):
-            fields.append({"name": "Lineage", "value": str(payload["lineage"]), "inline": False})
-        if payload.get("correction_summary"):
-            fields.append({"name": "Corrections", "value": str(payload["correction_summary"])[:800], "inline": False})
+            footer.append(str(payload["lineage"]))
+        if payload.get("is_fixture"):
+            footer.append("🧪 Test fixture")
+        if not payload.get("publication_enabled"):
+            footer.append("Publication locked")
+        footer_text = " · ".join(footer) if footer else None
 
         embed = {
-            "title": (proposed_title or "LOOM Candidate")[:256],
-            "color": 0xC9A227,  # brass/gold
+            "title": header,
+            "color": card_color(payload),
             "fields": fields,
         }
+        if title:
+            embed["description"] = title[:256]
+        if footer_text:
+            embed["footer"] = {"text": footer_text[:2048]}
 
         components = [{
             "type": 1,
@@ -691,11 +755,12 @@ def send_review_card(payload: dict):
                 {"type": 2, "style": 4, "label": "Reject", "custom_id": reject_id},
                 {"type": 2, "style": 2, "label": "Hold", "custom_id": hold_id},
                 {"type": 2, "style": 1, "label": "Edit", "custom_id": edit_id},
+                {"type": 2, "style": 2, "label": "Details", "custom_id": details_id},
             ],
         }]
 
         message_payload = {
-            "content": f"🎬 **{stage_heading}** — {clip_id}",
+            "content": f"🎬 **{header}**",
             "embeds": [embed],
             "components": components,
         }
@@ -934,13 +999,17 @@ class Handler(BaseHTTPRequestHandler):
 
         decision = parsed.get("d")
         resolved = self._resolve_identity(parsed)
-        if decision not in ("approve", "reject", "hold", "edit") or not resolved:
+        if decision not in ("approve", "reject", "hold", "edit", "details") or not resolved:
             self._send_json(200, {"type": 4, "data": {"content": "Invalid action.", "flags": 64}})
             return
         identity = resolved["identity"]
         token_hash = resolved["token_hash"]
 
         reviewer = self._reviewer_name(interaction)
+
+        if decision == "details":
+            self._handle_details(interaction, identity)
+            return
 
         if decision == "edit":
             self._handle_edit(interaction, identity, token_hash, reviewer)
@@ -975,6 +1044,56 @@ class Handler(BaseHTTPRequestHandler):
         # approve / hold: persist, then update the card to "decided".
         self._decide_and_update(interaction, identity, token_hash, decision, reviewer,
                                 category=None, instructions=None)
+
+    def _handle_details(self, interaction, identity):
+        """Details is informational: return full metadata as an EPHEMERAL
+        response. It never changes review state, never consumes the durable
+        token, and never embeds raw metadata/secrets in the custom_id."""
+        clip_id = identity["clip_id"]
+        tenant_id = identity["tenant_id"]
+        ver = identity["asset_version"]
+
+        scores = supabase_get("loom_scores", clip_id)
+        media = supabase_query_media(identity)
+        corrections = supabase_filter_get("loom_edit_corrections", {
+            "tenant_id": tenant_id, "clip_id": clip_id, "target_asset_version": ver,
+        })
+
+        lines = ["**Full metadata**",
+                 f"tenant `{tenant_id}` · clip `{clip_id}` · version `{ver}` · stage `{identity.get('review_stage')}`"]
+        s = scores[0] if scores else {}
+        if s.get("suggested_caption"):
+            lines.append(f"**Caption**\n{s['suggested_caption']}")
+        if s.get("suggested_hook"):
+            lines.append(f"**Hook**\n{s['suggested_hook']}")
+        if s.get("overall_score") is not None:
+            lines.append(f"**Score** {s.get('overall_score')} · disposition `{s.get('decision') or '—'}`")
+
+        if media:
+            m = media[0]
+            lines.append("**Storage / publication**")
+            lines.append(f"storage `{m.get('storage_status')}` · publication `{m.get('publication_status')}` · content_type `{m.get('content_type') or '—'}`")
+            if m.get("canonical_url"):
+                lines.append(f"canonical `{m['canonical_url']}`")
+            if m.get("previous_asset_version"):
+                lines.append(f"lineage `{m['previous_asset_version']} → {ver}`")
+            if m.get("source_filename"):
+                lines.append(f"source `{m['source_filename']}`")
+
+        for c in (corrections if isinstance(corrections, list) else []):
+            lines.append("**Corrections**")
+            lines.append(f"`{c.get('source_asset_version')} → {c.get('target_asset_version')}` · trim `{c.get('trim_start')}–{c.get('trim_end')}` · render `{c.get('render_status')}`")
+            if c.get('caption_changes'):
+                lines.append(f"caption `{json.dumps(c['caption_changes'])[:600]}`")
+            if c.get('crop_reframe_changes'):
+                lines.append(f"reframe `{json.dumps(c['crop_reframe_changes'])[:300]}`")
+            if c.get('written_instruction'):
+                lines.append(f"instruction `{c['written_instruction']}`")
+            if c.get('llm_assist_used'):
+                lines.append("llm_assist `true`")
+
+        content = "\n".join(lines)[:4000]
+        self._send_json(200, {"type": 4, "data": {"content": content or "No additional metadata.", "flags": 64}})
 
     def _handle_edit(self, interaction, identity, token_hash, reviewer):
         """Edit is NOT a terminal review decision. Mint a single-use 15-minute
@@ -1102,6 +1221,20 @@ class Handler(BaseHTTPRequestHandler):
 
         source_version = result.get("source_asset_version") or session.get("source_asset_version")
         job_id = body.get("job_id", "")
+
+        # Structured corrections for the compact Changes line.
+        corrections = {
+            "trim_start": body.get("trim_start"),
+            "trim_end": body.get("trim_end"),
+            "caption_changes": body.get("caption_changes"),
+            "crop_reframe_changes": body.get("crop_reframe_changes"),
+        }
+        # Fixture badge when the source asset is a non-production fixture.
+        src_rows = supabase_filter_get("loom_media", {
+            "tenant_id": tenant_id, "clip_id": clip_id, "asset_version": source_version,
+        })
+        is_fixture = bool(src_rows and src_rows[0].get("storage_status") == "fixture")
+
         try:
             card = send_review_card({
                 "clip_id": clip_id,
@@ -1110,14 +1243,14 @@ class Handler(BaseHTTPRequestHandler):
                 "asset_version": target_version,
                 "review_stage": "final_publication",
                 "ready_file": ready_file,
-                "proposed_shorts_title": body.get("proposed_title") or "Edited candidate",
+                "proposed_shorts_title": body.get("proposed_title") or "",
                 "hook": body.get("hook") or "",
                 "caption": body.get("caption") or "",
-                "overall_score": body.get("overall_score") or "—",
-                "duration_seconds": body.get("duration_seconds") or 0,
-                "source_url": body.get("source_url") or "—",
-                "lineage": f"{source_version} → {target_version}",
-                "correction_summary": body.get("correction_summary") or "manual edit (trim/reframe/caption)",
+                "overall_score": body.get("overall_score"),
+                "duration_seconds": body.get("duration_seconds"),
+                "lineage": f"{_short_version(source_version)} → {_short_version(target_version)}",
+                "corrections": corrections,
+                "is_fixture": is_fixture,
             })
         except Exception as e:
             self._send_json(200, {"ok": True, "result": result, "card_error": str(e)})
