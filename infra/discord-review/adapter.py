@@ -169,7 +169,8 @@ def verify_signature(public_key_hex: str, signature_hex: str, timestamp: str, ra
 # ---------------------------------------------------------------------------
 
 REVIEW_TOKEN_TTL_SECONDS = 72 * 3600  # 72h. Expired cards revert to manual Hold (never auto-approve).
-EDITOR_TOKEN_TTL_SECONDS = 15 * 60     # 15 min single-use editor session (hash-only).
+EDITOR_TOKEN_TTL_SECONDS = 15 * 60     # 15 min single-use LAUNCH window (pending -> authenticated).
+EDITOR_SESSION_TTL_SECONDS = 4 * 3600  # 4h authenticated editor session (draft stays resumable).
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -435,12 +436,20 @@ MAX_EDITOR_BODY_BYTES = 1024 * 1024  # 1 MB — subtitle/reframe/rerender bodies
 def mint_session_token(edit_session_id: str):
     """Mint a short-lived opaque editor session token (returned to the editor at
     exchange; its SHA-256 is stored server-side). The raw token is the editor's
-    credential for authenticated /api/* calls. Returns the token or None."""
+    credential for authenticated /api/* calls.
+
+    Minting marks the moment the editor becomes AUTHENTICATED. We extend
+    expires_at to the (longer) session TTL here, so the 15-minute LAUNCH window
+    never terminates an already-open editor — the durable draft remains
+    resumable until it completes or is explicitly expired. Returns the token or
+    None."""
     token = secrets.token_urlsafe(24)  # ~32 chars, opaque
     token_hash = hash_token(token)
+    session_expires_at = (datetime.now(timezone.utc) + timedelta(seconds=EDITOR_SESSION_TTL_SECONDS)).isoformat()
     url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
            f"?id=eq.{edit_session_id}&status=eq.active")
-    data = json.dumps({"session_token_hash": token_hash}).encode()
+    data = json.dumps({"session_token_hash": token_hash,
+                       "expires_at": session_expires_at}).encode()
     headers = _supabase_headers()
     headers["Content-Type"] = "application/json"
     req = Request(url, data=data, headers=headers, method="PATCH")
@@ -1197,8 +1206,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         decision = parsed.get("d")
+        if decision not in ("approve", "reject", "hold", "edit", "details"):
+            self._send_json(200, {"type": 4, "data": {"content": "Invalid action.", "flags": 64}})
+            return
+
+        # Edit is special: respond LAUNCH_ACTIVITY (type 12) IMMEDIATELY — within
+        # Discord's 3-second deadline — and persist the pending session
+        # asynchronously. No DB work may block the acknowledgement.
+        if decision == "edit":
+            self._handle_edit(interaction, parsed)
+            return
+
         resolved = self._resolve_identity(parsed)
-        if decision not in ("approve", "reject", "hold", "edit", "details") or not resolved:
+        if not resolved:
             self._send_json(200, {"type": 4, "data": {"content": "Invalid action.", "flags": 64}})
             return
         identity = resolved["identity"]
@@ -1208,10 +1228,6 @@ class Handler(BaseHTTPRequestHandler):
 
         if decision == "details":
             self._handle_details(interaction, identity)
-            return
-
-        if decision == "edit":
-            self._handle_edit(interaction, identity, token_hash, reviewer)
             return
 
         if decision == "reject":
@@ -1294,16 +1310,17 @@ class Handler(BaseHTTPRequestHandler):
         content = "\n".join(lines)[:4000]
         self._send_json(200, {"type": 4, "data": {"content": content or "No additional metadata.", "flags": 64}})
 
-    def _handle_edit(self, interaction, identity, token_hash, reviewer):
-        """Edit is NOT a terminal review decision. Create/resume the pending
-        edit session and bind it to the authenticated Discord user + guild/channel
-        context, then respond with LAUNCH_ACTIVITY (callback type 12) so Discord
-        opens LOOM inside its Activity iframe. NO raw token / job id / clip
-        identity ever enters a URL — the Activity resolves the pending session
-        for the authenticated user after OAuth.
+    def _handle_edit(self, interaction, parsed):
+        """Edit is NOT a terminal review decision. Respond LAUNCH_ACTIVITY
+        (callback type 12) IMMEDIATELY — within Discord's 3-second deadline —
+        with NO database/network work on the acknowledgement path. The pending
+        edit session is then persisted ASYNCHRONOUSLY (resolve the durable review
+        token -> identity, then bind launch_user_id + guild/channel context).
 
-        Fallback: if the interaction has no resolvable user id (unusual), reject
-        cleanly instead of launching an unresolvable Activity."""
+        NO raw token / job id / clip identity ever enters a URL. The Activity
+        resolves the pending session for the authenticated user after OAuth; the
+        frontend polls /discord/editor/pending for a bounded period until the
+        async persistence lands, showing 'Preparing editor…' meanwhile."""
         launch_user_id = self._reviewer_user_id(interaction)
         if not launch_user_id:
             self._send_json(200, {"type": 4, "data": {
@@ -1312,24 +1329,37 @@ class Handler(BaseHTTPRequestHandler):
             return
         launch_guild_id = str(interaction.get("guild_id") or "")
         launch_channel_id = str(interaction.get("channel_id") or "")
+        reviewer = self._reviewer_name(interaction)
+        review_token = parsed.get("t") or ""
 
-        editor_token = secrets.token_urlsafe(18)  # ~24 chars, opaque (hash-only)
-        status, body = register_editor_token(
-            editor_token, identity, reviewer,
-            launch_user_id=launch_user_id,
-            launch_guild_id=launch_guild_id,
-            launch_channel_id=launch_channel_id)
-        if status not in (200, 201):
-            self._send_json(200, {"type": 4, "data": {
-                "content": "⚠️ Could not create an editor session (is migration 012/015 applied?).",
-                "flags": 64}})
-            return
-
-        # Respond LAUNCH_ACTIVITY (type 12). No data payload: Discord opens the
-        # app's Activity at its configured root URL. The pending session is
-        # resolved server-side for the authenticated user after OAuth.
-        print(f"[edit] LAUNCH_ACTIVITY for user {launch_user_id} clip {identity['clip_id']}", flush=True)
+        # Respond LAUNCH_ACTIVITY (type 12) FIRST — before any Supabase/network
+        # work. No data payload: Discord opens the app's Activity at its root URL.
+        print(f"[edit] LAUNCH_ACTIVITY (type 12) for user {launch_user_id}", flush=True)
         self._send_json(200, {"type": 12})
+
+        # Persist the pending session asynchronously so the 3s acknowledgement
+        # is never blocked by database latency.
+        def _persist_pending():
+            try:
+                resolved = resolve_review_token(review_token)
+                if not resolved:
+                    print("[edit] pending session NOT persisted: review token unresolved", flush=True)
+                    return
+                identity = resolved["identity"]
+                editor_token = secrets.token_urlsafe(18)  # ~24 chars, opaque (hash-only)
+                status, body = register_editor_token(
+                    editor_token, identity, reviewer,
+                    launch_user_id=launch_user_id,
+                    launch_guild_id=launch_guild_id,
+                    launch_channel_id=launch_channel_id)
+                if status not in (200, 201):
+                    print(f"[edit] pending session persist FAILED (status {status})", flush=True)
+                    return
+                print(f"[edit] pending session persisted for user {launch_user_id} clip {identity['clip_id']}", flush=True)
+            except Exception as e:
+                print(f"[edit] pending session persist error: {e}", flush=True)
+
+        threading.Thread(target=_persist_pending, daemon=True).start()
 
     def _handle_editor_exchange(self):
         """One-time launch-token exchange. Consumes the single-use token
