@@ -216,6 +216,22 @@ def discord_oauth_exchange(code: str):
     return result.get("access_token")
 
 
+def discord_user_lookup(access_token: str):
+    """Resolve an OAuth2 access_token to the authenticated Discord user id
+    (server-side, via Discord /users/@me). Returns the numeric user id string or
+    None. The user id is NEVER trusted from the client — it is always derived
+    here from the token that Discord issued."""
+    headers = {"Authorization": f"Bearer {access_token}", "User-Agent": "LOOMReviewAdapter/1.0"}
+    req = Request(f"{DISCORD_API}/users/@me", headers=headers, method="GET")
+    try:
+        with urlopen(req, timeout=15) as resp:
+            user = json.loads(resp.read().decode() or "{}")
+    except Exception:
+        return None
+    uid = user.get("id")
+    return str(uid) if uid else None
+
+
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -311,10 +327,16 @@ def consume_review_token(token_hash: str):
         return resp.status
 
 
-def register_editor_token(token: str, identity: dict, reviewer: str):
+def register_editor_token(token: str, identity: dict, reviewer: str,
+                        launch_user_id=None, launch_guild_id=None, launch_channel_id=None):
     """Create a single-use editor-session row. The raw token is used only for
     the editor launch; the DB stores only its SHA-256 hash. 15-minute expiry,
-    replay-protected (status flips from 'active' on first use)."""
+    replay-protected (status flips from 'active' on first use).
+
+    When launched via LAUNCH_ACTIVITY (type 12), the raw token is NOT placed in
+    a URL — the session is instead bound to the authenticated Discord user by
+    `launch_user_id` (plus guild/channel context) so the Activity can resolve
+    its pending edit after OAuth."""
     token_hash = hash_token(token)
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=EDITOR_TOKEN_TTL_SECONDS)).isoformat()
     payload = {
@@ -326,6 +348,12 @@ def register_editor_token(token: str, identity: dict, reviewer: str):
         "status": "active",
         "expires_at": expires_at,
     }
+    if launch_user_id:
+        payload["launch_user_id"] = launch_user_id
+    if launch_guild_id:
+        payload["launch_guild_id"] = launch_guild_id
+    if launch_channel_id:
+        payload["launch_channel_id"] = launch_channel_id
     url = f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
     data = json.dumps(payload).encode()
     headers = _supabase_headers()
@@ -333,7 +361,8 @@ def register_editor_token(token: str, identity: dict, reviewer: str):
     headers["Prefer"] = "return=representation"
     req = Request(url, data=data, headers=headers, method="POST")
     with urlopen(req, timeout=15) as resp:
-        return resp.status
+        body = json.loads(resp.read().decode() or "[]")
+        return resp.status, body
 
 
 def consume_editor_token(token_hash: str):
@@ -417,6 +446,40 @@ def mint_session_token(edit_session_id: str):
     req = Request(url, data=data, headers=headers, method="PATCH")
     with urlopen(req, timeout=15) as resp:
         return token if resp.status in (200, 204) else None
+
+
+def resolve_pending_launch(launch_user_id: str):
+    """Resolve the pending (active) edit session bound to a Discord user id.
+    Returns the most recent active session identity (tenant/clip/asset_version)
+    for that user, or None. This is how the Activity maps an authenticated
+    Discord user back to the exact clip they clicked Edit on — WITHOUT any token
+    or job id ever appearing in a URL."""
+    if not launch_user_id:
+        return None
+    url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
+           f"?launch_user_id=eq.{launch_user_id}&status=eq.active"
+           f"&select=*&order=created_at.desc&limit=1")
+    req = Request(url, headers=_supabase_headers(), method="GET")
+    with urlopen(req, timeout=15) as resp:
+        rows = json.loads(resp.read().decode() or "[]")
+    if not rows:
+        return None
+    row = rows[0]
+    expires_at = row.get("expires_at")
+    if expires_at:
+        try:
+            exp = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if exp < datetime.now(timezone.utc):
+                return None
+        except Exception:
+            pass
+    return {
+        "edit_session_id": row.get("id"),
+        "tenant_id": row.get("tenant_id"),
+        "clip_id": row.get("clip_id"),
+        "source_asset_version": row.get("source_asset_version"),
+        "status": row.get("status"),
+    }
 
 
 def resolve_editor_session_token(session_token: str):
@@ -1031,7 +1094,15 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return self.rfile.read(length) if length else b""
 
+    def _log_request(self):
+        """Minimal access log: method + path only. The query string is stripped
+        (it can carry the single-use launch token); bodies are never read or
+        logged, so no OAuth code / token / secret ever reaches the log."""
+        path = (self.path or "").split("?", 1)[0] or "/"
+        print(f"[{time.strftime('%H:%M:%S')}] {self.command} {path} <- {self.address_string()}", flush=True)
+
     def do_GET(self):
+        self._log_request()
         if self.path == "/health":
             self._send_json(200, {"status": "ok"})
             return
@@ -1043,6 +1114,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
+        self._log_request()
         path = self.path.rstrip("/") or "/"
         if path == "/health":
             self._send_json(200, {"status": "ok"})
@@ -1068,6 +1140,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/discord/editor/oauth":
             self._handle_editor_oauth()
+            return
+        if path == "/discord/editor/pending":
+            self._handle_editor_pending()
             return
         self._send_json(404, {"error": "not found"})
 
@@ -1220,34 +1295,41 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"type": 4, "data": {"content": content or "No additional metadata.", "flags": 64}})
 
     def _handle_edit(self, interaction, identity, token_hash, reviewer):
-        """Edit is NOT a terminal review decision. Mint a single-use 15-minute
-        editor token (the review token stays 'pending') and return the editor
-        launch. Dev scaffold uses a deep-link; the final endpoint is a Discord
-        Activity (same token validated server-side). Only the token hash is
-        stored; the raw token is short-lived and single-use."""
-        editor_token = secrets.token_urlsafe(18)  # ~24 chars, opaque
-        status = register_editor_token(editor_token, identity, reviewer)
+        """Edit is NOT a terminal review decision. Create/resume the pending
+        edit session and bind it to the authenticated Discord user + guild/channel
+        context, then respond with LAUNCH_ACTIVITY (callback type 12) so Discord
+        opens LOOM inside its Activity iframe. NO raw token / job id / clip
+        identity ever enters a URL — the Activity resolves the pending session
+        for the authenticated user after OAuth.
+
+        Fallback: if the interaction has no resolvable user id (unusual), reject
+        cleanly instead of launching an unresolvable Activity."""
+        launch_user_id = self._reviewer_user_id(interaction)
+        if not launch_user_id:
+            self._send_json(200, {"type": 4, "data": {
+                "content": "⚠️ Could not identify the editor (missing user id).",
+                "flags": 64}})
+            return
+        launch_guild_id = str(interaction.get("guild_id") or "")
+        launch_channel_id = str(interaction.get("channel_id") or "")
+
+        editor_token = secrets.token_urlsafe(18)  # ~24 chars, opaque (hash-only)
+        status, body = register_editor_token(
+            editor_token, identity, reviewer,
+            launch_user_id=launch_user_id,
+            launch_guild_id=launch_guild_id,
+            launch_channel_id=launch_channel_id)
         if status not in (200, 201):
             self._send_json(200, {"type": 4, "data": {
-                "content": "⚠️ Could not create an editor session (is migration 012 applied?).",
+                "content": "⚠️ Could not create an editor session (is migration 012/015 applied?).",
                 "flags": 64}})
             return
 
-        clip_id = identity["clip_id"]
-        job_id, sep, clip_index = clip_id.rpartition(":")
-        if not sep:
-            job_id, clip_index = clip_id, "0"
-        base = EDITOR_BASE_URL.rstrip("/")
-        launch_url = f"{base}/edit?job_id={job_id}&clip_index={clip_index}&token={editor_token}"
-
-        self._send_json(200, {"type": 4, "data": {
-            "content": (
-                f"✏️ **Edit session opened** (single-use, 15 min)\n"
-                f"Tenant `{identity['tenant_id']}` · `{clip_id}` · `{identity['asset_version']}`\n"
-                f"Open the editor: {launch_url}\n"
-                f"_(The review stays open; the edited render becomes a NEW asset version for re-review.)_"
-            ),
-            "flags": 64}})
+        # Respond LAUNCH_ACTIVITY (type 12). No data payload: Discord opens the
+        # app's Activity at its configured root URL. The pending session is
+        # resolved server-side for the authenticated user after OAuth.
+        print(f"[edit] LAUNCH_ACTIVITY for user {launch_user_id} clip {identity['clip_id']}", flush=True)
+        self._send_json(200, {"type": 12})
 
     def _handle_editor_exchange(self):
         """One-time launch-token exchange. Consumes the single-use token
@@ -1268,6 +1350,7 @@ class Handler(BaseHTTPRequestHandler):
         if not session:
             self._send_json(403, {"ok": False, "error": "invalid, consumed, or expired token"})
             return
+        print("[exchange] launch token -> editor session OK (clip-specific launch)", flush=True)
         clip_id = session["clip_id"]
         job_id, sep, clip_index = clip_id.rpartition(":")
         if not sep:
@@ -1304,9 +1387,52 @@ class Handler(BaseHTTPRequestHandler):
             return
         access_token = discord_oauth_exchange(code)
         if not access_token:
+            print("[oauth] exchange FAILED (no token returned)", flush=True)
             self._send_json(502, {"ok": False, "error": "token exchange failed"})
             return
+        print("[oauth] exchange OK — access token obtained", flush=True)
         self._send_json(200, {"ok": True, "access_token": access_token})
+
+    def _handle_editor_pending(self):
+        """Resolve the pending (active) edit session for the authenticated
+        Discord user. The client sends the OAuth access_token; the adapter
+        derives the numeric user id SERVER-SIDE via Discord /users/@me (never
+        trusts a client-supplied id), looks up the pending session, mints the
+        short-lived editor session token, and returns the exact
+        tenant/clip/asset_version. Returns pending:false when no session is
+        bound to this user (generic App Launcher launch)."""
+        try:
+            raw = self._read_body()
+            body = json.loads(raw.decode() or "{}")
+        except Exception:
+            self._send_json(400, {"ok": False, "error": "bad json"})
+            return
+        access_token = body.get("access_token")
+        if not access_token:
+            self._send_json(400, {"ok": False, "error": "missing access_token"})
+            return
+        launch_user_id = discord_user_lookup(access_token)
+        if not launch_user_id:
+            self._send_json(401, {"ok": False, "error": "could not resolve authenticated user"})
+            return
+        session = resolve_pending_launch(launch_user_id)
+        if not session:
+            print(f"[pending] no active session for user {launch_user_id}", flush=True)
+            self._send_json(200, {"ok": True, "pending": False})
+            return
+        session_token = mint_session_token(session["edit_session_id"])
+        if not session_token:
+            self._send_json(502, {"ok": False, "error": "could not mint session token"})
+            return
+        clip_id = session["clip_id"]
+        job_id, sep, clip_index = clip_id.rpartition(":")
+        if not sep:
+            job_id, clip_index = clip_id, "0"
+        session["job_id"] = job_id
+        session["clip_index"] = clip_index
+        session["session_token"] = session_token
+        print(f"[pending] resolved clip-specific session for user {launch_user_id} -> {clip_id}", flush=True)
+        self._send_json(200, {"ok": True, "pending": True, "session": session})
 
     def _handle_editor_api(self, method):
         """Authenticated, allowlisted editor API gateway. Only the endpoints the
@@ -1606,6 +1732,14 @@ class Handler(BaseHTTPRequestHandler):
         name = u.get("username") or u.get("global_name") or "unknown"
         uid = u.get("id") or ""
         return f"{name}#{uid}" if uid else name
+
+    def _reviewer_user_id(self, interaction):
+        """Numeric Discord user id of the interacting user (from member or user
+        payload). Used to bind a pending edit session for LAUNCH_ACTIVITY."""
+        member = interaction.get("member") or {}
+        user = interaction.get("user") or {}
+        u = member.get("user") or user or {}
+        return str(u.get("id")) if u.get("id") else ""
 
     # -- Card send ---------------------------------------------------------
 
