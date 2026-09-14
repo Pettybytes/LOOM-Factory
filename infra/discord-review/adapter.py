@@ -1106,6 +1106,12 @@ class Handler(BaseHTTPRequestHandler):
         self._emit_cors()
         self.end_headers()
         self.wfile.write(data)
+        # Flush immediately so the response is on the wire NOW, never buffered
+        # behind later network work (the Discord 3-second interaction deadline).
+        try:
+            self.wfile.flush()
+        except Exception:
+            pass
 
     def _emit_cors(self):
         """Emit exact-origin CORS headers only for allowlisted origins. The
@@ -1345,9 +1351,11 @@ class Handler(BaseHTTPRequestHandler):
         the only thing placed in the URL; job/clip identity is resolved from that
         token server-side at exchange time (never trusted from a URL).
 
-        We ACK with DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE (type 5) instantly, then
-        resolve + register synchronously and post the editor link as an ephemeral
-        follow-up — so the 3-second interaction deadline is never at risk.
+        The 3-second deadline is met with an IMMEDIATE ephemeral message (type 4)
+        — a temporary "Preparing secure editor…" state. This is a COMPLETE,
+        flushed response with ZERO database or network work on the ack path. The
+        single-use token is then created ASYNCHRONOUSLY and the message is
+        PATCHed to the "Open Editor" link button.
 
         The Discord Activity implementation (type 12 + OAuth + pending context) is
         preserved in code for later, but is NOT the critical path."""
@@ -1359,45 +1367,52 @@ class Handler(BaseHTTPRequestHandler):
         application_id = str(interaction.get("application_id") or "")
         interaction_token = str(interaction.get("token") or "")
 
-        # Acknowledge immediately (deferred, ephemeral) — before any DB/network
-        # work. The follow-up PATCHes this placeholder into the editor link.
-        self._send_json(200, {"type": 5, "data": {"flags": 64}})  # DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+        # IMMEDIATE ack — the ONLY thing on the 3-second path. A complete type-4
+        # ephemeral response (not deferred), flushed before any network work.
+        self._send_json(200, {
+            "type": 4,  # CHANNEL_MESSAGE_WITH_SOURCE
+            "data": {"content": "⏳ Preparing secure editor…", "flags": 64},
+        })
 
         if not application_id or not interaction_token:
             print("[edit] missing application_id/token for follow-up", flush=True)
             return
 
-        try:
-            resolved = resolve_review_token(review_token)
-            if not resolved:
-                self._edit_followup(application_id, interaction_token,
-                                    "⚠️ Could not resolve this candidate for editing.")
-                return
-            identity = resolved["identity"]
-            editor_token = secrets.token_urlsafe(18)  # ~24 chars, opaque (hash-only)
-            status, _body = register_editor_token(
-                editor_token, identity, reviewer,
-                launch_user_id=launch_user_id,
-                launch_guild_id=launch_guild_id,
-                launch_channel_id=launch_channel_id)
-            if status not in (200, 201):
-                self._edit_followup(application_id, interaction_token,
-                                    "⚠️ Could not start the editor session.")
-                return
-            if not EDITOR_PUBLIC_URL:
-                self._edit_followup(application_id, interaction_token,
-                                    "⚠️ Editor public URL is not configured (LOOM_EDITOR_PUBLIC_URL).")
-                return
-            edit_url = f"{EDITOR_PUBLIC_URL.rstrip('/')}/edit?token={editor_token}"
-            print(f"[edit] external editor link issued for clip {identity['clip_id']}", flush=True)
-            self._edit_followup(application_id, interaction_token, None, edit_url)
-        except Exception as e:
-            print(f"[edit] follow-up error: {e}", flush=True)
+        # Token creation + message update happen ASYNCHRONOUSLY — never on the ack path.
+        def _prepare():
             try:
-                self._edit_followup(application_id, interaction_token,
-                                    "⚠️ Editor failed to start. Please try again.")
-            except Exception:
-                pass
+                resolved = resolve_review_token(review_token)
+                if not resolved:
+                    self._edit_followup(application_id, interaction_token,
+                                        "⚠️ Could not resolve this candidate for editing.")
+                    return
+                identity = resolved["identity"]
+                editor_token = secrets.token_urlsafe(18)  # ~24 chars, opaque (hash-only)
+                status, _body = register_editor_token(
+                    editor_token, identity, reviewer,
+                    launch_user_id=launch_user_id,
+                    launch_guild_id=launch_guild_id,
+                    launch_channel_id=launch_channel_id)
+                if status not in (200, 201):
+                    self._edit_followup(application_id, interaction_token,
+                                        "⚠️ Could not start the editor session.")
+                    return
+                if not EDITOR_PUBLIC_URL:
+                    self._edit_followup(application_id, interaction_token,
+                                        "⚠️ Editor public URL is not configured (LOOM_EDITOR_PUBLIC_URL).")
+                    return
+                edit_url = f"{EDITOR_PUBLIC_URL.rstrip('/')}/edit?token={editor_token}"
+                print(f"[edit] external editor link issued for clip {identity['clip_id']}", flush=True)
+                self._edit_followup(application_id, interaction_token, None, edit_url)
+            except Exception as e:
+                print(f"[edit] async prepare error: {e}", flush=True)
+                try:
+                    self._edit_followup(application_id, interaction_token,
+                                        "⚠️ Editor failed to start. Please try again.")
+                except Exception:
+                    pass
+
+        threading.Thread(target=_prepare, daemon=True).start()
 
     def _edit_followup(self, application_id, interaction_token, content=None, url=None):
         """POST an ephemeral follow-up to a deferred interaction. The interaction
