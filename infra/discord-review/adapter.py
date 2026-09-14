@@ -75,7 +75,8 @@ LISTEN_HOST         = _env("LOOM_DISCORD_LISTEN_HOST", "127.0.0.1")
 LISTEN_PORT         = int(_env("LOOM_DISCORD_LISTEN_PORT", "8090"))
 CLIP_REVIEW_CHANNEL_NAME = _env("LOOM_CLIP_REVIEW_CHANNEL", "clip-review")
 PROXY_MAX_BYTES     = 23 * 1024 * 1024  # Discord upload ceiling (Boosts raise it; stay safe)
-EDITOR_BASE_URL     = _env("LOOM_EDITOR_BASE_URL", "http://localhost:5173")  # dev scaffold; final = Discord Activity
+EDITOR_BASE_URL     = _env("LOOM_EDITOR_BASE_URL", "http://localhost:5173")  # dev scaffold (legacy); critical path = external HTTPS /edit
+EDITOR_PUBLIC_URL   = _env("LOOM_EDITOR_PUBLIC_URL", "")  # external HTTPS editor origin for the Discord Edit deep-link (NOT localhost, NOT the Activity)
 EDITOR_ORIGIN       = _env("LOOM_EDITOR_ORIGIN", "http://localhost:5173")  # dev CORS allow (legacy; exact allowlist below)
 # Exact-origin CORS allowlist for the editor / OAuth endpoints. Comma-separated.
 # Discord interactions are server-to-server (no CORS); only the browser editor
@@ -411,6 +412,8 @@ def resolve_editor_token(token: str):
         "tenant_id": row.get("tenant_id"),
         "clip_id": row.get("clip_id"),
         "source_asset_version": row.get("source_asset_version"),
+        "launch_guild_id": row.get("launch_guild_id"),
+        "launch_channel_id": row.get("launch_channel_id"),
     }
 
 
@@ -1336,55 +1339,87 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"type": 4, "data": {"content": content or "No additional metadata.", "flags": 64}})
 
     def _handle_edit(self, interaction, parsed):
-        """Edit is NOT a terminal review decision. Respond LAUNCH_ACTIVITY
-        (callback type 12) IMMEDIATELY — within Discord's 3-second deadline —
-        with NO database/network work on the acknowledgement path. The pending
-        edit session is then persisted ASYNCHRONOUSLY (resolve the durable review
-        token -> identity, then bind launch_user_id + guild/channel context).
+        """Edit opens the secure EXTERNAL HTTPS editor (the /edit deep-link) —
+        NOT the Discord Activity and NOT localhost. A single-use opaque token is
+        the only thing placed in the URL; job/clip identity is resolved from that
+        token server-side at exchange time (never trusted from a URL).
 
-        NO raw token / job id / clip identity ever enters a URL. The Activity
-        resolves the pending session for the authenticated user after OAuth; the
-        frontend polls /discord/editor/pending for a bounded period until the
-        async persistence lands, showing 'Preparing editor…' meanwhile."""
-        launch_user_id = self._reviewer_user_id(interaction)
-        if not launch_user_id:
-            self._send_json(200, {"type": 4, "data": {
-                "content": "⚠️ Could not identify the editor (missing user id).",
-                "flags": 64}})
-            return
-        launch_guild_id = str(interaction.get("guild_id") or "")
-        launch_channel_id = str(interaction.get("channel_id") or "")
+        We ACK with DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE (type 5) instantly, then
+        resolve + register synchronously and post the editor link as an ephemeral
+        follow-up — so the 3-second interaction deadline is never at risk.
+
+        The Discord Activity implementation (type 12 + OAuth + pending context) is
+        preserved in code for later, but is NOT the critical path."""
         reviewer = self._reviewer_name(interaction)
         review_token = parsed.get("t") or ""
+        launch_user_id = self._reviewer_user_id(interaction)
+        launch_guild_id = str(interaction.get("guild_id") or "")
+        launch_channel_id = str(interaction.get("channel_id") or "")
+        application_id = str(interaction.get("application_id") or "")
+        interaction_token = str(interaction.get("token") or "")
 
-        # Respond LAUNCH_ACTIVITY (type 12) FIRST — before any Supabase/network
-        # work. No data payload: Discord opens the app's Activity at its root URL.
-        print(f"[edit] LAUNCH_ACTIVITY (type 12) for user {launch_user_id}", flush=True)
-        self._send_json(200, {"type": 12})
+        # Acknowledge immediately (deferred, ephemeral) — before any DB/network
+        # work. The follow-up PATCHes this placeholder into the editor link.
+        self._send_json(200, {"type": 5, "data": {"flags": 64}})  # DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
 
-        # Persist the pending session asynchronously so the 3s acknowledgement
-        # is never blocked by database latency.
-        def _persist_pending():
+        if not application_id or not interaction_token:
+            print("[edit] missing application_id/token for follow-up", flush=True)
+            return
+
+        try:
+            resolved = resolve_review_token(review_token)
+            if not resolved:
+                self._edit_followup(application_id, interaction_token,
+                                    "⚠️ Could not resolve this candidate for editing.")
+                return
+            identity = resolved["identity"]
+            editor_token = secrets.token_urlsafe(18)  # ~24 chars, opaque (hash-only)
+            status, _body = register_editor_token(
+                editor_token, identity, reviewer,
+                launch_user_id=launch_user_id,
+                launch_guild_id=launch_guild_id,
+                launch_channel_id=launch_channel_id)
+            if status not in (200, 201):
+                self._edit_followup(application_id, interaction_token,
+                                    "⚠️ Could not start the editor session.")
+                return
+            if not EDITOR_PUBLIC_URL:
+                self._edit_followup(application_id, interaction_token,
+                                    "⚠️ Editor public URL is not configured (LOOM_EDITOR_PUBLIC_URL).")
+                return
+            edit_url = f"{EDITOR_PUBLIC_URL.rstrip('/')}/edit?token={editor_token}"
+            print(f"[edit] external editor link issued for clip {identity['clip_id']}", flush=True)
+            self._edit_followup(application_id, interaction_token, None, edit_url)
+        except Exception as e:
+            print(f"[edit] follow-up error: {e}", flush=True)
             try:
-                resolved = resolve_review_token(review_token)
-                if not resolved:
-                    print("[edit] pending session NOT persisted: review token unresolved", flush=True)
-                    return
-                identity = resolved["identity"]
-                editor_token = secrets.token_urlsafe(18)  # ~24 chars, opaque (hash-only)
-                status, body = register_editor_token(
-                    editor_token, identity, reviewer,
-                    launch_user_id=launch_user_id,
-                    launch_guild_id=launch_guild_id,
-                    launch_channel_id=launch_channel_id)
-                if status not in (200, 201):
-                    print(f"[edit] pending session persist FAILED (status {status})", flush=True)
-                    return
-                print(f"[edit] pending session persisted for user {launch_user_id} clip {identity['clip_id']}", flush=True)
-            except Exception as e:
-                print(f"[edit] pending session persist error: {e}", flush=True)
+                self._edit_followup(application_id, interaction_token,
+                                    "⚠️ Editor failed to start. Please try again.")
+            except Exception:
+                pass
 
-        threading.Thread(target=_persist_pending, daemon=True).start()
+    def _edit_followup(self, application_id, interaction_token, content=None, url=None):
+        """POST an ephemeral follow-up to a deferred interaction. The interaction
+        token (NOT the bot token) authorizes this endpoint."""
+        data = {"flags": 64}  # ephemeral: only the reviewer sees it
+        if url:
+            data["content"] = "✏️ **Edit this clip** — opens the secure editor."
+            data["components"] = [{
+                "type": 1,
+                "components": [{
+                    "type": 2, "style": 5, "label": "Open Editor", "url": url,
+                }],
+            }]
+        else:
+            data["content"] = content or "⚠️ Editor unavailable."
+        req = Request(
+            f"{DISCORD_API}/webhooks/{application_id}/{interaction_token}/messages/@original",
+            data=json.dumps(data).encode(),
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "LOOMReviewAdapter/1.0 (DiscordBot)"},
+            method="PATCH")
+        with urlopen(req, timeout=15) as resp:
+            resp.read()
 
     def _handle_editor_exchange(self):
         """One-time launch-token exchange. Consumes the single-use token

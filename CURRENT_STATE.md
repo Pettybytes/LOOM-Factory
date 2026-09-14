@@ -5,21 +5,18 @@
 > **Repository:** `/Users/user/Desktop/LOOM-Factory` · **Remote:** `Pettybytes/LOOM-Factory`
 > **Nested frontend repo:** `/Users/user/Desktop/LOOM-Factory/openshorts` (upstream `mutonby/openshorts`, branch `loom/factory-mvp-baseline-fixes`)
 >
-> **⚠️ FIRST ACTION NEXT SESSION:**
-> 1. **Restart the adapter** — it is currently **DOWN** (not listening on `127.0.0.1:8090`; crash loop rc=1; `supervise.sh` stopped 20:54 EDT Sep 13). Run `cd infra/discord-review && exec ./run.sh` (or relaunch `supervise.sh`). No editor/Discord flow works until it is back up.
-> 2. **Diagnose the missing post-render completion (read-only, do not retry the rerender):** A clip-specific Activity edit ran end-to-end through the **successful 200 rerender**, but `/discord/editor/complete` **never fired** — no `target_asset_version`, no correction row, no revised card, and the Activity went blank. See the "Latest attempt — exact evidence" section below before any code change.
+> **Editor critical path is now the external HTTPS `/edit` route.** Discord "Edit" no longer launches the Discord Activity — it posts an ephemeral **Open Editor** link button to `{LOOM_EDITOR_PUBLIC_URL}/edit?token=<single-use>`. The Activity implementation is **preserved in code** (LoomActivityRoot, `/discord/editor/oauth`, `/discord/editor/pending`) but is **not** the critical path and is not tested.
 >
-> **Completed segments:** 3 (ingest) · 4 (Discord QC) · 5 (GHL media storage) · 6A (tenant mapping) · 6B (distribution, accepted) · Stage 2 editor loop (runtime-proven on fixtures render-1.1/1.2)
+> **Completed:** segments 3/4/5/6A/6B · migrations 001–016 · Stage 2 editor boundary (preview, trim, title, hook, social caption vs spoken subtitles, crop/reframe, save→render→register→card progress, secure download, full-field persistent draft, recoverable errors, idempotent retry, exactly-one revised card, "Return to Discord Review").
 >
-> **Migrations applied + live-verified:** 001–016 (see table below).
+> **E2E:** fresh-session acceptance PASSED 2026-09-14 (exchange → authorized `/api/*` → full-field draft persist). Session `502b89e7` and its rendered artifacts are **abandoned disposable fixtures** — do not recover or register them.
 
 ---
 
-## 1. Repository status (as of handoff commit)
+## 1. Repository status
 
-### LOOM-Factory — `master` — **clean**
+### LOOM-Factory — `master`
 - Remote: `origin https://github.com/Pettybytes/LOOM-Factory.git`
-- HEAD: `becfed8` "Handoff: authoritative CURRENT_STATE + pruned HANDOFF"
 - Recent commits (newest → oldest):
   - `becfed8` Handoff: authoritative CURRENT_STATE + pruned HANDOFF
   - `8b2aecb` Editor: auth diagnostics + draft persistence + 401 recovery
@@ -36,22 +33,24 @@
 - **Dirty / untracked (pre-existing, exclude from editor work):**
   - Modified: `dashboard/index.html`, `docker-compose.yml`, `security_utils.py`
   - Untracked: `aborted-runs/`, `dashboard/src/lib/captionRealign.js`, `dashboard/src/lib/captionRealign.test.mjs`, `security_utils.py.bak-20260908212436`
+- **Editor work lives in `dashboard/src/components/ManualTrimEditor.jsx`** and is preserved via the recovery-patch mechanism (see §9).
 
 ---
 
-## 2. Migrations — 010–016 (all applied + live-verified)
+## 2. Migrations — 001–016 (all applied + live-verified)
 
 | # | File | Change | Live status |
 |---|------|--------|-------------|
+| 001–009 | (segments 1–6A) | ledger, media, lineage, reviews, tokens, distribution, receipts, entitlement | ✅ applied |
 | 010 | `010_tenant_distribution_publisher.sql` | publisher_user_id on tenant_distribution_profiles | ✅ applied, runtime-verified |
 | 011 | `011_loom_media_content_type.sql` | `loom_media.content_type` | ✅ applied (NULL, fail-closed) |
 | 012 | `012_loom_edit_sessions.sql` | `loom_edit_sessions` + `loom_edit_corrections` + lineage | ✅ applied |
 | 013 | `013_register_edited_asset.sql` | atomic `register_edited_asset` RPC (service_role only) | ✅ applied |
 | 014 | `014_loom_editor_session_token.sql` | `loom_edit_sessions.session_token_hash` | ✅ applied |
-| 015 | `015_loom_editor_launch_context.sql` | `launch_user_id`/`launch_guild_id`/`launch_channel_id` (all `text`) | ✅ applied, columns verified |
-| 016 | `016_loom_editor_draft.sql` | `loom_edit_sessions.draft` (`jsonb`) | ✅ applied, column verified |
+| 015 | `015_loom_editor_launch_context.sql` | `launch_user_id`/`launch_guild_id`/`launch_channel_id` (all `text`) | ✅ applied |
+| 016 | `016_loom_editor_draft.sql` | `loom_edit_sessions.draft` (`jsonb`) | ✅ applied |
 
-Live read-only verification confirmed `loom_edit_sessions` exposes: `id, launch_user_id, launch_guild_id, launch_channel_id, draft, session_token_hash, status`.
+`loom_edit_sessions` exposes: `id, tenant_id, clip_id, source_asset_version, target_asset_version, reviewer, token_hash, session_token_hash, status, consumed_at, expires_at, launch_user_id, launch_guild_id, launch_channel_id, draft`.
 
 ---
 
@@ -61,7 +60,7 @@ Live read-only verification confirmed `loom_edit_sessions` exposes: `id, launch_
 
 | Component | Container/process | Bind | Health |
 |-----------|-------------------|------|--------|
-| LOOM adapter | `adapter.py` (host, PID varies) | `127.0.0.1:8090` | ❌ DOWN (crash loop rc=1; supervise stopped 20:54 EDT) |
+| LOOM adapter | `adapter.py` (host, supervised) | `127.0.0.1:8090` | ✅ 200 (`/health`) |
 | Caddy funnel | `loom-tunnel-proxy` | `127.0.0.1:8081–8082` | ✅ |
 | OpenShorts backend | `openshorts-backend` | `127.0.0.1:8000` (loopback-only) | ✅ healthy |
 | OpenShorts renderer | `openshorts-renderer` | `0.0.0.0:3100` | running |
@@ -77,7 +76,7 @@ Live read-only verification confirmed `loom_edit_sessions` exposes: `id, launch_
 
 **Caddy `:8082`:** `/relay*` → n8n `loom-openshorts-callback` webhook (local only, `X-LOOM-Relay-Token`).
 
-**Adapter supervision:** `infra/discord-review/supervise.sh` restart loop. Adapter launched via `infra/discord-review/run.sh` (sources secrets from `~/.openclaw/.env`).
+**Adapter supervision:** `infra/discord-review/supervise.sh` restart loop (`while true`; adapter stdout/stderr tee'd to `adapter.log`; supervisor events to `supervisor.log`). Launched detached with `nohup ./supervise.sh > supervisor.log 2>&1 &`. Launch via `infra/discord-review/run.sh` (sources secrets from `~/.openclaw/.env`). Auto-restart is verified: kill the adapter PID → `supervise.sh` relaunches within ~3s.
 
 ---
 
@@ -85,10 +84,10 @@ Live read-only verification confirmed `loom_edit_sessions` exposes: `id, launch_
 
 - **Application:** "LOOM Clip Review" · **App ID:** `1548188833386995742`
 - **Guild:** "Clippy Factory" · **Guild ID:** `1546266463663423518`
-- **Entry-point command:** global `launch` (type 4 = ENTRY_POINT) · id `1548851573944483851` · `handler: 2` (embedded app)
+- **Entry-point command:** global `launch` (type 4 = ENTRY_POINT) · id `1548851573944483851` · `handler: 2` (embedded app) — *preserved but not the critical path*
 - **App flags:** `131072` = EMBEDDED (Activities enabled)
 - **bot_public:** `False` · **integration_types_config:** `{"0": {}, "1": {}}` (guild + user install)
-- **Activity URL mapping:** `/` → `users-macbook-pro-1.taild000b2.ts.net`
+- **Activity URL mapping:** `/` → `users-macbook-pro-1.taild000b2.ts.net` — *preserved but not the critical path*
 - **Bryan's Discord user id (reviewer):** `688976899094872148`
 
 ---
@@ -107,6 +106,7 @@ Live read-only verification confirmed `loom_edit_sessions` exposes: `id, launch_
 | `LOOM_N8N_API_KEY` | n8n review-decision webhook auth |
 | `LOOM_SUPABASE_URL` | Supabase REST base URL |
 | `LOOM_SUPABASE_SERVICE_ROLE_KEY` | Supabase service_role (RPC + session writes) |
+| `LOOM_EDITOR_PUBLIC_URL` | External HTTPS editor origin for the `/edit` deep-link (e.g. `https://users-macbook-pro-1.taild000b2.ts.net`) |
 
 **Configured location `infra/tunnel-proxy/.env`:**
 
@@ -122,59 +122,38 @@ Live read-only verification confirmed `loom_edit_sessions` exposes: `id, launch_
 
 ---
 
-## 6. Editor / session architecture
+## 6. Editor / session architecture (critical path = external HTTPS `/edit`)
 
 **Launch (clip-specific Edit):**
-1. Reviewer clicks Edit → adapter verifies Ed25519, parses `custom_id`, responds **`LAUNCH_ACTIVITY` (callback type 12) immediately** (within Discord's 3s deadline; no DB work on the ack path).
-2. Adapter persists the pending session **asynchronously** (resolve durable review token → identity → bind `launch_user_id` + guild/channel).
+1. Reviewer clicks **Edit** → adapter verifies Ed25519, parses `custom_id`, ACKs with `DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE` (type 5, ephemeral) — no DB/network work on the ack path.
+2. Adapter resolves the durable review token → identity, registers a **single-use editor token** (hash-only in DB), then PATCHes the deferred placeholder (`messages/@original`) into an ephemeral **Open Editor** link button → `{LOOM_EDITOR_PUBLIC_URL}/edit?token=<single-use>`.
 
-**Activity boot (generic or clip-specific):**
-1. Frontend root (`LoomActivityRoot`) boots the Embedded App SDK → `ready()`.
-2. OAuth: `authorize({response_type:'code'})` → `/discord/editor/oauth` (server-side code exchange, client secret backend-only) → `authenticate`.
-3. Poll `/discord/editor/pending` (500ms × 8s, "Preparing editor…") for the pending session bound to the authenticated Discord user (user id resolved server-side via Discord `/users/@me`).
+**Editor boot (deep-link):**
+1. Frontend `/edit` route reads `token` from the URL, strips it via `history.replaceState`, and POSTs it to `/discord/editor/exchange` (single-use: first exchange consumes it).
+2. Exchange returns `job_id`, `clip_index`, `source_asset_version`, `launch_guild_id`, `launch_channel_id`, and mints the **short-lived editor session token** (4h) that authenticates all subsequent `/api/*` calls.
+3. `ManualTrimEditor` loads status/EDL/transcript/scenes through the authenticated `/api/*` gateway.
 
 **Session TTLs:**
-- `EDITOR_TOKEN_TTL_SECONDS = 15 * 60` — single-use **launch** window (pending → authenticated).
-- `EDITOR_SESSION_TTL_SECONDS = 4 * 3600` — **authenticated** editor session (draft stays resumable; minting extends `expires_at`).
+- `EDITOR_TOKEN_TTL_SECONDS = 15 * 60` — single-use **launch** window.
+- `EDITOR_SESSION_TTL_SECONDS = 4 * 3600` — **authenticated** editor session (draft resumable; minting extends `expires_at`).
 
 **API allowlist + ownership boundary** (`adapter._authorize_editor_path`): session must match `job_id` + `clip_index`. Allowed: `GET /api/status/{job}`, `GET /api/source/{job}`, `GET /api/clip/{job}/{idx}/(transcript|edl|scenes)`, `GET /api/render/{id}`, `POST /api/subtitle`, `POST /api/clip/rerender`, `POST /api/clip/reframe`. Everything else → 403; unauthenticated → 401; backend loopback-only.
 
-**Draft persistence:** `POST /discord/editor/draft` (session-token authed) writes `loom_edit_sessions.draft` before render; restored on reload.
+**Draft persistence:** `POST /discord/editor/draft` (session-token authed) writes the **full** editable draft (`trim_start`, `trim_end`, `framing`, `title`, `hook`, `social_caption`, `caption_text`, `caption_position`, `caption_style`, `caption_uppercase`, `instruction`) before render; restored on reload.
+
+**Completion:** `POST /discord/editor/complete` → atomic `register_edited_asset` RPC (new `asset_version`, lineage, immutable correction log, session completed) → exactly one revised `final_publication` re-review card (dedup'd by `check_existing_card`).
 
 ---
 
-## 7. Latest attempt — exact evidence (do NOT retry until diagnosed)
+## 7. Abandoned disposable fixtures (do NOT recover or register)
 
-**Session:** `502b89e7-1c15-4b49-8ab4-773a5a2ef667` (tenant `dreemzy`, clip `6c46c3ef-5eba-40bc-9b50-8f3457d1db79:1`)
-
-**Timeline (adapter + backend + Supabase, 2026-09-13 23:50–23:51 EDT):**
-
-| Time | Event | Result |
-|------|-------|--------|
-| 23:50:43 | `POST /discord/interactions` → `[edit] LAUNCH_ACTIVITY` | 200, session persisted |
-| 23:50:48–52 | Activity boot: `/api/config` (401×2, expected) → OAuth OK → `/discord/editor/pending` resolved | editor loaded; status/edl/transcript/scenes **all 200**, `fp=3d892a7ad0b4` |
-| 23:51:19 | `POST /discord/editor/draft` | 200 saved — draft `{trim_start:26, trim_end:51.74, framing:full}` |
-| 23:51:19 | `POST /api/subtitle` | **200** (user made a small caption/subtitle addition) |
-| 23:51:26 | `POST /api/clip/rerender` | **200** — `fp=3d892a7ad0b4` (token fingerprint consistent across all calls) |
-| — | `POST /discord/editor/complete` | **NEVER FIRED** |
-| — | Activity UI | **became blank** |
-
-**Resulting state (verified 2026-09-14 00:20 EDT):**
-- Session `502b89e7` still `status=active`, `target_asset_version=null`, `draft` present.
-- Draft jsonb = `{trim_start: 26, trim_end: 51.74, framing: "full"}` — contains the **trim** change only.
-- **⚠️ Caption/subtitle addition is NOT in the draft.** It was applied via `POST /api/subtitle` (200), but the draft schema (`/discord/editor/draft` + migration 016) only persists trim/framing — no caption field. The caption edit is not recoverable from `draft`.
-- **Rendered artifact EXISTS despite no completion:** `recut_1789357887_51b854_…_clip_2.mp4` (22.4 MB) + `subtitled_1789358004_…` (21.4 MB), mtime 23:53 EDT.
-- **No** `loom_edit_corrections` row for this session.
-- **No** revised re-review card sent.
-- No `register_edited_asset` RPC invocation (no `render-1.3` in `loom_media`; only render-1.0/1.1/1.2 exist).
-
-**Most likely gap (hypothesis, to be confirmed read-only):** a frontend exception between `rrRes.json()` (rerender 200) and the `fetch(EDITOR_COMPLETE_URL)` call — likely in constructing the completion payload (`outputBasename(rrData?.new_video_url)` or a throw inside `handleRerender`), which is swallowed by the `catch` → `setError` but then the editor blanked. Confirm by reproducing with browser console open, or add completion-payload logging.
+**Session `502b89e7-1c15-4b49-8ab4-773a5a2ef667`** (tenant `dreemzy`, clip `6c46c3ef-5eba-40bc-9b50-8f3457d1db79:1`) and its rendered artifacts (`recut_1789357887_51b854_…_clip_2.mp4`, `subtitled_1789358004_…`) are **abandoned disposable test fixtures**. No `render-1.3` was registered; no correction row; no card. Do not spend further time reconstructing or investigating them — a fresh-session E2E has superseded this path.
 
 ---
 
-## 8. Editor completion boundary (Stage 2 acceptance contract)
+## 8. Editor completion boundary (Stage 2 acceptance contract — DONE)
 
-The editor must cover: **title, hook, separate social caption + spoken subtitles, preview, trim, crop/reframe, rerender, secure download, visible progress, recoverable errors, persistent drafts, idempotent retry, exactly one revised re-review card.** Post creation/distribution remains **excluded** from the editor.
+The editor now covers: **preview, trim, title, hook, separate social caption + spoken subtitles, crop/reframe (auto/full/track), save→render→register→card progress, secure download, persistent draft for every editable field, recoverable errors, idempotent retry, exactly one revised re-review card, "Return to Discord Review" link.** Post creation/distribution remains **excluded** from the editor.
 
 ---
 
@@ -188,14 +167,13 @@ The OpenShorts dashboard changes live in the nested repo on `loom/factory-mvp-ba
 
 **Restart / build commands:**
 - Adapter: `cd /Users/user/Desktop/LOOM-Factory/infra/discord-review && exec ./run.sh`
+- Adapter supervision (detached): `cd /Users/user/Desktop/LOOM-Factory/infra/discord-review && nohup ./supervise.sh > supervisor.log 2>&1 &`
 - Frontend (dev, HMR already running): `docker exec openshorts-frontend sh -c 'cd /app && npm run dev -- --host'`
 - Frontend build check: `docker exec openshorts-frontend sh -c 'cd /app && npx vite build --logLevel error'`
 - Caddy reload: `docker exec loom-tunnel-proxy caddy reload --config /etc/caddy/Caddyfile`
 
 ---
 
-## 10. Proposed scope decision (RECORDED — NOT implemented)
+## 10. Scope decision — IMPLEMENTED
 
-**Recommended Stage 2 fallback:** restore Edit as a **secure external HTTPS editor link** using the existing single-use token/session exchange + authenticated `/api/*` gateway. Never use `localhost`; never expose job identity without authorization. **Preserve the Discord Activity implementation for later**, but remove it from the Stage 2 critical path.
-
-*Status: proposed only. Awaiting Bryan's decision before any change.*
+The Stage 2 fallback is **implemented**: Edit opens a **secure external HTTPS editor link** (single-use token → `/discord/editor/exchange` → authenticated `/api/*` gateway). Never `localhost`; job identity is resolved server-side from the token, never trusted from the URL. The **Discord Activity implementation is preserved for later** but removed from the Stage 2 critical path.
