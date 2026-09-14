@@ -4,22 +4,34 @@
 
 ---
 
-## 🚀 START HERE NEXT SESSION
+## 🛑 STOP STATE — 2026-09-14 ~03:23 AM EDT
 
-> **Repository:** `/Users/user/Desktop/LOOM-Factory` · **Remote:** `Pettybytes/LOOM-Factory`
-> **Nested frontend repo:** `/Users/user/Desktop/LOOM-Factory/openshorts` (upstream `mutonby/openshorts`, branch `loom/factory-mvp-baseline-fixes`)
+**Manual acceptance did NOT run.** The attempt ended at the Discord doorway.
 
-**The HTTPS editor is NOT complete and NOT accepted.** Do not claim it complete. Do not rerender, register a version, or run acceptance tests until the locked order below is followed.
+- At ~3:23 AM EDT (Sep 14), Bryan clicked **Edit** on the existing **render-1.2** review card.
+- Discord displayed: **"The application didn't respond in time."**
+- **No Open Editor button was received.**
+- **No editor acceptance was performed. No rerender should be assumed. No `render-1.3` should be claimed.**
+- No new asset version or revised card was created.
 
-**Locked next-session order (do not reorder, do not skip):**
-1. Read-only verify both repositories and runtime services (below).
-2. Fix **reload hydration** so authenticated session restoration reloads media preview, transcript and scenes while preserving the draft.
-3. **Normalize scenes/transcript responses before render** — non-array responses must safely become arrays or visible recoverable API errors.
-4. Make the **Subtitles** action perform its intended function, or remove the redundant button if the inline spoken-subtitle controls already replace it.
-5. State and verify what **Auto Edit** actually does (do not claim it works merely because the button exists).
-6. Run automated browser tests for: initial load, edit, refresh restoration, API failure.
-7. Only then ask Bryan for **one final manual rerender acceptance**.
-8. After the manual pass: verify **one immutable version, one revised card, Download, and idempotent replay**; freeze the editor and move to Automated Source Discovery V1.
+**Observed (logs preserved — diagnosis deliberately deferred to tomorrow):**
+- `adapter.log`: no request entries around 03:20–03:29 EDT; last activity `GET /health` at 03:13:48. `editor/complete` count = **0**.
+- `caddy.log`: `discord/interactions` count = **0**; `discord/editor` count = 2 (the OAuth + `pending` POSTs at 02:19:50 from the Activity launch). Earlier `dial tcp 192.168.65.254:8090: connect: connection refused` → 502 for `/api/config` (adapter was down at those moments), plus video-streaming aborts ("reading: context canceled" / "broken pipe").
+- `supervisor.log`: adapter restarted several times (rc=143 SIGTERM) up to 01:49 EDT.
+- Funnel: **ON**, `/` → `http://127.0.0.1:8081` (Caddy). Tailscale up.
+
+**Log snapshots (local, NOT committed):** `/Users/user/.openclaw/workspace/loom-logs/2026-09-14-0323/` — `adapter.log`, `supervisor.log`, `caddy.log`, `funnel-status.txt`, `timestamp.txt`.
+
+---
+
+## 🚀 TOMORROW'S FIRST STEP
+
+Determine whether the Edit interaction reached `/discord/interactions`:
+
+1. **If it did** → fix the acknowledgement path (the type-4 ACK / type-12 LAUNCH_ACTIVITY must be flushed inside Discord's 3-second deadline).
+2. **If it did not** → verify Discord → Funnel routing and endpoint availability (Interactions Endpoint URL, Tailscale funnel, Caddy `@editor` + `/discord/interactions*` route).
+
+Do not proceed to editor acceptance until the Edit button reliably opens the editor.
 
 ---
 
@@ -27,35 +39,24 @@
 
 ### LOOM-Factory — `master`
 - **Remote:** `origin https://github.com/Pettybytes/LOOM-Factory.git`
-- **HEAD:** `5bed726a84d321a4e91bc5fe300154961abce62c`
-- **ahead/behind:** `## master...origin/master` (in sync, no ahead/behind)
-- **dirty/clean:** **clean** (no uncommitted changes)
-
-**Relevant commits today (newest → oldest):**
-- `5bed726` adapter: instant Edit ACK (type-4, flushed, zero network on 3s path)
-- `f80c29e` recovery: refresh discord-editor patch + EditorErrorBoundary/captionRealign reference files
-- `cc3072a` adapter: include persisted draft in editor token exchange (draft-survives-reload)
-- `d11b8d1` recovery: refresh discord-editor patch (idempotent /edit bootstrap)
-- `bd28f16` handoff: correct acceptance status — full rerender→version→card loop not yet manually proven
-- `d60b192` recovery: refresh discord-editor patch + preserve captionRealign reference files
-- `b38d95e` Editor: external HTTPS /edit critical path + full boundary + supervised adapter
-- `18b0a61` Handoff repair: adapter DOWN + exact rerender evidence + draft caption-not-persisted
+- **HEAD:** `853f313` · **clean** · in sync with `origin/master`.
+- Tonight: editor change committed in the nested repo (below), then recovery artifacts committed + pushed here (`853f313`).
 
 ### OpenShorts (nested) — `loom/factory-mvp-baseline-fixes`
-- **Remote:** `origin https://github.com/mutonby/openshorts.git` (upstream; push historically 403 — no Bryan-owned fork)
-- **HEAD:** `b6da9f41a8495e7f84054e5bb9d81623c98b448f`
-- **dirty / untracked (pre-existing — do NOT clean, reset, or overwrite):**
+- **Remote:** `origin https://github.com/mutonby/openshorts.git` (upstream; push historically 403 — no Bryan-owned fork).
+- **HEAD:** `66e8119` (tonight's editor change, committed locally).
+- **Pre-existing dirty/untracked (do NOT clean/reset/overwrite):**
   - Modified: `dashboard/index.html`, `docker-compose.yml`, `security_utils.py`
   - Untracked: `aborted-runs/`, `security_utils.py.bak-20260908212436`
-- **Editor commits (newest → oldest):** `b6da9f4`, `2358833`, `14462ce`, `7c8b038`, `cb9eb2a`, `564a02b`, `a7cb76d`, `159e8ad`
+- **Tonight's committed editor change:** `dashboard/src/components/ManualTrimEditor.jsx`.
 
-### Recovery-patch location + proof
-- **Location:** `/Users/user/Desktop/LOOM-Factory/openshorts-recovery/`
-  - `0001-fix-caption-contract.patch`
-  - `0002-discord-editor.patch` — carries `dashboard/index.html`, `EditorErrorBoundary.jsx`, `ManualTrimEditor.jsx`, `lib/api.js`, `lib/captionRealign.js`, `lib/discordActivity.js`, `main.jsx`
-  - `EditorErrorBoundary.jsx`, `captionRealign.js`, `captionRealign.test.mjs` (reference files)
-  - `EDITOR_README.md`, `README.md`
-- **Proof all unpushed OpenShorts work is represented:** the patch is generated as `git diff origin/main..HEAD` for the editor files; its md5 matches the live diff md5 exactly (`b7fb75d3811f61844633843c9179e315`), and a normalized comparison is byte-equal. No unpushed editor work is missing from the recovery artifacts.
+### Recovery artifacts (`openshorts-recovery/`) — refreshed + pushed
+- `0002-discord-editor.patch` regenerated; md5 `f39b3901a4f5ff497048878bf5ae4183` == live `git diff origin/main..HEAD` over the 7 editor files.
+- Reference files `captionRealign.js`, `captionRealign.test.mjs`, `EditorErrorBoundary.jsx` verified byte-identical to the repo.
+- `EDITOR_README.md` boundary updated for subtitle/hook styling + Auto Edit pipeline.
+
+### Automated test harness (NOT in either repo)
+- `/Users/user/.openclaw/workspace/loom-editor-test/` — Playwright regression suite (`editor-browser-test.cjs` + `fixtures/tiny.mp4`). Runs against `127.0.0.1:5175` with mocked endpoints. 7/7 passes, zero JS/page errors (mock only).
 
 ---
 
@@ -65,14 +66,14 @@
 
 | Component | Container/process | Bind | Health |
 |-----------|-------------------|------|--------|
-| LOOM adapter | `adapter.py` (host process, PID varies) | `127.0.0.1:8090` | ✅ 200 (`/health`) |
-| Caddy funnel | `loom-tunnel-proxy` | `127.0.0.1:8081–8082` | ✅ Up 29h |
-| OpenShorts backend | `openshorts-backend` | `127.0.0.1:8000` (loopback-only) | ✅ Up 9h (healthy) |
-| OpenShorts renderer | `openshorts-renderer` | `0.0.0.0:3100` | ✅ Up 9h |
-| OpenShorts frontend (Vite dev) | `openshorts-frontend` | `0.0.0.0:5175→5173` | ✅ Up 5h |
+| LOOM adapter | `adapter.py` (host process) | `127.0.0.1:8090` | ✅ `/health` 200 (last activity 03:13:48) |
+| Caddy funnel | `loom-tunnel-proxy` | `127.0.0.1:8081–8082` | ✅ Up |
+| OpenShorts backend | `openshorts-backend` | `127.0.0.1:8000` (loopback-only) | ✅ Up (healthy) |
+| OpenShorts renderer | `openshorts-renderer` | `0.0.0.0:3100` | ✅ Up |
+| OpenShorts frontend (Vite dev) | `openshorts-frontend` | `0.0.0.0:5175→5173` | ✅ Up |
 
 **Adapter supervision/logs:**
-- Supervisor loop: `infra/discord-review/supervise.sh` (restart on exit, `supervisor.log`).
+- Supervisor: `infra/discord-review/supervise.sh` (restart on exit → `supervisor.log`).
 - Launcher: `infra/discord-review/run.sh` (sources secrets from `~/.openclaw/.env`, then `exec python3 adapter.py`).
 - Adapter stdout/stderr → `infra/discord-review/adapter.log`.
 
@@ -98,10 +99,8 @@
 
 - **Application:** "LOOM Clip Review" · **App ID:** `1548188833386995742`
 - **Guild:** "Clippy Factory" · **Guild ID:** `1546266463663423518`
-- **Review channel** (card send target, resolved at runtime by name `clip-review`): recent `discord_message_id` seen `1548847578089521152`
+- **Review channel** (resolved at runtime by name `clip-review`).
 - **Bryan's Discord user id (reviewer):** `688976899094872148`
-
-**Current Edit interaction behavior:** clicking **Edit** sends an **immediate ephemeral type-4** ack (`⏳ Preparing secure editor…`), flushed synchronously with **zero DB/network on the 3s path**; the single-use editor token is then created asynchronously and the message is PATCHed to the **Open Editor** link button.
 
 ---
 
@@ -112,85 +111,51 @@
 | 010 | `010_tenant_distribution_publisher.sql` | publisher_user_id on tenant_distribution_profiles | ✅ applied |
 | 011 | `011_loom_media_content_type.sql` | `loom_media.content_type` | ✅ applied (NULL, fail-closed) |
 | 012 | `012_loom_edit_sessions.sql` | `loom_edit_sessions` + `loom_edit_corrections` + lineage | ✅ applied |
-| 013 | `013_register_edited_asset.sql` | atomic `register_edited_asset` RPC (service_role only) | ✅ applied |
+| 013 | `013_register_edited_asset.sql` | atomic `register_edited_asset` RPC (service_role only, idempotent) | ✅ applied |
 | 014 | `014_loom_editor_session_token.sql` | `loom_edit_sessions.session_token_hash` | ✅ applied |
 | 015 | `015_loom_editor_launch_context.sql` | `launch_user_id`/`launch_guild_id`/`launch_channel_id` | ✅ applied |
 | 016 | `016_loom_editor_draft.sql` | `loom_edit_sessions.draft` (`jsonb`) | ✅ applied |
 
-Live read confirmed `loom_edit_sessions` exposes: `draft`, `launch_user_id`, `launch_guild_id`, `launch_channel_id`, `session_token_hash`, `status`. `loom_media` for the test clip has `render-1.0`, `render-1.1`, `render-1.2` only — **no `render-1.3`** (do not claim any).
+Test clip `6c46c3ef-5eba-40bc-9b50-8f3457d1db79:1` currently has `render-1.0`, `render-1.1`, `render-1.2` only — **no `render-1.3`** (do not claim any).
 
 ---
 
 ## 5. Credential inventory (names + location + present/missing only — never values)
 
-**`~/.openclaw/.env`:**
+**`~/.openclaw/.env`:** `LOOM_DISCORD_APP_ID`, `LOOM_DISCORD_PUBLIC_KEY`, `LOOM_DISCORD_BOT_TOKEN`, `LOOM_DISCORD_CLIENT_SECRET`, `LOOM_DISCORD_OAUTH_REDIRECT_URI`, `LOOM_EDITOR_PUBLIC_URL` (present); `LOOM_EDITOR_CORS_ORIGINS`, `LOOM_EDITOR_BASE_URL`, `LOOM_EDITOR_ORIGIN` (optional, MISSING — defaults exist); `LOOM_N8N_API_KEY`, `LOOM_SUPABASE_URL`, `LOOM_SUPABASE_SERVICE_ROLE_KEY` (present).
 
-| Var | Purpose | Status |
-|-----|---------|--------|
-| `LOOM_DISCORD_APP_ID` | Discord app id (public) | present |
-| `LOOM_DISCORD_PUBLIC_KEY` | Interactions Endpoint Ed25519 verification | present |
-| `LOOM_DISCORD_BOT_TOKEN` | Bot API calls (card send, channel resolve) | present |
-| `LOOM_DISCORD_CLIENT_SECRET` | Server-side OAuth2 code exchange | present |
-| `LOOM_DISCORD_OAUTH_REDIRECT_URI` | OAuth2 redirect (registered) | present |
-| `LOOM_EDITOR_PUBLIC_URL` | External HTTPS editor origin for `/edit` deep-link | present |
-| `LOOM_EDITOR_CORS_ORIGINS` | Optional CORS allowlist (default exists in code) | **MISSING (optional)** |
-| `LOOM_EDITOR_BASE_URL` | Optional editor base URL (default exists) | **MISSING (optional)** |
-| `LOOM_EDITOR_ORIGIN` | Optional editor CORS origin (default exists) | **MISSING (optional)** |
-| `LOOM_N8N_API_KEY` | n8n review-decision webhook auth | present |
-| `LOOM_SUPABASE_URL` | Supabase REST base URL | present |
-| `LOOM_SUPABASE_SERVICE_ROLE_KEY` | Supabase service_role (RPC + session writes) | present |
+**`infra/tunnel-proxy/.env`:** `LOOM_TUNNEL_TOKEN`, `LOOM_RELAY_TOKEN`, `LOOM_GEMINI_KEY` (present).
 
-**`infra/tunnel-proxy/.env`:**
-
-| Var | Purpose | Status |
-|-----|---------|--------|
-| `LOOM_TUNNEL_TOKEN` | Card-send endpoint auth (Caddy `@card` gate) | present |
-| `LOOM_RELAY_TOKEN` | `:8082` n8n relay header | present |
-| `LOOM_GEMINI_KEY` | Reserved (LLM-assist path, not wired end-to-end) | present |
-
-> ⚠️ Never record or print secret values, tokens, passwords, or hashes. Reference the files only.
+> ⚠️ Never record or print secret values. Reference the files only.
 
 ---
 
-## 6. Proven working (verified this session)
+## 6. Editor work completed tonight (committed — NOT manually accepted)
 
-- Instant Discord Edit acknowledgement (immediate type-4, flushed) + asynchronous Open Editor link — 5/5 runs, ack path < 3 ms.
-- Secure HTTPS `/edit` single-use token exchange.
-- Server-side clip identity resolution (job_id/clip_index derived from the token, never trusted from a URL).
-- Authenticated allowlisted `/api/*` gateway with `job_id` + `clip_index` ownership enforcement; backend loopback-only.
-- Four-hour authenticated editor session (minting extends `expires_at`).
-- Full-field draft autosave (title/hook/social-caption/spoken-subtitles/trim/framing/instruction) to server + session-scoped memory.
-- Trim changes remain visible without immediately blanking (defensive `start<end` guard).
-- Caption unchanged state correctly reports **preserved** (`changedCount === 0` short-circuits, independent of trim window).
-- Error boundary displays a recoverable error instead of a blank page.
-- Adapter supervision/restart behavior (kill → auto-relaunch in ~3s; verified multiple times).
+1. **Reload hydration fix** — session identity/auth/preview/transcript/scenes/draft survive refresh.
+2. **scenes/transcript normalization** — non-array responses safely become arrays; recoverable errors on status/edl/transcript/scenes.
+3. **SubtitleModal wired** — full styling (font/size/colors/opacity/position/casing/presets) → draft + `/api/subtitle`.
+4. **HookModal wired** — text/position/S·M·L/6 styles/duration → draft + `/api/hook`.
+5. **Auto Edit pipeline corrected** — `rerender → hook → subtitle → complete` (reapply_captions gated to avoid double-burn; `input_filename` chaining).
+6. **Title** — confirmed metadata-only (persists → `proposed_title` → card).
+
+Automated browser test (Playwright, **mocked endpoints**) passes 7/7 with zero JS/page errors. **This does NOT constitute acceptance.**
 
 ---
 
-## 7. Unresolved defects from the latest manual test (verbatim)
+## 7. UNRESOLVED / NOT accepted (verbatim — do not mark accepted from automation)
 
-- After refresh, saved form values/trim survived, but the media preview became **"preview unavailable"**.
-- Transcript and scenes disappeared after refresh.
-- Clicking the visible **T · Subtitles** action produced no visible action.
-- One reload produced the error boundary message: `(scenes || []).map is not a function`.
-- Response normalization is unsafe: **scenes is sometimes not an array**.
-- The complete **HTTPS rerender → immutable version → exactly-one revised-card loop remains manually unproven**.
-- **Download remains manually unproven.**
-- **Auto Edit's actual end-to-end behavior remains unverified**; do not claim it works merely because the button exists.
-- **No render-1.3 acceptance should be claimed.**
+- The complete HTTPS **rerender → immutable version → exactly-one revised card** loop remains **manually unproven** (blocked at the Discord doorway tonight).
+- **Download** remains manually unproven.
+- **Auto Edit** end-to-end remains unverified against the real backend (automation used mocks).
+- **Subtitles** action — wired to SubtitleModal in code; NOT manually verified in the real editor.
+- **Refresh hydration / media restoration + scenes normalization** — fixed in code + passed automation; NOT manually verified.
+- **NEW (2026-09-14 ~03:23):** Discord "The application didn't respond in time" on the Edit button.
 
 ---
 
-## 8. UI status
+## 8. Acceptance status (do not overstate)
 
-- The current UI visually follows the OpenShorts Generated Shorts layout and **is acceptable as the Stage 2 visual baseline**.
-- **No more visual polish is required now.**
-- Functional stability and completion remain **unfinished**.
-- **Post is excluded; Return to Review is retained.**
-
----
-
-## 9. Acceptance status (do not overstate)
-
-- **Verified:** instant ACK, token exchange, authorized `/api/*` gateway, 4h session, full-field draft autosave, preserved caption state, error boundary, supervision.
-- **NOT manually proven:** the complete rerender → immutable version → exactly-one revised card loop; Download; Auto Edit end-to-end behavior. No `render-1.3` exists.
+- **NOT accepted.** Nothing was manually proven tonight. No `render-1.3` exists. No new card was sent.
+- **Committed at code level (unaccepted):** the six editor corrections above + recovery artifacts.
+- **Missing preview font** (`fonts/NotoSerif-Bold.ttf`) remains **documented + deferred** (Remotion preview only; server burn unaffected).
