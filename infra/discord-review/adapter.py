@@ -76,7 +76,19 @@ LISTEN_PORT         = int(_env("LOOM_DISCORD_LISTEN_PORT", "8090"))
 CLIP_REVIEW_CHANNEL_NAME = _env("LOOM_CLIP_REVIEW_CHANNEL", "clip-review")
 PROXY_MAX_BYTES     = 23 * 1024 * 1024  # Discord upload ceiling (Boosts raise it; stay safe)
 EDITOR_BASE_URL     = _env("LOOM_EDITOR_BASE_URL", "http://localhost:5173")  # dev scaffold; final = Discord Activity
-EDITOR_ORIGIN       = _env("LOOM_EDITOR_ORIGIN", "http://localhost:5173")  # CORS allow for the dev editor
+EDITOR_ORIGIN       = _env("LOOM_EDITOR_ORIGIN", "http://localhost:5173")  # dev CORS allow (legacy; exact allowlist below)
+# Exact-origin CORS allowlist for the editor / OAuth endpoints. Comma-separated.
+# Discord interactions are server-to-server (no CORS); only the browser editor
+# needs cross-origin access in the dev scaffold. In production the Activity is
+# same-origin behind the funnel, so CORS is effectively unused.
+EDITOR_CORS_ORIGINS = tuple(
+    o.strip() for o in _env("LOOM_EDITOR_CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()
+)
+# Discord OAuth2 client secret — used ONLY server-side for the authorization-code
+# exchange. Never sent to the browser; never embedded in the frontend bundle.
+DISCORD_CLIENT_SECRET = _env("LOOM_DISCORD_CLIENT_SECRET", "") or None
+# OAuth2 redirect URI registered in the Discord Developer Portal for the Activity.
+DISCORD_OAUTH_REDIRECT_URI = _env("LOOM_DISCORD_OAUTH_REDIRECT_URI", "") or None
 
 DISCORD_API = "https://discord.com/api/v10"
 
@@ -161,6 +173,45 @@ EDITOR_TOKEN_TTL_SECONDS = 15 * 60     # 15 min single-use editor session (hash-
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def allowed_cors_origin(request_origin: str):
+    """Exact-origin CORS allowlist. Returns the request Origin if (and only if)
+    it exactly matches a configured origin; otherwise None (no CORS header is
+    emitted, so the browser blocks the cross-origin read). Never '*'."""
+    if not request_origin:
+        return None
+    for allowed in EDITOR_CORS_ORIGINS:
+        if request_origin == allowed:
+            return allowed
+    return None
+
+
+def discord_oauth_exchange(code: str):
+    """Server-side Discord OAuth2 authorization-code exchange. Returns the
+    access_token, or None. The client secret never leaves this function."""
+    if not DISCORD_CLIENT_SECRET:
+        return None
+    redirect = DISCORD_OAUTH_REDIRECT_URI
+    data = {
+        "client_id": DISCORD_APP_ID,
+        "client_secret": DISCORD_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+    }
+    if redirect:
+        data["redirect_uri"] = redirect
+    body = json.dumps(data).encode()
+    headers = {"Content-Type": "application/json", "User-Agent": "LOOMReviewAdapter/1.0"}
+    req = Request(f"{DISCORD_API}/oauth2/token", data=body, headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode() or "{}")
+    except HTTPError as e:
+        return None
+    except Exception:
+        return None
+    return result.get("access_token")
 
 
 def hash_token(token: str) -> str:
@@ -952,19 +1003,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
-        # Dev-scaffold CORS for the editor exchange. Discord interactions are
-        # server-to-server and unaffected. Final Activity path uses the SDK.
-        self.send_header("Access-Control-Allow-Origin", EDITOR_ORIGIN)
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self._emit_cors()
         self.end_headers()
         self.wfile.write(data)
 
+    def _emit_cors(self):
+        """Emit exact-origin CORS headers only for allowlisted origins. The
+        final Activity path uses the SDK + same-origin funnel (no CORS needed);
+        this is strictly for the dev scaffold."""
+        origin = allowed_cors_origin(self.headers.get("Origin") or "")
+        if not origin:
+            return
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", EDITOR_ORIGIN)
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self._emit_cors()
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -1006,6 +1063,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/discord/editor/complete":
             self._handle_editor_complete()
+            return
+        if path == "/discord/editor/oauth":
+            self._handle_editor_oauth()
             return
         self._send_json(404, {"error": "not found"})
 
@@ -1220,6 +1280,32 @@ class Handler(BaseHTTPRequestHandler):
         session["session_token"] = session_token
         self._send_json(200, {"ok": True, "session": session})
 
+    def _handle_editor_oauth(self):
+        """Server-side Discord OAuth2 authorization-code exchange (Activity).
+        The frontend obtains an authorization `code` via the Embedded App SDK's
+        commands.authorize({response_type:'code'}), then POSTs it here. The
+        adapter exchanges it for an access_token using the client secret — which
+        NEVER leaves the server. Returns the token to the client so it can
+        complete SDK auth (commands.authenticate)."""
+        try:
+            raw = self._read_body()
+            body = json.loads(raw.decode() or "{}")
+        except Exception:
+            self._send_json(400, {"ok": False, "error": "bad json"})
+            return
+        code = body.get("code")
+        if not code:
+            self._send_json(400, {"ok": False, "error": "missing code"})
+            return
+        if not DISCORD_CLIENT_SECRET:
+            self._send_json(503, {"ok": False, "error": "OAuth not configured (missing client secret)"})
+            return
+        access_token = discord_oauth_exchange(code)
+        if not access_token:
+            self._send_json(502, {"ok": False, "error": "token exchange failed"})
+            return
+        self._send_json(200, {"ok": True, "access_token": access_token})
+
     def _handle_editor_api(self, method):
         """Authenticated, allowlisted editor API gateway. Only the endpoints the
         editor needs are forwarded — and only for the session's own job/clip.
@@ -1292,7 +1378,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", EDITOR_ORIGIN)
+        self._emit_cors()
         self.end_headers()
         self.wfile.write(body)
 

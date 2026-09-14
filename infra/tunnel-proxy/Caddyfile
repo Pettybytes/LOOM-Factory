@@ -1,4 +1,11 @@
 :8081 {
+	# Discord Activity / editor routes — allow Discord to iframe ONLY the
+	# editor, never the rest of the app, and never arbitrary origins.
+	@editor {
+		path /edit /edit/*
+	}
+	header @editor Content-Security-Policy "frame-ancestors https://discord.com https://*.discord.com"
+
 	# Discord Interactions Endpoint — PUBLIC (no tunnel token). Discord posts
 	# here; Ed25519 signature verification happens in the local adapter.
 	handle /discord/interactions* {

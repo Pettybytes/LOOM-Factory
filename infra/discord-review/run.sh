@@ -4,8 +4,10 @@
 set -euo pipefail
 set -a
 for v in LOOM_DISCORD_APP_ID LOOM_DISCORD_PUBLIC_KEY LOOM_DISCORD_BOT_TOKEN \
-         LOOM_SUPABASE_URL LOOM_SUPABASE_SERVICE_ROLE_KEY LOOM_N8N_API_KEY; do
-  line=$(grep "^${v}=" ~/.openclaw/.env | tail -n1)
+         LOOM_SUPABASE_URL LOOM_SUPABASE_SERVICE_ROLE_KEY LOOM_N8N_API_KEY \
+         LOOM_DISCORD_CLIENT_SECRET LOOM_DISCORD_OAUTH_REDIRECT_URI \
+         LOOM_EDITOR_CORS_ORIGINS LOOM_EDITOR_BASE_URL LOOM_EDITOR_ORIGIN; do
+  line=$(grep "^${v}=" ~/.openclaw/.env | tail -n1 || true)
   [ -n "$line" ] && eval "export $line"
 done
 set +a
