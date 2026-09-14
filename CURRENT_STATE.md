@@ -9,7 +9,7 @@
 >
 > **Completed:** segments 3/4/5/6A/6B · migrations 001–016 · Stage 2 editor boundary (preview, trim, title, hook, social caption vs spoken subtitles, crop/reframe, save→render→register→card progress, secure download, full-field persistent draft, recoverable errors, idempotent retry, exactly-one revised card, "Return to Discord Review").
 >
-> **E2E:** fresh-session acceptance PASSED 2026-09-14 (exchange → authorized `/api/*` → full-field draft persist). Session `502b89e7` and its rendered artifacts are **abandoned disposable fixtures** — do not recover or register them.
+> **Acceptance status (corrected):** token exchange, authorized `/api/*` gateway, and full-field draft persistence are **E2E-verified** (fresh session, 2026-09-14). The **complete rerender → new immutable version → exactly-one revised card** loop has **NOT yet been manually proven** through the new HTTPS `/edit` path — Bryan's manual test is the acceptance gate. Session `502b89e7` and its rendered artifacts are **abandoned disposable fixtures** — do not recover or register them.
 
 ---
 
@@ -151,9 +151,11 @@
 
 ---
 
-## 8. Editor completion boundary (Stage 2 acceptance contract — DONE)
+## 8. Editor completion boundary (Stage 2 acceptance contract)
 
 The editor now covers: **preview, trim, title, hook, separate social caption + spoken subtitles, crop/reframe (auto/full/track), save→render→register→card progress, secure download, persistent draft for every editable field, recoverable errors, idempotent retry, exactly one revised re-review card, "Return to Discord Review" link.** Post creation/distribution remains **excluded** from the editor.
+
+**Verification status:** token exchange, authorized `/api/*`, and draft persistence are E2E-verified. The full **rerender → immutable version → revised card** loop has **not yet been manually proven** through the new HTTPS path.
 
 ---
 

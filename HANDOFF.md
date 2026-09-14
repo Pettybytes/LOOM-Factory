@@ -9,14 +9,15 @@
 ---
 
 ## Last Updated
-2026-09-14 00:55 EDT (America/Detroit)
+2026-09-14 00:57 EDT (America/Detroit)
 
 ## Session handoff — current objective
 
-Stage 2 editor critical path is **moved to the external HTTPS `/edit` route**
-and the editor boundary is **complete + E2E-verified**. Discord "Edit" now
-posts an ephemeral **Open Editor** link button instead of launching the Discord
-Activity.
+Stage 2 editor critical path is **moved to the external HTTPS `/edit` route**.
+Discord "Edit" now posts an ephemeral **Open Editor** link button instead of
+launching the Discord Activity. Token exchange, authorized `/api/*`, and draft
+persistence are **E2E-verified**; the **complete rerender→version→card loop is
+NOT yet manually proven** (pending Bryan's manual test).
 
 **First action next session:** none blocking. The adapter is running under
 `supervise.sh` supervision (auto-restart verified). Continue from
