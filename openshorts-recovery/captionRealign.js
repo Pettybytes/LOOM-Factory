@@ -122,6 +122,19 @@ export function realignCaptions(originalWords, editedText, opts = {}) {
 
   const confidence = anchors / Math.max(1, editNorm.length);
 
+  // UNCHANGED caption = preserved, always. Trimming is a separate operation
+  // (segments), not a rewrite of spoken text. Return the original word blocks
+  // verbatim and skip interpolation + range validation, so a trim-only edit can
+  // never surface as "realignment required" nor contradict its 0-change count.
+  if (changedCount === 0) {
+    const preservedBlocks = originalWords.map((w) => ({
+      text: String(w?.text ?? '').trim(),
+      startMs: Number(w?.startMs ?? 0),
+      endMs: Number(w?.endMs ?? 0),
+    }));
+    return { alignment: 'preserved', changedCount: 0, confidence, blocks: preservedBlocks };
+  }
+
   if (alignment === 'realignment_required') {
     return { alignment, changedCount, confidence, blocks: [] };
   }

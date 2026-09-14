@@ -16,9 +16,10 @@ makes the editor recoverable now.
   - `dashboard/index.html` — `Referrer-Policy: no-referrer` meta (launch-token defense)
   - `dashboard/src/main.jsx` — `/edit` path route → `ManualTrimEditor`
   - `dashboard/src/components/ManualTrimEditor.jsx` — the manual editor
+  - `dashboard/src/components/EditorErrorBoundary.jsx` — route-level error boundary (no blank page)
   - `dashboard/src/lib/discordActivity.js` — Discord Activity SDK (preserved, not critical path)
   - `dashboard/src/lib/api.js` — editor session token + auth diagnostics
-  - `dashboard/src/lib/captionRealign.js` (+ test) — untracked in the nested repo; preserved here as **reference files** `captionRealign.js` / `captionRealign.test.mjs`
+  - `dashboard/src/lib/captionRealign.js` (+ test) — deterministic caption timing redistribution; also preserved here as **reference files** `captionRealign.js` / `captionRealign.test.mjs`
 
 ## Editor critical path (current)
 
@@ -27,10 +28,11 @@ makes the editor recoverable now.
 
 ## Editor boundary (complete)
 
-preview · trim · title · hook · separate social caption + spoken subtitles ·
-crop/reframe (auto/full/track) · save→render→register→card progress · secure
-download · full-field persistent draft · recoverable errors · idempotent retry ·
-exactly-one revised re-review card · "Return to Discord Review" link.
+Large 9:16 preview + Generated Shorts side panel. preview · trim · title · hook ·
+separate social caption + spoken subtitles · crop/reframe (auto/full/track) ·
+Auto Edit · save→render→register→card progress · secure download · full-field
+autosaved draft (server + session memory) · recoverable errors · idempotent retry ·
+exactly-one revised re-review card · "Return to Discord Review" (replaces Post).
 
 ## Security (launch token)
 
