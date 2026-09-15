@@ -703,6 +703,88 @@ def supabase_patch_media(media_id, updates):
         return resp.status, json.loads(resp.read().decode() or "{}")
 
 
+def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
+    """Resolve the durable editor bootstrap from LOOM media/version records —
+    independent of the transient OpenShorts /api/status runtime state. Returns
+    a dict with the durable preview/media URL, duration, trim/source range,
+    framing, title, hook, social caption, spoken captions, transcript and
+    scenes; or None if the REQUIRED durable fields (a media URL + a valid
+    trim/source range) do not exist."""
+    if not (tenant_id and clip_id and source_asset_version):
+        return None
+
+    # 1) Media lineage: walk previous_asset_version from the version being
+    #    edited back to the original render to find a durable canonical_url.
+    media_rows = supabase_filter_get("loom_media", {
+        "tenant_id": tenant_id, "clip_id": clip_id,
+    })
+    by_version = {r.get("asset_version"): r for r in (media_rows or []) if isinstance(r, dict)}
+    canonical_url = None
+    source_filename = None
+    cur = source_asset_version
+    seen = set()
+    while cur and cur in by_version and cur not in seen:
+        seen.add(cur)
+        row = by_version[cur]
+        canonical_url = canonical_url or row.get("canonical_url")
+        source_filename = source_filename or row.get("source_filename")
+        cur = row.get("previous_asset_version")
+
+    # 2) The correction that PRODUCED this version carries the trim/source
+    #    range + caption blocks + framing (durable edit metadata).
+    corrections = supabase_filter_get("loom_edit_corrections", {
+        "tenant_id": tenant_id, "clip_id": clip_id,
+        "target_asset_version": source_asset_version,
+    })
+    correction = (corrections or [{}])[0] if corrections else {}
+    trim_start = correction.get("trim_start")
+    trim_end = correction.get("trim_end")
+    caption_changes = correction.get("caption_changes") or {}
+    crop_reframe = correction.get("crop_reframe_changes") or {}
+    framing = crop_reframe.get("framing") or "auto"
+
+    # 3) Durable suggested copy (hook + social caption).
+    scores = supabase_get("loom_scores", clip_id) or []
+    score = (scores or [{}])[0] if scores else {}
+    hook = score.get("suggested_hook") or ""
+    social_caption = score.get("suggested_caption") or ""
+
+    # Spoken captions: word-level blocks (clip-relative timings).
+    blocks = caption_changes.get("blocks") or []
+    captions = []
+    for b in (blocks if isinstance(blocks, list) else []):
+        if isinstance(b, dict):
+            captions.append({
+                "text": b.get("text") or b.get("word") or "",
+                "startMs": b.get("startMs"),
+                "endMs": b.get("endMs"),
+            })
+
+    # REQUIRED durable fields: a media URL AND a valid trim/source range.
+    try:
+        valid_range = (trim_start is not None and trim_end is not None
+                       and float(trim_end) > float(trim_start))
+    except (TypeError, ValueError):
+        valid_range = False
+    if not canonical_url or not valid_range:
+        return None
+
+    return {
+        "media_url": canonical_url,
+        "duration_seconds": round(float(trim_end) - float(trim_start), 2),
+        "source_range": {"start": float(trim_start), "end": float(trim_end)},
+        "framing": framing,
+        "title": "",
+        "source_filename": source_filename or "",
+        "hook": hook,
+        "social_caption": social_caption,
+        "caption_text": caption_changes.get("text") or "",
+        "captions": captions,
+        "transcript": captions,
+        "scenes": [],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Review proxy generation (Docker-independent, master untouched)
 # ---------------------------------------------------------------------------
@@ -1151,6 +1233,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/"):
             self._handle_editor_api("GET")
             return
+        # Durable editor bootstrap (read) — resolves the review asset from
+        # LOOM media/version records, not the transient /api/status state.
+        if self.path == "/discord/editor/bootstrap":
+            self._handle_editor_bootstrap()
+            return
         # Never allow state-changing GET links.
         self._send_json(404, {"error": "not found"})
 
@@ -1436,6 +1523,43 @@ class Handler(BaseHTTPRequestHandler):
             method="PATCH")
         with urlopen(req, timeout=15) as resp:
             resp.read()
+
+    def _handle_editor_bootstrap(self):
+        """Durable editor bootstrap (GET, session-token auth). Resolves the
+        exact review asset (media URL, duration, trim/source range, framing,
+        title, hook, social caption, spoken captions, transcript/scenes) from
+        LOOM media/version records — NOT the transient OpenShorts /api/status
+        runtime state. Enforces ownership: the media URL is resolved strictly
+        from the session's own tenant/job/clip/version; a client can never
+        request another session's asset. Missing required durable fields
+        return a recoverable 404 — never a 0:00 / 0/0 fallback."""
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            self._send_json(401, {"error": "missing session token"})
+            return
+        session, reason = resolve_editor_session_token_diag(auth[len("Bearer "):].strip())
+        if not session:
+            print(f"[bootstrap] reject={reason}", flush=True)
+            self._send_json(401, {"error": "invalid or expired session"})
+            return
+
+        tenant_id = session.get("tenant_id")
+        clip_id = session.get("clip_id")
+        source_asset_version = session.get("source_asset_version")
+        durable = resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version)
+        if not durable:
+            print(f"[bootstrap] missing durable data for {clip_id}@{source_asset_version}", flush=True)
+            self._send_json(404, {
+                "error": "missing_data",
+                "detail": "No durable media or trim range for this clip version.",
+            })
+            return
+
+        durable["tenant_id"] = tenant_id
+        durable["clip_id"] = clip_id
+        durable["asset_version"] = source_asset_version
+        print(f"[bootstrap] durable data ok for {clip_id}@{source_asset_version}", flush=True)
+        self._send_json(200, durable)
 
     def _handle_editor_exchange(self):
         """One-time launch-token exchange. Consumes the single-use token
