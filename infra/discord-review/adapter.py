@@ -721,6 +721,7 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
     by_version = {r.get("asset_version"): r for r in (media_rows or []) if isinstance(r, dict)}
     canonical_url = None
     source_filename = None
+    clean_source_url = None
     cur = source_asset_version
     seen = set()
     while cur and cur in by_version and cur not in seen:
@@ -728,6 +729,10 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
         row = by_version[cur]
         canonical_url = canonical_url or row.get("canonical_url")
         source_filename = source_filename or row.get("source_filename")
+        # The clean pre-hook/pre-subtitle input master is a durable property of
+        # the ORIGINAL render (previous_asset_version IS NULL); walking the
+        # lineage back surfaces it. NULL = honestly no durable clean source.
+        clean_source_url = clean_source_url or row.get("clean_source_url")
         cur = row.get("previous_asset_version")
 
     # 2) The correction that PRODUCED this version carries the trim/source
@@ -781,7 +786,7 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
 
     return {
         "media_url": canonical_url,
-        "clean_source_url": None,
+        "clean_source_url": clean_source_url,
         "duration_seconds": round(float(trim_end) - float(trim_start), 2),
         "source_range": {"start": float(trim_start), "end": float(trim_end)},
         "framing": framing,
