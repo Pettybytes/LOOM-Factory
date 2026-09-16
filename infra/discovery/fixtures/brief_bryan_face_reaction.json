@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "tenant_id": "example-bryan-face",
+  "profile_id": "bryan-face-reaction",
+  "version": "1",
+  "target_platforms": ["youtube"],
+  "topics": ["relationships", "sports", "animals", "confrontations", "music"],
+  "entities": [],
+  "keywords": ["viral", "reaction", "moment", "wow", "crazy"],
+  "exclusions": ["political", "graphic violence", "nsfw"],
+  "creator_channel_allowlist": [],
+  "creator_channel_blocklist": [],
+  "freshness_window_days": 14,
+  "content_type_requirements": ["video"],
+  "language": "en",
+  "provenance_rights_requirements": "first-party source URL + channel identity required; no re-uploads",
+  "acquisition_eligibility": true,
+  "cost_ceiling_usd": 0.0,
+  "manual_review_required": true,
+  "connector_restrictions": ["youtube"],
+  "min_evidence_requirements": ["canonical_url", "platform_content_id", "creator_channel_identity"]
+}

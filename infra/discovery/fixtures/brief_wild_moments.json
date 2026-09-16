@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "tenant_id": "example-wild-moments",
+  "profile_id": "wild-moments-story-commentary",
+  "version": "1",
+  "target_platforms": ["youtube"],
+  "topics": ["confrontations", "accidents", "rescues", "influencer moments", "public freakouts"],
+  "entities": [],
+  "keywords": ["unexpected", "moment", "caught on camera", "story", "wild"],
+  "exclusions": ["political", "graphic violence", "death", "nsfw"],
+  "creator_channel_allowlist": [],
+  "creator_channel_blocklist": [],
+  "freshness_window_days": 21,
+  "content_type_requirements": ["video"],
+  "language": "en",
+  "provenance_rights_requirements": "first-party source URL + channel identity required; verify not a stolen re-upload",
+  "acquisition_eligibility": true,
+  "cost_ceiling_usd": 0.0,
+  "manual_review_required": true,
+  "connector_restrictions": ["youtube"],
+  "min_evidence_requirements": ["canonical_url", "platform_content_id", "creator_channel_identity"]
+}
