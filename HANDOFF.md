@@ -53,7 +53,7 @@ infra/discovery/
 n8n-workflows/LOOM-06-Source-Discovery.json   # shared, inactive
 infra/supabase/018_loom_source_briefs.sql      # APPLIED
 infra/supabase/019_loom_discovered_sources.sql # APPLIED
-infra/supabase/020_loom_discovered_sources_profile.sql # written, NOT applied
+infra/supabase/020_loom_discovered_sources_profile.sql # APPLIED (15 rows backfilled)
 ```
 
 ## Supabase acceptance proof (12/12 PASS, production Supabase)
@@ -91,13 +91,11 @@ $0.00. No paid model calls, no new paid service. `caffeinate` active; Docker lef
 ## Credentials required (names only)
 
 - `YOUTUBE_DATA_API_V3_KEY` — for keyword search (absent; channel RSS works without it).
-- Supabase DDL — SQL editor paste for migration 020 (or DB password for `supabase link` + `db push`).
 
 ## Manual actions required (Bryan)
 
-1. Apply migration 020 (`infra/supabase/020_loom_discovered_sources_profile.sql`)
-   via Supabase SQL editor.
-2. (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` for keyword search.
+- (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` for keyword search.
+- Migrations 018–020 are all applied; no further SQL required.
 
 ## Next
 

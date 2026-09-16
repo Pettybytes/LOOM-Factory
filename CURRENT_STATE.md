@@ -111,11 +111,11 @@ excluded from production queries automatically.
 |---|--------|--------|
 | 018 | `loom_source_briefs` (versioned tenant-scoped briefs) | **Applied** (Bryan, 2026-09-16) |
 | 019 | `loom_discovered_sources` (normalized records, fingerprint-unique, append-only metric history) | **Applied** (Bryan, 2026-09-16) |
-| 020 | `loom_discovered_sources.profile_id` (+ index) | Written, **NOT yet applied** |
+| 020 | `loom_discovered_sources.profile_id` (+ index) | **Applied** (Bryan, 2026-09-16) |
 
-> Migrations 010–017 remain applied + live-verified (unchanged). 020 adds
-> `profile_id` (for production-queue exclusion) and is idempotent; apply it via
-> the Supabase SQL editor (no DDL path from this execution context).
+> Migrations 010–017 remain applied + live-verified (unchanged). 020 added
+> `profile_id`; the 15 acceptance rows were backfilled to
+> `supabase-acceptance-proof` and are excluded from production queries.
 
 ## Git state
 
@@ -236,7 +236,7 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 - **Review channel:** resolved at runtime by name `clip-review`.
 - **Reviewer (Bryan):** `688976899094872148`
 
-## 4. Migrations — 010–017 (applied + live-verified) · 018–019 (applied) · 020 (pending)
+## 4. Migrations — 010–020 (all applied + live-verified)
 
 | # | Change | Status |
 |---|--------|--------|
@@ -250,7 +250,7 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 | 017 | `loom_media.clean_source_url/hash/size/filename` | Applied |
 | 018 | `loom_source_briefs` | Applied (Bryan, 2026-09-16) |
 | 019 | `loom_discovered_sources` | Applied (Bryan, 2026-09-16) |
-| 020 | `loom_discovered_sources.profile_id` (+ index) | Written, not applied |
+| 020 | `loom_discovered_sources.profile_id` (+ index) | Applied (Bryan, 2026-09-16) |
 
 ## 5. Credential inventory (names + locations only — never values)
 
