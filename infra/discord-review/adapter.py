@@ -71,6 +71,13 @@ N8N_REVIEW_WEBHOOK  = _env("LOOM_N8N_REVIEW_WEBHOOK",
                            "https://fns2.app.n8n.cloud/webhook/loom-review-decision")
 OPENSHORTS_OUTPUT   = _env("LOOM_OPENSHORTS_OUTPUT",
                            "/Users/user/Desktop/LOOM-Factory/openshorts/output")
+# GHL Media Storage (filesafe CDN) — the canonical durable media store for LOOM.
+# register_clip_media persists the clean pre-hook/pre-subtitle source + the burned
+# final here at ingest time so hook replacement survives OpenShorts job eviction.
+# LOOM_GHL_TOKEN is a single-location Private Integration Token (PIT).
+GHL_TOKEN           = _env("LOOM_GHL_TOKEN", required=False) or None
+GHL_LOCATION_ID     = _env("LOOM_GHL_LOCATION_ID", "GNhV1OyhFLzcl67XwTBV")
+GHL_MEDIA_API       = "https://services.leadconnectorhq.com"
 LISTEN_HOST         = _env("LOOM_DISCORD_LISTEN_HOST", "127.0.0.1")
 LISTEN_PORT         = int(_env("LOOM_DISCORD_LISTEN_PORT", "8090"))
 CLIP_REVIEW_CHANNEL_NAME = _env("LOOM_CLIP_REVIEW_CHANNEL", "clip-review")
@@ -938,6 +945,140 @@ def card_color(payload):
 # Card send (bot message + attachment + buttons)
 # ---------------------------------------------------------------------------
 
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _strip_clean_filename(filename: str) -> str:
+    """Walk `subtitled_<ts>_` and `hooked_<ts>_`/`hook_` prefixes back to the
+    clean `<base>_clip_<n>.mp4` name (the pre-hook/pre-subtitle input master).
+    Mirrors OpenShorts _strip_burned_captions/_strip_burned_hook naming."""
+    name = os.path.basename(filename or "")
+    while True:
+        m = re.match(r'^subtitled_\d+_(.+)$', name)
+        if not m:
+            break
+        name = m.group(1)
+    while True:
+        m = re.match(r'^(?:hooked_\d+_|hook_)(.+)$', name)
+        if not m:
+            break
+        name = m.group(1)
+    return name
+
+
+def ghl_upload_file(path: str, name: str):
+    """Upload a local file to GHL Media Storage (filesafe CDN). Returns
+    {'fileId': ..., 'url': ...} or None on failure (never raises)."""
+    if not GHL_TOKEN or not os.path.exists(path):
+        return None
+    boundary = f"----loom{uuid.uuid4().hex}"
+    body = b""
+    body += f"--{boundary}\r\n".encode()
+    body += f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'.encode()
+    body += b"Content-Type: video/mp4\r\n\r\n"
+    with open(path, "rb") as f:
+        body += f.read()
+    body += b"\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="name"\r\n\r\n'
+    body += name.encode()
+    body += b"\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="hosted"\r\n\r\nfalse\r\n'
+    body += f"--{boundary}--\r\n".encode()
+    req = Request(f"{GHL_MEDIA_API}/medias/upload-file", data=body, method="POST")
+    req.add_header("Authorization", f"Bearer {GHL_TOKEN}")
+    req.add_header("Version", "v3")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("User-Agent", "LOOMReviewAdapter/1.0")
+    try:
+        with urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode() or "{}")
+            return data if data.get("url") else None
+    except Exception as e:
+        print(f"[media] GHL upload failed for {name}: {e}", flush=True)
+        return None
+
+
+def register_clip_media(tenant_id, clip_id, asset_version, job_id, ready_file, master_asset=None):
+    """Persist the durable clean-source + burned canonical artifact for a freshly
+    rendered clip (ingest-time media registration). Locates the burned final and
+    the clean pre-hook/pre-subtitle input on disk, uploads both to GHL Media
+    Storage, and upserts the loom_media row with canonical_url (burned) +
+    clean_source_url/hash/size/filename. Idempotent (upsert on the identity key).
+    Returns the persisted row dict, or None on failure (caller treats as
+    non-fatal: the review card still sends)."""
+    if not (tenant_id and clip_id and asset_version and job_id and ready_file):
+        return None
+    burned_path = os.path.join(OPENSHORTS_OUTPUT, job_id, os.path.basename(ready_file))
+    if not os.path.exists(burned_path):
+        print(f"[media] burned final not found: {burned_path}", flush=True)
+        return None
+
+    clean_name = os.path.basename(master_asset) if master_asset else _strip_clean_filename(ready_file)
+    clean_path = os.path.join(OPENSHORTS_OUTPUT, job_id, clean_name)
+    if not os.path.exists(clean_path):
+        clean_name = _strip_clean_filename(ready_file)
+        clean_path = os.path.join(OPENSHORTS_OUTPUT, job_id, clean_name)
+    if not os.path.exists(clean_path):
+        print(f"[media] clean source not found: {clean_path}", flush=True)
+        return None
+
+    burned_hash = _sha256_file(burned_path)
+    burned_size = os.path.getsize(burned_path)
+    clean_hash = _sha256_file(clean_path)
+    clean_size = os.path.getsize(clean_path)
+
+    burned_up = ghl_upload_file(burned_path, os.path.basename(ready_file))
+    clean_up = ghl_upload_file(clean_path, clean_name)
+
+    payload = {
+        "tenant_id": tenant_id,
+        "clip_id": clip_id,
+        "asset_version": asset_version,
+        "file_hash": burned_hash,
+        "size_bytes": burned_size,
+        "source_filename": os.path.basename(ready_file),
+        "ghl_location_id": GHL_LOCATION_ID,
+        "storage_status": "uploaded",
+        "content_type": "video/mp4",
+        "publication_status": "not_approved",
+    }
+    if burned_up:
+        payload["canonical_url"] = burned_up.get("url")
+        payload["ghl_media_id"] = burned_up.get("fileId")
+        payload["ghl_filename"] = os.path.basename(ready_file)
+    if clean_up:
+        payload["clean_source_url"] = clean_up.get("url")
+        payload["clean_source_hash"] = clean_hash
+        payload["clean_source_size_bytes"] = clean_size
+        payload["clean_source_filename"] = clean_name
+    if not payload.get("canonical_url") or not payload.get("clean_source_url"):
+        print(f"[media] GHL upload incomplete for {clip_id} (burned={bool(burned_up)}, clean={bool(clean_up)})", flush=True)
+        return None
+
+    url = f"{SUPABASE_URL}/rest/v1/loom_media?on_conflict=tenant_id,clip_id,asset_version"
+    data = json.dumps(payload).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    headers["Prefer"] = "resolution=merge-duplicates,return=representation"
+    req = Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=30) as resp:
+            rows = json.loads(resp.read().decode() or "[]")
+            row = rows[0] if isinstance(rows, list) and rows else None
+            print(f"[media] registered {clip_id}@{asset_version} clean_source={bool(payload.get('clean_source_url'))}", flush=True)
+            return row
+    except Exception as e:
+        print(f"[media] loom_media upsert failed for {clip_id}: {e}", flush=True)
+        return None
+
+
 def send_review_card(payload: dict):
     """payload: clip_id, job_id, ready_file, master_asset, source_title,
     proposed_shorts_title, caption, hook, overall_score, decision,
@@ -959,6 +1100,17 @@ def send_review_card(payload: dict):
         master_path = os.path.join(OPENSHORTS_OUTPUT, job_id, os.path.basename(ready_file))
     if not master_path or not os.path.exists(master_path):
         raise RuntimeError(f"Master asset not found: {master_path}")
+
+    # Persist the durable clean-source + burned canonical artifact at ingest time
+    # (moment review = a freshly rendered clip). Non-fatal: the card still sends
+    # if this fails, but the durable clean source is what lets hook replacement
+    # re-render from clean after OpenShorts evicts the job.
+    if review_stage == "moment":
+        try:
+            register_clip_media(tenant_id, clip_id, asset_version, job_id, ready_file,
+                                payload.get("master_asset"))
+        except Exception as e:
+            print(f"[media] register_clip_media failed (non-fatal): {e}", flush=True)
 
     channel_id = resolve_clip_review_channel()
 
