@@ -769,14 +769,27 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
     if not canonical_url or not valid_range:
         return None
 
+    # Burned-layer detection from the lineage source filename (the same
+    # OpenShorts convention: subtitled_<ts>_ = captions are the last layer,
+    # hooked_<ts>_/hook_ = a burned hook). Drives replacement-vs-stack
+    # semantics in the editor: a clip with a burned hook must re-render from
+    # the CLEAN pre-hook ancestor, never overlay the new hook on the burned one.
+    sf = source_filename or ""
+    has_burned_captions = bool(re.match(r'^subtitled_\d+_', sf))
+    stripped = re.sub(r'^subtitled_\d+_', '', sf)
+    has_burned_hook = bool(re.match(r'^(?:hooked_\d+_|hook_)', stripped))
+
     return {
         "media_url": canonical_url,
+        "clean_source_url": None,
         "duration_seconds": round(float(trim_end) - float(trim_start), 2),
         "source_range": {"start": float(trim_start), "end": float(trim_end)},
         "framing": framing,
         "title": "",
         "source_filename": source_filename or "",
         "hook": hook,
+        "has_burned_hook": has_burned_hook,
+        "has_burned_captions": has_burned_captions,
         "social_caption": social_caption,
         "caption_text": caption_changes.get("text") or "",
         "captions": captions,
