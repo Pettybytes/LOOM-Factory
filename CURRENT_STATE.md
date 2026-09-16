@@ -4,17 +4,140 @@
 
 ---
 
-## STOP STATE — 2026-09-15 ~23:20 EDT
+## STOP STATE — 2026-09-16 ~00:30 EDT
 
-**Stage 2 — Discord-centered OpenShorts Editor: CLOSED. Runtime acceptance PASSED.**
+**Automated Source Discovery V1: FOUNDATION COMPLETE + FIRST CONNECTOR PROOF PASSED.**
 
-The editor build is complete and accepted. The last blocker — the editor silently no-op'ing on Auto Edit because the OpenShorts job workspace had been evicted — is resolved by a **job-rehydration adapter** that reconstructs a live OpenShorts workspace from LOOM's durable clean source, then drives the *native* OpenShorts endpoints (no new render implementation). A real, unmocked end-to-end run passed.
+The Stage 2 editor (closed earlier) is untouched. The new work is the
+**Source Discovery V1 foundation** plus a **real, non-mocked YouTube connector
+proof**, delivered as a dependency-free Python package (`infra/discovery/`) with
+deterministic tests, a thin shared n8n workflow, and idempotent Supabase
+migrations.
 
-**No `render-1.3` exists.** The accepted run produced exactly one immutable version (`render-1.1`) and exactly one review card.
+**No source was downloaded, processed, clipped, published, or distributed.**
 
 ---
 
-## 🔒 Locked architecture (editor path)
+## Segment boundary (roadmap overlap resolved)
+
+The previous overlap between "Topic Intelligence" and "Broad Source Discovery"
+is now split into two explicit segments:
+
+- **Segment 2 — Automated Source Discovery V1 Foundation (COMPLETE).**
+  Exit criteria met: Source Brief contract exists; normalized discovery schema
+  exists; identity + duplicate handling pass deterministic tests; shared
+  connector interface exists; qualification-before-acquisition gate exists;
+  three planned profile fixtures validate. No platform-specific live proof was
+  required — but one was delivered anyway (see Segment 3).
+- **Segment 3 — Initial Connector Proofs (FIRST MILESTONE PASSED).**
+  Entry begins with the real YouTube/search connector. First milestone met:
+  one real source discovered → normalized → deduplicated → evidence stored →
+  qualification applied → one invalid/duplicate rejected → one eligible source
+  passed to the manual-ingest boundary → no automatic publication.
+
+Do not double-count the connector proof: the YouTube live proof is Segment 3's
+first milestone only. Reddit and TikTok remain **planned, not implemented**.
+X remains deferred. Instagram/Facebook remain planned.
+
+---
+
+## What was built (`infra/discovery/`)
+
+| Module | Responsibility |
+|---|---|
+| `source_brief.py` | Versioned, tenant-scoped Source Brief contract + validation |
+| `discovery_record.py` | Normalized discovery record schema + validation (reserves Topic Intelligence fields; computes none) |
+| `identity.py` | Canonical URL normalization, content-ID extraction, tenant/global fingerprints, duplicate classification (no paid model) |
+| `connector.py` | Shared connector interface (pagination, rate limits, auth-by-name, provenance, retry, health, cost, versioning) |
+| `qualification.py` | Qualification-before-acquisition gate (deterministic, explicit rejection reasons) |
+| `store.py` | Durable store (SQLite, dependency-free) — idempotent upsert + append-only metric history |
+| `connectors/youtube.py` | YouTube/search + competitor-channel discovery (first-party RSS, no credential) |
+| `connectors/__init__.py` | Connector registry (youtube only; reddit/tiktok planned) |
+| `prove_youtube_connector.py` | Bounded live connector proof |
+| `fixtures/` | 3 non-provisioned profile Source Briefs (design/test examples only) |
+| `tests/test_discovery.py` | 32 deterministic unit tests |
+
+Plus `n8n-workflows/LOOM-06-Source-Discovery.json` (shared, tenant-driven,
+**inactive** — never deployed/activated).
+
+## Live YouTube proof (real, non-mocked — 2026-09-16)
+
+- **Method:** first-party RSS feed (`/feeds/videos.xml?channel_id=`), no
+  credential, no scraping. Keyword *search* (Data API v3) correctly raises
+  `AuthRequiredError` for `YOUTUBE_DATA_API_V3_KEY` (name only, absent).
+- **Channel:** Linus Tech Tips `UCXuqSBlHAE6Xw-yeJA0Tunw` (public, real).
+- **Discovered:** 15 real candidates (e.g. `3xngArcFpek` "I Promise you this is
+  NOT Stupid", `3PGKMwgjla0` "Steam Frame Review - This Changes Everything").
+- **Normalized + stored:** 15/15, idempotent (fingerprint-keyed).
+- **Duplicate rejected:** re-observing `3xngArcFpek` → upsert `updated`, row
+  count unchanged; gate returned `rejected` with reason `duplicate (repost):
+  global content id already observed`.
+- **Qualified:** 15/15 `manual_review` (brief requires manual review).
+- **Manual-ingest boundary:** `3xngArcFpek` passed → STOP (no download, no
+  OpenShorts, no clip, no publish, no GHL post).
+- Reproducible: `python3 infra/discovery/prove_youtube_connector.py`.
+
+## Tests
+
+`python3 -m unittest discover -s infra/discovery/tests` → **32 passed**.
+
+## Migrations
+
+| # | Change | Status |
+|---|--------|--------|
+| 018 | `loom_source_briefs` (versioned tenant-scoped briefs) | Written, **NOT applied** |
+| 019 | `loom_discovered_sources` (normalized records, fingerprint-unique, append-only metric history) | Written, **NOT applied** |
+
+> Migrations 010–017 remain applied + live-verified (unchanged). 018/019 are
+> idempotent SQL files committed to `infra/supabase/`. They are **not applied**
+> because this execution context has no Supabase DDL path (no `psql`, no DB
+> password, CLI not linked) — applying them is a manual SQL-editor / linked-CLI
+> action (see "Manual actions required").
+
+## Git state
+
+- **LOOM-Factory `master`** · HEAD `d10f002` · clean · **pushed** to
+  `origin/master` (https://github.com/Pettybytes/LOOM-Factory.git).
+- Commit chain (this discovery build):
+  1. `13a8dc6` — Source Brief contract + normalized schema + fixtures + migrations 018/019
+  2. `0e23c54` — deterministic identity + duplicate handling
+  3. `4b1da3e` — shared connector interface + qualification gate
+  4. `8f03e34` — YouTube connector + durable store + live proof + tests
+  5. `5ab5283` — README + shared n8n discovery workflow
+  6. `d10f002` — explicit exact-duplicate classification
+- No secret values in any commit. No destructive git/db operations. Unrelated
+  dirty files (nested OpenShorts repo) left untouched.
+
+## Costs incurred
+
+**$0.00.** No paid model calls. No new paid service. RSS is free. Docker
+Desktop left running (existing containers up: `loom-tunnel-proxy`,
+`openshorts-backend`, `openshorts-renderer`, `openshorts-frontend`).
+`caffeinate` already active (PID 55082).
+
+## Credentials required (names only — never values)
+
+- `YOUTUBE_DATA_API_V3_KEY` — needed to enable YouTube keyword *search*
+  (Data API v3). Channel discovery already works via free RSS without it.
+- Supabase DDL path — either the Supabase **SQL editor** (paste migrations
+  018/019) or the **database password** for `supabase link` + `supabase db push`.
+
+## Manual actions required (Bryan)
+
+1. (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` to unlock keyword search.
+2. Apply `infra/supabase/018_loom_source_briefs.sql` and
+   `019_loom_discovered_sources.sql` (Supabase SQL editor, or provide DB
+   password for CLI push).
+
+## Next action
+
+Reddit and TikTok connectors are the next Segment 3 milestones (planned, not
+started). Do not begin them without Bryan's approval. Instagram/Facebook remain
+planned; X deferred.
+
+---
+
+## 🔒 Locked architecture (editor path — unchanged, do not modify)
 
 ```text
 durable clean source (loom_media.clean_source_url, filesafe CDN)
@@ -32,77 +155,33 @@ durable clean source (loom_media.clean_source_url, filesafe CDN)
   derived server-side from the edit session and translated transparently in
   `_handle_editor_api`.
 
----
-
-## ✅ Real E2E proof (unmocked, driven through the actual adapter HTTP endpoints)
+## ✅ Real E2E proof (editor, unchanged)
 
 Fresh non-production clip `loom-e2e-proof-job:0` with its original OpenShorts job
-**deleted**, run end-to-end:
+**deleted**, run end-to-end: launch-token exchange → `/discord/editor/bootstrap`
+(durable) → `/api/status` rehydration ("Job recovered from disk") →
+`/api/clip/rerender` (trim 1.0→5.0) → `/api/hook` → `/api/subtitle` (karaoke) →
+`/discord/editor/complete` (one `render-1.1` + one card) → replay idempotent.
+Card message id `1549614172055281724`. Script
+`infra/supabase/prove_e2e_rehydrate.py`.
 
-| Step | Result |
-|---|---|
-| Launch-token exchange → editor session | ✅ 200 |
-| `/discord/editor/bootstrap` (durable) | ✅ clean_source_url present, duration 6.0 |
-| `/api/status` → rehydration | ✅ "Job recovered from disk" |
-| `/api/clip/{job}/0/edl` | ✅ real EDL (segments/canonical_range) |
-| `/api/clip/rerender` (trim 1.0→5.0) | ✅ real recut |
-| `/api/hook` | ✅ real hook burn |
-| `/api/subtitle` (karaoke) | ✅ real caption burn |
-| `/discord/editor/complete` | ✅ registered `render-1.1` + one card |
-| Replay `complete` | ✅ idempotent — no duplicate card/version |
-| Edited media download | ✅ `/videos/` HTTP 206 |
-
-- **Card message id: `1549614172055281724`** (final_publication, `render-1.1`,
-  title "E2E Edited Proof", hook "NEW HOOK PROOF").
-- Proof script: `infra/supabase/prove_e2e_rehydrate.py` (reproducible).
-
----
-
-## ♻️ Temporary workspace lifecycle
+## ♻️ Temporary workspace lifecycle (unchanged)
 
 `rehydrate_edit_job()` creates `output/loom-<edit_session_id[:12]>/` per session.
-
-- **Retain** while the edit session is `active` or retryable.
-- **Delete** after successful completion plus a safe grace period.
-- **Clean** abandoned/expired workspaces with bounded retention (the OpenShorts
-  backend's `OUTPUT_MAX_GB` retention is the outer bound; a dedicated sweep is
-  deferred — documented policy, not yet a scheduled task).
-- **Never delete** another tenant's or another session's workspace — the temp id
-  is derived from the session id, so workspaces are structurally isolated.
-- Idempotent: re-hydration reuses an existing workspace (checks for the metadata
-  JSON + clean file) rather than re-downloading.
-
----
+Retain while active/retryable; delete after completion + grace; clean abandoned
+workspaces with bounded retention; never delete another tenant/session workspace.
+Re-hydration is idempotent.
 
 ## 1. Repository state
 
-### LOOM-Factory — `master`
-- **HEAD:** `4e97070` · clean · pushed to `origin/master`
-  (`origin https://github.com/Pettybytes/LOOM-Factory.git`).
-- Commit chain (this editor build): `029f873` → `d7e5697` → `4492068` →
-  `042090e` → `4020f57` → `4e97070`.
-- Editor work lives in `infra/discord-review/adapter.py` + `infra/supabase/`.
-
-### OpenShorts (nested) — `loom/factory-mvp-baseline-fixes`
-- **HEAD:** `7f47de5` (committed locally; upstream push historically 403 — no
-  Bryan-owned fork).
-- **Pre-existing dirty/untracked (do NOT clean/reset/overwrite):**
-  - Modified: `dashboard/index.html`, `docker-compose.yml`, `security_utils.py`
-  - Untracked: `aborted-runs/`, `security_utils.py.bak-20260908212436`
-
-### Recovery artifacts (`openshorts-recovery/`) — preserved
-- `0002-discord-editor.patch` — md5 `b0867c9ec0e20d6550929ee8bce7a4b7` (unchanged).
-- `0001-fix-caption-contract.patch` — md5 `c631f000b6b5e904dbffab942d9fba9e`.
-- Reference files (`captionRealign.js`, `captionRealign.test.mjs`,
-  `EditorErrorBoundary.jsx`, `EDITOR_README.md`) unchanged.
-- The editor's frontend files (ManualTrimEditor.jsx, HookModal.jsx, TitleOverlay.tsx,
-  RemotionPreview.jsx, ShortVideo.tsx, types.ts) are captured in the patch.
-
-### Automated test harness (NOT in either repo)
-- `/Users/user/.openclaw/workspace/loom-editor-test/editor-browser-test.cjs` +
-  `fixtures/tiny.mp4` — Playwright, mocked, **9/9 pass**.
-
----
+- **LOOM-Factory** `master` · HEAD `d10f002` · clean · pushed to origin.
+- **OpenShorts (nested)** `loom/factory-mvp-baseline-fixes` · HEAD `7f47de5` ·
+  pre-existing dirty/untracked (do NOT touch): `dashboard/index.html`,
+  `docker-compose.yml`, `security_utils.py` (modified); `aborted-runs/`,
+  `security_utils.py.bak-20260908212436` (untracked).
+- **Recovery artifacts** (`openshorts-recovery/`) preserved:
+  `0002-discord-editor.patch` md5 `b0867c9ec0e20d6550929ee8bce7a4b7`;
+  `0001-fix-caption-contract.patch` md5 `c631f000b6b5e904dbffab942d9fba9e`.
 
 ## 2. Runtime + infrastructure (unchanged)
 
@@ -116,20 +195,13 @@ Fresh non-production clip `loom-e2e-proof-job:0` with its original OpenShorts jo
 | OpenShorts renderer | `openshorts-renderer` | `0.0.0.0:3100` | Up |
 | OpenShorts frontend (Vite) | `openshorts-frontend` | `0.0.0.0:5175→5173` | Up |
 
-**Adapter supervision/logs:** `infra/discord-review/supervise.sh` (restart on exit)
-→ `supervisor.log`; launcher `run.sh` (sources `~/.openclaw/.env`); stdout/stderr →
-`adapter.log`.
+Adapter supervision: `infra/discord-review/supervise.sh` → `supervisor.log`;
+launcher `run.sh` (sources `~/.openclaw/.env`); stdout/stderr → `adapter.log`.
 
-**Caddy `:8081` routes:** `/edit /edit/*` (CSP frame-ancestors Discord) ·
+Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) ·
 `/discord/interactions*` → 8090 (Ed25519) · `/discord/editor/*` → 8090 ·
 `/discord/card*` → 8090 (Bearer tunnel token) · `/api/*` → 8090 · default → Vite 5175.
-**`:8082`:** `/relay*` → n8n callback relay.
-
-**Stage 2 critical path:** external HTTPS `/edit` (the Discord deep-link / Activity
-entry). **Discord Activity (iframe) embedding is DEFERRED** — the CSP
-`frame-ancestors` scoping is in the Caddyfile but embedding is not a gating path.
-
----
+`:8082` → `/relay*` n8n callback relay.
 
 ## 3. Discord IDs (unchanged)
 
@@ -138,25 +210,20 @@ entry). **Discord Activity (iframe) embedding is DEFERRED** — the CSP
 - **Review channel:** resolved at runtime by name `clip-review`.
 - **Reviewer (Bryan):** `688976899094872148`
 
----
+## 4. Migrations — 010–017 (applied + live-verified) · 018–019 (written, not applied)
 
-## 4. Migrations — 010–017 (all applied + live-verified)
-
-| # | Change |
-|---|--------|
-| 010 | `tenant_distribution_profiles.publisher_user_id` |
-| 011 | `loom_media.content_type` |
-| 012 | `loom_edit_sessions` + `loom_edit_corrections` + lineage |
-| 013 | `register_edited_asset` RPC (service_role only) |
-| 014 | `loom_edit_sessions.session_token_hash` |
-| 015 | editor launch context |
-| 016 | `loom_edit_sessions.draft` (jsonb) |
-| 017 | `loom_media.clean_source_url/hash/size/filename` (durable clean input) |
-
-Test clip `loom-e2e-proof-job:0` now carries `render-1.0` (clean source + burned
-canonical) and `render-1.1` (the accepted edited version). No `render-1.3`.
-
----
+| # | Change | Status |
+|---|--------|--------|
+| 010 | `tenant_distribution_profiles.publisher_user_id` | Applied |
+| 011 | `loom_media.content_type` | Applied |
+| 012 | `loom_edit_sessions` + `loom_edit_corrections` + lineage | Applied |
+| 013 | `register_edited_asset` RPC (service_role only) | Applied |
+| 014 | `loom_edit_sessions.session_token_hash` | Applied |
+| 015 | editor launch context | Applied |
+| 016 | `loom_edit_sessions.draft` (jsonb) | Applied |
+| 017 | `loom_media.clean_source_url/hash/size/filename` | Applied |
+| 018 | `loom_source_briefs` | Written, not applied |
+| 019 | `loom_discovered_sources` | Written, not applied |
 
 ## 5. Credential inventory (names + locations only — never values)
 
@@ -164,26 +231,26 @@ canonical) and `render-1.1` (the accepted edited version). No `render-1.3`.
 `LOOM_DISCORD_BOT_TOKEN`, `LOOM_DISCORD_CLIENT_SECRET`,
 `LOOM_DISCORD_OAUTH_REDIRECT_URI`, `LOOM_EDITOR_PUBLIC_URL`, `LOOM_N8N_API_KEY`,
 `LOOM_SUPABASE_URL`, `LOOM_SUPABASE_SERVICE_ROLE_KEY`, `LOOM_GHL_TOKEN`,
-`LOOM_GHL_LOCATION_ID` (all present). `LOOM_EDITOR_CORS_ORIGINS`,
-`LOOM_EDITOR_BASE_URL`, `LOOM_EDITOR_ORIGIN` (optional, MISSING — defaults exist).
+`LOOM_GHL_LOCATION_ID`.
 
 **`infra/tunnel-proxy/.env`:** `LOOM_TUNNEL_TOKEN`, `LOOM_RELAY_TOKEN`,
-`LOOM_GEMINI_KEY` (present).
+`LOOM_GEMINI_KEY`.
 
 > ⚠️ Never record or print secret values. Reference the files only.
-
----
+> `YOUTUBE_DATA_API_V3_KEY` is **absent** (needed only for keyword search).
 
 ## 6. Deferred / NOT in scope
 
-- **Discord Activity (iframe) embedding** — deferred. External HTTPS `/edit` is
-  the Stage 2 critical path.
-- **Temporary workspace sweep** — lifecycle policy documented above; explicit
-  scheduled cleanup deferred (bounded by OpenShorts retention today).
-- **Missing preview font** `fonts/NotoSerif-Bold.ttf` — cosmetic (preview only;
-  server burn uses its own fonts). Deferred.
-- No further editor polish/features.
+- **Discord Activity (iframe) embedding** — deferred.
+- **Temporary workspace sweep** — policy documented; enforcement deferred.
+- **Missing preview font** `fonts/NotoSerif-Bold.ttf` — cosmetic, deferred.
+- **Topic Intelligence scoring** — reserved fields only in discovery; no scoring
+  implemented (correctly out of scope for this segment).
+- **Reddit / TikTok connectors** — planned, not started.
+- **GHL subaccounts / social accounts / Discord tenant spaces for the three
+  profiles** — deliberately NOT created (profiles are fixtures only).
 
 ## 7. Next segment
 
-**Automated Source Discovery V1.** Editor work is closed.
+**Segment 3 — Initial Connector Proofs (remaining): Reddit and TikTok** — only
+on Bryan's approval. No automatic download/processing/publication at any point.
