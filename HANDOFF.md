@@ -9,77 +9,79 @@
 ---
 
 ## Last Updated
-2026-09-15 21:15 EDT (America/Detroit)
+2026-09-15 23:20 EDT (America/Detroit)
 
-## Session handoff — STOP STATE (editor fixes complete, NOT manually accepted)
+## Stage 2 — Discord-centered OpenShorts Editor: CLOSED (runtime acceptance passed)
 
-The four editor functional defects from the 2026-09-15 manual-acceptance report
-were fixed and proven by the automated browser suite (9/9, mocked). **Manual
-acceptance has NOT been re-run. No real rerender was performed. No `render-1.3`
-exists.**
+The editor build is complete and accepted. The final blocker — Auto Edit
+silently no-op'ing because the OpenShorts job workspace had been evicted — is
+resolved by a **job-rehydration adapter** that reconstructs a live OpenShorts
+workspace from LOOM's durable clean source, then drives the **native** OpenShorts
+endpoints. A real, unmocked end-to-end run passed.
 
-**Auto Edit no-op root cause:** `handleRerender` opened with
-`if (!session || !edl) return;` — a silent no-op. `edl` was only ever set from
-the live `/api/clip/{job_id}/{clip_index}/edl` endpoint, which 404s once the job
-is evicted, so the button stayed disabled and the handler silently returned.
-**Fix:** the durable bootstrap synthesizes the recipe into `edl`; the handler now
-surfaces a recoverable error instead of silently returning; progress is the full
-8-stage sequence `save → clean → render → hook → subtitle → register → card →
-complete`.
+**Commit:** LOOM-Factory `master` `4e97070` (pushed). **Card message id:**
+`1549614172055281724` (final_publication, `render-1.1`).
 
-**Hook hydration + replacement-not-stacking:** HookModal hydrates the current
-burned hook and previews the new hook over the clean source. **Optional on-video
-title/header overlay** added (Remotion `TitleOverlay`), separate from the metadata
-title.
+## Locked architecture
 
-**⛔ CRITICAL BLOCKER — no durable clean pre-hook/pre-subtitle source.** The
-durable `loom_media` lineage (`render-1.2 → render-1.1 → render-1.0`) has only the
-already-burned `render-1.0` as its canonical asset. `clean_source_url` is `null`;
-the clean master exists only transiently on the OpenShorts backend disk. The
-automated hook-replacement proof used a **mock** clean source.
+```text
+durable clean source (loom_media.clean_source_url, filesafe CDN)
+  → session-bound temporary OpenShorts job (output/loom-<session>/, reconstructed)
+  → native OpenShorts endpoints (/api/clip/rerender, /api/hook, /api/subtitle, …)
+  → immutable LOOM version (register_edited_asset RPC)
+  → exactly one Discord final_publication review card
+```
 
-**Next action (do NOT begin this session):** persist/register an immutable clean
-input artifact in `loom_media`; backfill the fixture only if identity is proven;
-then re-test bootstrap against an evicted job before manual acceptance.
+## Real E2E proof (unmocked)
+
+Fresh clip `loom-e2e-proof-job:0` with its original job deleted, driven through
+the actual adapter HTTP endpoints: rehydrate ("Job recovered from disk") →
+`/api/clip/rerender` (trim 1.0→5.0) → `/api/hook` → `/api/subtitle` (karaoke) →
+`/discord/editor/complete` (one `render-1.1` + one card) → replay idempotent (no
+duplicate) → edited media served (`/videos/` HTTP 206). Script:
+`infra/supabase/prove_e2e_rehydrate.py`.
+
+## Temporary workspace lifecycle
+
+`output/loom-<edit_session_id[:12]>/` per session. **Retain** while the session
+is active or retryable; **delete** after successful completion plus a safe grace
+period; **clean** abandoned/expired workspaces with bounded retention (OpenShorts
+`OUTPUT_MAX_GB` is the outer bound today; a dedicated sweep is deferred); **never
+delete** another tenant/session workspace (temp id is derived from the session id,
+so isolation is structural). Re-hydration is idempotent (reuses an existing
+workspace).
 
 ## Repository state
 
-- **LOOM-Factory** `master` · HEAD `2398bbc` · clean · pushed to origin.
+- **LOOM-Factory** `master` · HEAD `4e97070` · clean · pushed to origin.
+  Editor code in `infra/discord-review/adapter.py` + `infra/supabase/`.
 - **OpenShorts (nested)** `loom/factory-mvp-baseline-fixes` · HEAD `7f47de5` ·
   pre-existing dirty/untracked (do NOT touch): `dashboard/index.html`,
   `docker-compose.yml`, `security_utils.py` (modified); `aborted-runs/`,
   `security_utils.py.bak-20260908212436` (untracked).
-- **Recovery artifacts** (`openshorts-recovery/`) refreshed: `0002-discord-editor.patch`
-  md5 `b0867c9ec0e20d6550929ee8bce7a4b7`.
+- **Recovery artifacts** (`openshorts-recovery/`) preserved:
+  `0002-discord-editor.patch` md5 `b0867c9ec0e20d6550929ee8bce7a4b7`;
+  `0001-fix-caption-contract.patch` md5 `c631f000b6b5e904dbffab942d9fba9e`.
 
-## Runtime (verified at stop)
+## Deferred / not in scope
 
-- Adapter `127.0.0.1:8090` → `/health` 200; Caddy 8081/8082; backend 8000
-  (root 404 normal); renderer 3100; frontend 5175→5173.
-- Funnel: `https://users-macbook-pro-1.taild000b2.ts.net` → `:8081`.
-- Adapter restart: `cd infra/discord-review && nohup ./supervise.sh > supervisor.log 2>&1 &`
-- Frontend build check: `docker exec openshorts-frontend sh -c 'cd /app && npx vite build --logLevel error'`
+- **Discord Activity (iframe) embedding** — deferred. External HTTPS `/edit` is
+  the Stage 2 critical path.
+- Temporary workspace sweep (explicit scheduled cleanup) — policy documented,
+  enforcement deferred.
+- Missing preview font `fonts/NotoSerif-Bold.ttf` — cosmetic, deferred.
+- No further editor polish/features.
 
 ## Credentials (names only — values in secure source locations)
 
 - `~/.openclaw/.env`: `LOOM_DISCORD_APP_ID`, `LOOM_DISCORD_PUBLIC_KEY`,
   `LOOM_DISCORD_BOT_TOKEN`, `LOOM_DISCORD_CLIENT_SECRET`,
   `LOOM_DISCORD_OAUTH_REDIRECT_URI`, `LOOM_EDITOR_PUBLIC_URL`, `LOOM_N8N_API_KEY`,
-  `LOOM_SUPABASE_URL`, `LOOM_SUPABASE_SERVICE_ROLE_KEY` (all present).
-  `LOOM_EDITOR_CORS_ORIGINS`, `LOOM_EDITOR_BASE_URL`, `LOOM_EDITOR_ORIGIN`
-  (optional, MISSING — defaults exist).
+  `LOOM_SUPABASE_URL`, `LOOM_SUPABASE_SERVICE_ROLE_KEY`, `LOOM_GHL_TOKEN`,
+  `LOOM_GHL_LOCATION_ID`.
 - `infra/tunnel-proxy/.env`: `LOOM_TUNNEL_TOKEN`, `LOOM_RELAY_TOKEN`,
-  `LOOM_GEMINI_KEY` (all present).
+  `LOOM_GEMINI_KEY`.
 
-## Editor work done this session (committed — NOT manually accepted)
+## Next segment
 
-Durable bootstrap hydration · Auto Edit no-op fix (8-stage progress, surfaced
-errors) · hook hydration + replacement-not-stacking · on-video title/header
-overlay. Automated Playwright suite passes **9/9 (mocked)**.
-
-## Unresolved / NOT accepted
-
-- **⛔ No durable clean pre-hook/pre-subtitle source** (`clean_source_url` null).
-- Rerender → immutable version → exactly-one card loop: **manually unproven**.
-- Download, Auto Edit end-to-end, subtitles: wired but not manually verified.
-- Missing preview font `fonts/NotoSerif-Bold.ttf` — documented + deferred.
+**Automated Source Discovery V1.** Editor work is closed.
