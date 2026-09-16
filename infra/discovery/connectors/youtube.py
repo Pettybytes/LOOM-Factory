@@ -204,6 +204,7 @@ class YouTubeConnector(Connector):
         return DiscoveryRecord(
             tenant_id=request.brief.tenant_id,
             source_brief_version=request.brief.version,
+            profile_id=request.brief.profile_id,
             platform="youtube",
             canonical_url=canonical,
             platform_content_id=video_id,

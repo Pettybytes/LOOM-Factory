@@ -18,6 +18,23 @@ from typing import Any
 
 SCHEMA_VERSION = "1.0.0"
 
+# Non-production profile/tenant markers. Normal production queue queries MUST
+# exclude any profile_id or tenant_id containing one of these tokens by
+# default — e.g. profile_id "supabase-acceptance-proof" (acceptance evidence)
+# or tenant_id "example-*" (fixture tenants). Acceptance/test/example data is
+# never surfaced in a production queue.
+NON_PRODUCTION_MARKERS: tuple[str, ...] = (
+    "acceptance", "test", "proof", "example", "fixture",
+    "demo", "sample", "sandbox", "staging", "dev",
+)
+
+
+def is_non_production(profile_id: str = "", tenant_id: str = "") -> bool:
+    """Return True if a profile/tenant is acceptance/test/example evidence that
+    must be excluded from normal production queue queries by default."""
+    hay = f"{(profile_id or '').lower()} {(tenant_id or '').lower()}"
+    return any(m in hay for m in NON_PRODUCTION_MARKERS)
+
 # Structural fields every brief must carry. Values are validated on load.
 REQUIRED_FIELDS: tuple[str, ...] = (
     "tenant_id",

@@ -74,6 +74,10 @@ class DiscoveryRecord:
 
         self.tenant_id: str = str(data["tenant_id"]).strip()
         self.source_brief_version: str = str(data["source_brief_version"]).strip()
+        # profile_id identifies which Source Brief profile produced this record;
+        # it is REQUIRED for production queries to exclude acceptance/test
+        # profiles by default. Default '' = non-production/unknown.
+        self.profile_id: str = str(data.get("profile_id") or "").strip()
         self.platform: str = str(data["platform"]).strip().lower()
         self.canonical_url: str = str(data["canonical_url"]).strip()
         self.platform_content_id: str = str(data["platform_content_id"]).strip()
@@ -138,6 +142,7 @@ class DiscoveryRecord:
             "schema_version": self.schema_version,
             "tenant_id": self.tenant_id,
             "source_brief_version": self.source_brief_version,
+            "profile_id": self.profile_id,
             "platform": self.platform,
             "canonical_url": self.canonical_url,
             "platform_content_id": self.platform_content_id,

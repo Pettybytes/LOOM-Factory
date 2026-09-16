@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS discovered_sources (
     near_duplicate_key      TEXT,
     tenant_id               TEXT NOT NULL,
     source_brief_version    TEXT,
+    profile_id              TEXT,
     platform                TEXT NOT NULL,
     canonical_url           TEXT NOT NULL,
     platform_content_id     TEXT NOT NULL,
@@ -151,7 +152,7 @@ class DiscoveryStore:
                 SET observed_metrics = ?, metric_history = ?,
                     metric_observation_timestamp = ?, updated_at = ?,
                     processing_eligibility = ?, qualification_status = ?,
-                    rejection_reason = ?
+                    rejection_reason = ?, profile_id = ?
                 WHERE fingerprint = ?
                 """,
                 (
@@ -162,6 +163,7 @@ class DiscoveryStore:
                     record.processing_eligibility,
                     record.qualification_status,
                     record.rejection_reason,
+                    record.profile_id,
                     record.duplicate_fingerprint,
                 ),
             )
@@ -172,7 +174,7 @@ class DiscoveryStore:
             """
             INSERT INTO discovered_sources (
                 fingerprint, global_fingerprint, near_duplicate_key, tenant_id,
-                source_brief_version, platform, canonical_url, platform_content_id,
+                source_brief_version, profile_id, platform, canonical_url, platform_content_id,
                 creator_channel_identity, creator_channel_url, title,
                 publication_timestamp, observed_metrics,
                 metric_observation_timestamp, metric_history, discovery_query,
@@ -181,7 +183,7 @@ class DiscoveryStore:
                 connector_name, connector_version, velocity_inputs,
                 opportunity_classification, raw_evidence_reference, created_at, updated_at
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -190,6 +192,7 @@ class DiscoveryStore:
                 near_key,
                 record.tenant_id,
                 record.source_brief_version,
+                record.profile_id,
                 record.platform,
                 record.canonical_url,
                 record.platform_content_id,
@@ -255,6 +258,26 @@ class DiscoveryStore:
         return [dict(r) for r in self._conn.execute(
             "SELECT * FROM discovered_sources ORDER BY created_at"
         ).fetchall()]
+
+    def production_sources(self) -> list[dict[str, Any]]:
+        """Rows eligible for a normal production queue — excludes acceptance /
+        test / example profiles by default (see source_brief.is_non_production)."""
+        from .source_brief import is_non_production
+
+        return [
+            s for s in self.all_sources()
+            if not is_non_production(s.get("profile_id") or "", s.get("tenant_id") or "")
+        ]
+
+    def production_fingerprints(self) -> set[str]:
+        """Seen fingerprints scoped to production profiles only."""
+        return {s["duplicate_fingerprint"] for s in self.production_sources()}
+
+    def production_global_fingerprints(self) -> set[str]:
+        return {
+            s["global_fingerprint"] for s in self.production_sources()
+            if s.get("global_fingerprint")
+        }
 
     def count(self) -> int:
         return self._conn.execute("SELECT count(*) FROM discovered_sources").fetchone()[0]

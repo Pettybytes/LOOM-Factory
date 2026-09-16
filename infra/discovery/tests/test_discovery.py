@@ -15,7 +15,7 @@ for _p in (str(_REPO_ROOT / "infra"), str(_REPO_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from discovery.source_brief import SourceBrief, SourceBriefError, SCHEMA_VERSION as SB_SCHEMA  # noqa: E402
+from discovery.source_brief import SourceBrief, SourceBriefError, is_non_production, SCHEMA_VERSION as SB_SCHEMA  # noqa: E402
 from discovery.discovery_record import DiscoveryRecord, DiscoveryRecordError  # noqa: E402
 from discovery.identity import (  # noqa: E402
     classify_duplicate,
@@ -264,6 +264,46 @@ class TestQualification(unittest.TestCase):
             brief,
         )
         self.assertEqual(r.status, "rejected")
+
+
+class TestProductionExclusion(unittest.TestCase):
+    def test_is_non_production(self):
+        self.assertTrue(is_non_production("supabase-acceptance-proof", "dreemzy"))
+        self.assertTrue(is_non_production("", "example-pets"))
+        self.assertFalse(is_non_production("bryan-face-reaction", "dreemzy"))
+
+    def test_production_sources_excludes_acceptance(self):
+        from discovery.discovery_record import DiscoveryRecord
+        store = DiscoveryStore(":memory:")
+        base = {
+            "tenant_id": "dreemzy", "source_brief_version": "1", "platform": "youtube",
+            "canonical_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "platform_content_id": "dQw4w9WgXcQ",
+            "creator_channel_identity": "Bryan Petty",
+            "creator_channel_url": "https://www.youtube.com/channel/UCx",
+            "title": "Hello", "publication_timestamp": "2026-09-15T00:00:00+00:00",
+            "observed_metrics": {"views": 1},
+            "metric_observation_timestamp": "2026-09-16T00:00:00+00:00",
+            "metric_history": [], "discovery_query": "q", "discovery_reason": "r",
+            "evidence_confidence": 1.0, "provenance_rights_evidence": "e",
+            "duplicate_fingerprint": "fpProd", "global_fingerprint": "gpProd",
+            "processing_eligibility": "manual_ingest_only",
+            "qualification_status": "pending", "connector_name": "youtube",
+            "connector_version": "1.0.0",
+        }
+        prod = DiscoveryRecord(**{**base, "profile_id": "bryan-face-reaction"})
+        acc = DiscoveryRecord(**{
+            **base, "profile_id": "supabase-acceptance-proof",
+            "duplicate_fingerprint": "fpAcc", "global_fingerprint": "gpAcc",
+            "platform_content_id": "acc123",
+            "canonical_url": "https://www.youtube.com/watch?v=acc123",
+        })
+        store.upsert_source(prod)
+        store.upsert_source(acc)
+        prod_rows = store.production_sources()
+        self.assertEqual(len(prod_rows), 1)
+        self.assertEqual(prod_rows[0]["profile_id"], "bryan-face-reaction")
+        store.close()
 
 
 class TestStore(unittest.TestCase):

@@ -166,6 +166,7 @@ class SupabaseStore:
         return {
             "tenant_id": r.tenant_id,
             "source_brief_version": r.source_brief_version,
+            "profile_id": r.profile_id,
             "platform": r.platform,
             "canonical_url": r.canonical_url,
             "platform_content_id": r.platform_content_id,
@@ -231,6 +232,26 @@ class SupabaseStore:
     def all_sources(self) -> list[dict[str, Any]]:
         rows = self._request("GET", "loom_discovered_sources?select=*&order=created_at.asc")
         return rows if isinstance(rows, list) else []
+
+    def production_sources(self) -> list[dict[str, Any]]:
+        """Rows eligible for a normal production queue — excludes acceptance /
+        test / example profiles by default (see source_brief.is_non_production)."""
+        from .source_brief import is_non_production
+
+        return [
+            s for s in self.all_sources()
+            if not is_non_production(s.get("profile_id") or "", s.get("tenant_id") or "")
+        ]
+
+    def production_fingerprints(self) -> set[str]:
+        """Seen fingerprints scoped to production profiles only."""
+        return {s["duplicate_fingerprint"] for s in self.production_sources()}
+
+    def production_global_fingerprints(self) -> set[str]:
+        return {
+            s["global_fingerprint"] for s in self.production_sources()
+            if s.get("global_fingerprint")
+        }
 
     def count(self) -> int:
         rows = self._request(
