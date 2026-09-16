@@ -32,7 +32,10 @@ for line in open(ENV_PATH):
         os.environ[k] = v
 
 # Import the production adapter (requires LOOM_DISCORD_* env, now set).
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "infra", "discord-review"))
+# Resolve the repo root robustly regardless of where this script lives
+# (repo-root / infra/supabase / infra/discord-review / etc.).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(_REPO_ROOT, "infra", "discord-review"))
 import adapter  # noqa: E402
 
 
