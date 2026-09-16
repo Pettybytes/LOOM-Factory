@@ -117,12 +117,16 @@ excluded from production queries automatically.
 
 ## Persisted state (production Supabase, kept intentionally)
 
-- `loom_source_briefs`: 1 row — profile `supabase-acceptance-proof`
-  (non-production acceptance evidence, KEPT).
-- `loom_discovered_sources`: 15 rows, 15 distinct fingerprints (dedup holds).
-  `metric_history` on the sampled candidate: 2 observations.
-  `qualification_status`: 1 `manual_review`, 14 `pending`.
-  `processing_eligibility`: 15/15 `manual_ingest_only`.
+- `loom_source_briefs`: 2 rows — profiles `supabase-acceptance-proof` (YouTube)
+  and `reddit-acceptance-proof` (Reddit). Both non-production acceptance
+  evidence, KEPT.
+- `loom_discovered_sources`: **40 retained proof records — 15 YouTube +
+  25 Reddit**, 40 distinct fingerprints (dedup holds). All non-production and
+  auto-excluded from production queues.
+  - YouTube: `qualification_status` 1 `manual_review` / 14 `pending`;
+    `metric_history` on sampled candidate = 2 observations.
+  - Reddit: 25 rows, all with `body_excerpt`; 1 `manual_review` / 24 `pending`.
+  - `processing_eligibility`: 40/40 `manual_ingest_only`.
 
 ## Migrations
 
