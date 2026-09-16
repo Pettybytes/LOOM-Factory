@@ -50,9 +50,11 @@ class QualificationGate:
         self,
         record: DiscoveryRecord,
         brief: SourceBrief,
+        seen_fingerprints: set[str] | None = None,
         seen_global_ids: set[str] | None = None,
         seen_near_keys: set[str] | None = None,
     ) -> QualificationResult:
+        seen_fingerprints = seen_fingerprints or set()
         seen_global_ids = seen_global_ids or set()
         seen_near_keys = seen_near_keys or set()
         checks: list[str] = []
@@ -80,6 +82,7 @@ class QualificationGate:
             tenant_id=record.tenant_id,
             platform=record.platform,
             content_id=record.platform_content_id,
+            seen_fingerprints=seen_fingerprints,
             seen_global_ids=seen_global_ids,
             seen_near_keys=seen_near_keys,
             creator_channel_identity=record.creator_channel_identity,

@@ -188,6 +188,7 @@ def classify_duplicate(
     tenant_id: str,
     platform: str,
     content_id: str,
+    seen_fingerprints: set[str] | None = None,
     seen_global_ids: set[str] | None = None,
     seen_near_keys: set[str] | None = None,
     creator_channel_identity: str = "",
@@ -196,21 +197,27 @@ def classify_duplicate(
     """Classify a candidate against previously seen identities.
 
     Returns ``(kind, reason)`` where kind is one of:
-      * ``"exact"`` — same tenant/platform/content-id already seen;
+      * ``"exact"`` — same tenant/platform/content-id already seen
+        (cross-query duplicate within a tenant);
       * ``"repost"`` — same global content id already seen (cross-tenant/cross
         query repost boundary);
       * ``"near"`` — same creator + normalized title (near-duplicate policy
         boundary);
       * ``"new"`` — no collision.
 
-    ``seen_global_ids`` and ``seen_near_keys`` are caller-maintained sets so the
-    classification is explicit and testable.
+    ``seen_fingerprints`` / ``seen_global_ids`` / ``seen_near_keys`` are
+    caller-maintained sets so the classification is explicit and testable.
     """
+    seen_fingerprints = seen_fingerprints or set()
     seen_global_ids = seen_global_ids or set()
     seen_near_keys = seen_near_keys or set()
 
+    tenant_fp = duplicate_fingerprint(tenant_id, platform, content_id)
     global_fp = global_fingerprint(platform, content_id)
     near_key = near_duplicate_key(platform, creator_channel_identity, title)
+
+    if content_id and tenant_fp in seen_fingerprints:
+        return "exact", "tenant-scoped fingerprint already observed (exact duplicate)"
 
     if content_id and global_fp in seen_global_ids:
         return "repost", "global content id already observed (repost boundary)"

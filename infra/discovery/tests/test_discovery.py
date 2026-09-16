@@ -128,6 +128,13 @@ class TestIdentity(unittest.TestCase):
         )
         self.assertEqual(kind, "repost")
 
+    def test_classify_exact(self):
+        kind, reason = classify_duplicate(
+            "t", "youtube", "abc123",
+            seen_fingerprints={duplicate_fingerprint("t", "youtube", "abc123")},
+        )
+        self.assertEqual(kind, "exact")
+
     def test_classify_near_duplicate(self):
         key = near_duplicate_key("youtube", "Bryan Petty", "Hello World!")
         kind, reason = classify_duplicate(
