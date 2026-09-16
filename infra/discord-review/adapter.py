@@ -729,6 +729,7 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
     canonical_url = None
     source_filename = None
     clean_source_url = None
+    media_duration = None
     cur = source_asset_version
     seen = set()
     while cur and cur in by_version and cur not in seen:
@@ -736,6 +737,7 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
         row = by_version[cur]
         canonical_url = canonical_url or row.get("canonical_url")
         source_filename = source_filename or row.get("source_filename")
+        media_duration = media_duration or row.get("duration_seconds")
         # The clean pre-hook/pre-subtitle input master is a durable property of
         # the ORIGINAL render (previous_asset_version IS NULL); walking the
         # lineage back surfaces it. NULL = honestly no durable clean source.
@@ -772,13 +774,20 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
                 "endMs": b.get("endMs"),
             })
 
-    # REQUIRED durable fields: a media URL AND a valid trim/source range.
+    # REQUIRED durable fields: a media URL AND a valid source range. The source
+    # range comes from the correction trim when this version was edited; for a
+    # fresh (unedited) clip there is no correction, so the FULL clip range (0 →
+    # media duration) is the source range. Never fabricate a 0/0 placeholder.
+    range_start = None
+    range_end = None
     try:
-        valid_range = (trim_start is not None and trim_end is not None
-                       and float(trim_end) > float(trim_start))
+        if trim_start is not None and trim_end is not None and float(trim_end) > float(trim_start):
+            range_start, range_end = float(trim_start), float(trim_end)
+        elif media_duration is not None and float(media_duration) > 0:
+            range_start, range_end = 0.0, float(media_duration)
     except (TypeError, ValueError):
-        valid_range = False
-    if not canonical_url or not valid_range:
+        range_start = range_end = None
+    if not canonical_url or range_start is None or range_end is None:
         return None
 
     # Burned-layer detection from the lineage source filename (the same
@@ -794,8 +803,8 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
     return {
         "media_url": canonical_url,
         "clean_source_url": clean_source_url,
-        "duration_seconds": round(float(trim_end) - float(trim_start), 2),
-        "source_range": {"start": float(trim_start), "end": float(trim_end)},
+        "duration_seconds": round(range_end - range_start, 2),
+        "source_range": {"start": range_start, "end": range_end},
         "framing": framing,
         "title": "",
         "source_filename": source_filename or "",
@@ -1005,7 +1014,7 @@ def ghl_upload_file(path: str, name: str):
         return None
 
 
-def register_clip_media(tenant_id, clip_id, asset_version, job_id, ready_file, master_asset=None):
+def register_clip_media(tenant_id, clip_id, asset_version, job_id, ready_file, master_asset=None, duration_seconds=None):
     """Persist the durable clean-source + burned canonical artifact for a freshly
     rendered clip (ingest-time media registration). Locates the burned final and
     the clean pre-hook/pre-subtitle input on disk, uploads both to GHL Media
@@ -1049,6 +1058,8 @@ def register_clip_media(tenant_id, clip_id, asset_version, job_id, ready_file, m
         "content_type": "video/mp4",
         "publication_status": "not_approved",
     }
+    if duration_seconds is not None:
+        payload["duration_seconds"] = duration_seconds
     if burned_up:
         payload["canonical_url"] = burned_up.get("url")
         payload["ghl_media_id"] = burned_up.get("fileId")
@@ -1079,6 +1090,32 @@ def register_clip_media(tenant_id, clip_id, asset_version, job_id, ready_file, m
         return None
 
 
+def _url_reachable(url: str, timeout: int = 8) -> bool:
+    """True if the URL answers a byte-range GET (filesafe CDN rejects the default
+    Python-urllib UA, so send a browser UA)."""
+    if not url:
+        return False
+    req = Request(url, method="GET")
+    req.add_header("Range", "bytes=0-0")
+    req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return resp.status in (200, 206)
+    except Exception:
+        return False
+
+
+def resolve_clip_clean_source(tenant_id, clip_id):
+    """Return the durable clean_source_url for a clip (the original render's
+    loom_media row carries it), or None. Used to gate Edit readiness for
+    final_publication cards whose clean source was persisted at moment review."""
+    rows = supabase_filter_get("loom_media", {"tenant_id": tenant_id, "clip_id": clip_id})
+    for r in (rows or []):
+        if isinstance(r, dict) and r.get("clean_source_url"):
+            return r.get("clean_source_url")
+    return None
+
+
 def send_review_card(payload: dict):
     """payload: clip_id, job_id, ready_file, master_asset, source_title,
     proposed_shorts_title, caption, hook, overall_score, decision,
@@ -1105,12 +1142,28 @@ def send_review_card(payload: dict):
     # (moment review = a freshly rendered clip). Non-fatal: the card still sends
     # if this fails, but the durable clean source is what lets hook replacement
     # re-render from clean after OpenShorts evicts the job.
+    media_row = None
     if review_stage == "moment":
         try:
-            register_clip_media(tenant_id, clip_id, asset_version, job_id, ready_file,
-                                payload.get("master_asset"))
+            media_row = register_clip_media(tenant_id, clip_id, asset_version, job_id, ready_file,
+                                            payload.get("master_asset"),
+                                            duration_seconds=payload.get("duration_seconds"))
         except Exception as e:
             print(f"[media] register_clip_media failed (non-fatal): {e}", flush=True)
+
+    # Edit readiness: never advertise Edit without a VERIFIED durable clean
+    # pre-hook source. A clip without one can only stack a new hook on the burned
+    # derivative (or fail outright once the job is evicted). Verify presence AND
+    # reachability; emit an alert with full identity — never silently accept.
+    if review_stage == "moment":
+        clean_source = (media_row or {}).get("clean_source_url")
+    else:
+        clean_source = resolve_clip_clean_source(tenant_id, clip_id)
+    edit_ready = bool(clean_source) and _url_reachable(clean_source)
+    if not edit_ready:
+        print(f"[media] ALERT editor-unavailable tenant={tenant_id} job={job_id} "
+              f"clip={clip_id}@{asset_version} stage={review_stage} "
+              f"clean_source={clean_source or 'MISSING'}", flush=True)
 
     channel_id = resolve_clip_review_channel()
 
@@ -1182,6 +1235,10 @@ def send_review_card(payload: dict):
         rights = payload.get("rights_policy")
         if rights:
             fields.append({"name": "⚠️ Rights/policy", "value": str(rights)[:400], "inline": False})
+        # Reliability gate: never advertise Edit without a verified durable clean
+        # source. Omit the Edit control and say so explicitly on the card.
+        if not edit_ready:
+            fields.append({"name": "⚠️ Editor source unavailable", "value": "Clean pre-hook source not persisted/reachable — editing (hook replacement) is disabled for this clip.", "inline": False})
 
         # Footer: tenant · lineage · fixture badge · publication state.
         footer = []
@@ -1205,16 +1262,15 @@ def send_review_card(payload: dict):
         if footer_text:
             embed["footer"] = {"text": footer_text[:2048]}
 
-        components = [{
-            "type": 1,
-            "components": [
-                {"type": 2, "style": 3, "label": approve_label, "custom_id": approve_id},
-                {"type": 2, "style": 4, "label": "Reject", "custom_id": reject_id},
-                {"type": 2, "style": 2, "label": "Hold", "custom_id": hold_id},
-                {"type": 2, "style": 1, "label": "Edit", "custom_id": edit_id},
-                {"type": 2, "style": 2, "label": "Details", "custom_id": details_id},
-            ],
-        }]
+        buttons = [
+            {"type": 2, "style": 3, "label": approve_label, "custom_id": approve_id},
+            {"type": 2, "style": 4, "label": "Reject", "custom_id": reject_id},
+            {"type": 2, "style": 2, "label": "Hold", "custom_id": hold_id},
+        ]
+        if edit_ready:
+            buttons.append({"type": 2, "style": 1, "label": "Edit", "custom_id": edit_id})
+        buttons.append({"type": 2, "style": 2, "label": "Details", "custom_id": details_id})
+        components = [{"type": 1, "components": buttons}]
 
         message_payload = {
             "content": f"🎬 **{header}**",
