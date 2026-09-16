@@ -4,40 +4,35 @@
 
 ---
 
-## STOP STATE — 2026-09-16 ~00:30 EDT
+## STOP STATE — 2026-09-16 ~01:15 EDT
 
-**Automated Source Discovery V1: FOUNDATION COMPLETE + FIRST CONNECTOR PROOF PASSED.**
+**Automated Source Discovery V1: SEGMENT CLOSED.**
 
-The Stage 2 editor (closed earlier) is untouched. The new work is the
-**Source Discovery V1 foundation** plus a **real, non-mocked YouTube connector
-proof**, delivered as a dependency-free Python package (`infra/discovery/`) with
-deterministic tests, a thin shared n8n workflow, and idempotent Supabase
-migrations.
+- **Segment 2 — Foundation: COMPLETE.**
+- **Segment 3 — first YouTube connector milestone: RUNTIME-PROVEN (Supabase-backed).**
+
+Both against the production Supabase store. Zero cost. Zero downstream side
+ effects (no download, no OpenShorts job, no publication, no distribution).
 
 **No source was downloaded, processed, clipped, published, or distributed.**
 
 ---
 
-## Segment boundary (roadmap overlap resolved)
-
-The previous overlap between "Topic Intelligence" and "Broad Source Discovery"
-is now split into two explicit segments:
+## Segment boundary (roadmap overlap resolved — SEGMENT CLOSED)
 
 - **Segment 2 — Automated Source Discovery V1 Foundation (COMPLETE).**
-  Exit criteria met: Source Brief contract exists; normalized discovery schema
-  exists; identity + duplicate handling pass deterministic tests; shared
-  connector interface exists; qualification-before-acquisition gate exists;
-  three planned profile fixtures validate. No platform-specific live proof was
-  required — but one was delivered anyway (see Segment 3).
-- **Segment 3 — Initial Connector Proofs (FIRST MILESTONE PASSED).**
-  Entry begins with the real YouTube/search connector. First milestone met:
-  one real source discovered → normalized → deduplicated → evidence stored →
-  qualification applied → one invalid/duplicate rejected → one eligible source
+  Exit criteria met: Source Brief contract; normalized discovery schema;
+  identity + duplicate handling (deterministic tests); shared connector
+  interface; qualification-before-acquisition gate; three profile fixtures
+  validate.
+- **Segment 3 — Initial Connector Proofs (FIRST MILESTONE RUNTIME-PROVEN).**
+  Real YouTube source discovered → normalized → deduplicated → evidence stored
+  → qualification applied → one invalid/duplicate rejected → one eligible source
   passed to the manual-ingest boundary → no automatic publication.
 
-Do not double-count the connector proof: the YouTube live proof is Segment 3's
-first milestone only. Reddit and TikTok remain **planned, not implemented**.
-X remains deferred. Instagram/Facebook remain planned.
+Reddit and TikTok remain **planned, not implemented**. X remains deferred.
+Instagram/Facebook remain planned. Do not start Reddit/TikTok until explicitly
+authorized.
 
 ---
 
@@ -51,11 +46,13 @@ X remains deferred. Instagram/Facebook remain planned.
 | `connector.py` | Shared connector interface (pagination, rate limits, auth-by-name, provenance, retry, health, cost, versioning) |
 | `qualification.py` | Qualification-before-acquisition gate (deterministic, explicit rejection reasons) |
 | `store.py` | Durable store (SQLite, dependency-free) — idempotent upsert + append-only metric history |
+| `store_supabase.py` | Production Supabase store (service-role key by NAME only, no DDL, no download) |
 | `connectors/youtube.py` | YouTube/search + competitor-channel discovery (first-party RSS, no credential) |
 | `connectors/__init__.py` | Connector registry (youtube only; reddit/tiktok planned) |
 | `prove_youtube_connector.py` | Bounded live connector proof |
+| `prove_supabase_acceptance.py` | 12-criteria Supabase-backed acceptance proof |
 | `fixtures/` | 3 non-provisioned profile Source Briefs (design/test examples only) |
-| `tests/test_discovery.py` | 32 deterministic unit tests |
+| `tests/test_discovery.py` | 34 deterministic unit tests |
 
 Plus `n8n-workflows/LOOM-06-Source-Discovery.json` (shared, tenant-driven,
 **inactive** — never deployed/activated).
@@ -79,24 +76,50 @@ Plus `n8n-workflows/LOOM-06-Source-Discovery.json` (shared, tenant-driven,
 
 ## Tests
 
-`python3 -m unittest discover -s infra/discovery/tests` → **32 passed**.
+`python3 -m unittest discover -s infra/discovery/tests` → **34 passed**.
+
+## Supabase acceptance proof (12/12 PASS, production Supabase)
+
+`python3 infra/discovery/prove_supabase_acceptance.py` → 12/12 criteria pass:
+real candidates discovered (n=15) → normalized + stored (15/15) → replay
+idempotent (15, not 30) → metric-history append (1→2, prior preserved) →
+explicit repost rejection → manual-ingest boundary only → no forbidden modules
+imported / RSS-GET-only. See "Persisted state".
+
+## Production-queue exclusion of acceptance/test profiles
+
+`profile_id` now travels on every discovered record (from its Source Brief) and
+is persisted. `is_non_production(profile_id, tenant_id)` marks acceptance/test/
+example profiles. Normal production queue queries use
+`production_sources()` / `production_fingerprints()` /
+`production_global_fingerprints()`, which **exclude non-production profiles by
+default**. The acceptance profile `supabase-acceptance-proof` is therefore
+excluded from production queries automatically.
+
+## Persisted state (production Supabase, kept intentionally)
+
+- `loom_source_briefs`: 1 row — profile `supabase-acceptance-proof`
+  (non-production acceptance evidence, KEPT).
+- `loom_discovered_sources`: 15 rows, 15 distinct fingerprints (dedup holds).
+  `metric_history` on the sampled candidate: 2 observations.
+  `qualification_status`: 1 `manual_review`, 14 `pending`.
+  `processing_eligibility`: 15/15 `manual_ingest_only`.
 
 ## Migrations
 
 | # | Change | Status |
 |---|--------|--------|
-| 018 | `loom_source_briefs` (versioned tenant-scoped briefs) | Written, **NOT applied** |
-| 019 | `loom_discovered_sources` (normalized records, fingerprint-unique, append-only metric history) | Written, **NOT applied** |
+| 018 | `loom_source_briefs` (versioned tenant-scoped briefs) | **Applied** (Bryan, 2026-09-16) |
+| 019 | `loom_discovered_sources` (normalized records, fingerprint-unique, append-only metric history) | **Applied** (Bryan, 2026-09-16) |
+| 020 | `loom_discovered_sources.profile_id` (+ index) | Written, **NOT yet applied** |
 
-> Migrations 010–017 remain applied + live-verified (unchanged). 018/019 are
-> idempotent SQL files committed to `infra/supabase/`. They are **not applied**
-> because this execution context has no Supabase DDL path (no `psql`, no DB
-> password, CLI not linked) — applying them is a manual SQL-editor / linked-CLI
-> action (see "Manual actions required").
+> Migrations 010–017 remain applied + live-verified (unchanged). 020 adds
+> `profile_id` (for production-queue exclusion) and is idempotent; apply it via
+> the Supabase SQL editor (no DDL path from this execution context).
 
 ## Git state
 
-- **LOOM-Factory `master`** · HEAD `d10f002` · clean · **pushed** to
+- **LOOM-Factory `master`** · HEAD `4cedf07` · clean · **pushed** to
   `origin/master` (https://github.com/Pettybytes/LOOM-Factory.git).
 - Commit chain (this discovery build):
   1. `13a8dc6` — Source Brief contract + normalized schema + fixtures + migrations 018/019
@@ -105,6 +128,9 @@ Plus `n8n-workflows/LOOM-06-Source-Discovery.json` (shared, tenant-driven,
   4. `8f03e34` — YouTube connector + durable store + live proof + tests
   5. `5ab5283` — README + shared n8n discovery workflow
   6. `d10f002` — explicit exact-duplicate classification
+  7. `205f1bf` — docs: discovery V1 handoff
+  8. `708d472` — production Supabase store + full acceptance proof (12/12)
+  9. `4cedf07` — profile_id on records + production-queue exclusion
 - No secret values in any commit. No destructive git/db operations. Unrelated
   dirty files (nested OpenShorts repo) left untouched.
 
@@ -210,7 +236,7 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 - **Review channel:** resolved at runtime by name `clip-review`.
 - **Reviewer (Bryan):** `688976899094872148`
 
-## 4. Migrations — 010–017 (applied + live-verified) · 018–019 (written, not applied)
+## 4. Migrations — 010–017 (applied + live-verified) · 018–019 (applied) · 020 (pending)
 
 | # | Change | Status |
 |---|--------|--------|
@@ -222,8 +248,9 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 | 015 | editor launch context | Applied |
 | 016 | `loom_edit_sessions.draft` (jsonb) | Applied |
 | 017 | `loom_media.clean_source_url/hash/size/filename` | Applied |
-| 018 | `loom_source_briefs` | Written, not applied |
-| 019 | `loom_discovered_sources` | Written, not applied |
+| 018 | `loom_source_briefs` | Applied (Bryan, 2026-09-16) |
+| 019 | `loom_discovered_sources` | Applied (Bryan, 2026-09-16) |
+| 020 | `loom_discovered_sources.profile_id` (+ index) | Written, not applied |
 
 ## 5. Credential inventory (names + locations only — never values)
 
@@ -246,11 +273,12 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 - **Missing preview font** `fonts/NotoSerif-Bold.ttf` — cosmetic, deferred.
 - **Topic Intelligence scoring** — reserved fields only in discovery; no scoring
   implemented (correctly out of scope for this segment).
-- **Reddit / TikTok connectors** — planned, not started.
+- **Reddit / TikTok connectors** — planned, not started (held until authorized).
 - **GHL subaccounts / social accounts / Discord tenant spaces for the three
   profiles** — deliberately NOT created (profiles are fixtures only).
 
 ## 7. Next segment
 
-**Segment 3 — Initial Connector Proofs (remaining): Reddit and TikTok** — only
-on Bryan's approval. No automatic download/processing/publication at any point.
+**HOLD.** Segment 3 remaining milestones (Reddit + TikTok) start only on
+Bryan's explicit authorization. No automatic download/processing/publication at
+any point.
