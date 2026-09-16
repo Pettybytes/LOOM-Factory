@@ -9,9 +9,24 @@
 ---
 
 ## Last Updated
-2026-09-16 01:15 EDT (America/Detroit)
+2026-09-16 01:55 EDT (America/Detroit)
 
-## Segment 2 — Automated Source Discovery V1: SEGMENT CLOSED
+## Segment 3 — Reddit connector milestone: BUILT + TESTS PASS + LIVE DISCOVERY PROVEN
+
+- **RedditConnector** (`connectors/reddit.py`) — subreddit + bounded keyword
+  discovery via first-party Reddit RSS (no credential, no scraping, no auth
+  evasion). Public JSON API is 403 unauthenticated; OAuth API requires app
+  registration (neither used).
+- Captures: post id (`t3_` stripped), canonical URL, subreddit, author, title,
+  body excerpt, publication time, observed metrics (content_type + source URL
+  refs), provenance (honest note: RSS omits score/ups/comments).
+- Cross-post dedup: author-agnostic `crosspost_key` added to identity + gate.
+- `body_excerpt` field added to record + both stores (migration 021).
+- **38 deterministic tests pass** (was 34).
+- **Live discovery proven:** 25 real r/technology posts discovered.
+- **Supabase proof PENDING migration 021** (`body_excerpt` column).
+
+## Segment 2 — Automated Source Discovery V1: CLOSED
 
 - **Segment 2 — Foundation: COMPLETE.**
 - **Segment 3 — first YouTube connector milestone: RUNTIME-PROVEN
@@ -31,29 +46,32 @@ clipped, published, or distributed.
   → qualification applied → one duplicate rejected → one eligible source passed
   to manual-ingest boundary → no automatic publication.
 
-Reddit/TikTok remain planned (not started). X deferred. **HOLD Reddit until
-explicitly authorized.**
+Reddit is in progress (built + live discovery proven; Supabase proof pending
+migration 021). TikTok is HELD. X deferred.
 
 ## What was built
 
 ```
 infra/discovery/
   source_brief.py           # Source Brief contract + is_non_production() marker convention
-  discovery_record.py       # normalized discovery record + validation (carries profile_id)
-  identity.py               # canonical URL norm + fingerprints + dedup (no paid model)
+  discovery_record.py       # normalized discovery record + validation (carries profile_id + body_excerpt)
+  identity.py               # canonical URL norm + fingerprints + dedup (no paid model) + crosspost_key
   connector.py              # shared connector interface
   qualification.py          # qualification-before-acquisition gate
   store.py                  # SQLite durable store (idempotent upsert, append-only metric history)
   store_supabase.py         # production Supabase store (service-role key by NAME only)
   connectors/youtube.py     # YouTube/search + channel discovery (first-party RSS)
+  connectors/reddit.py      # Reddit subreddit + keyword discovery (first-party RSS)
   prove_youtube_connector.py
   prove_supabase_acceptance.py
+  prove_supabase_reddit.py
   fixtures/                 # 3 non-provisioned profile briefs
-  tests/test_discovery.py   # 34 deterministic tests
+  tests/test_discovery.py   # 38 deterministic tests
 n8n-workflows/LOOM-06-Source-Discovery.json   # shared, inactive
 infra/supabase/018_loom_source_briefs.sql      # APPLIED
 infra/supabase/019_loom_discovered_sources.sql # APPLIED
 infra/supabase/020_loom_discovered_sources_profile.sql # APPLIED (15 rows backfilled)
+infra/supabase/021_loom_discovered_sources_body_excerpt.sql # written, NOT applied
 ```
 
 ## Supabase acceptance proof (12/12 PASS, production Supabase)
@@ -75,29 +93,34 @@ evidence and is KEPT (not deleted).
 
 ## Tests
 
-`python3 -m unittest discover -s infra/discovery/tests` → **34 passed**.
+`python3 -m unittest discover -s infra/discovery/tests` → **38 passed**.
 
 ## Git
 
-- LOOM-Factory `master` HEAD `4cedf07`, clean, **pushed** to origin.
+- LOOM-Factory `master` HEAD `d97fcf5`, clean, **pushed** to origin.
 - Chain: `13a8dc6` → `0e23c54` → `4b1da3e` → `8f03e34` → `5ab5283` →
-  `d10f002` → `205f1bf` → `708d472` → `4cedf07`.
+  `d10f002` → `205f1bf` → `708d472` → `4cedf07` → `317cf96` → `defd4ec` →
+  `9d73f12` → `d97fcf5`.
 - No secrets committed; no destructive ops; nested OpenShorts dirty files untouched.
 
 ## Costs
 
-$0.00. No paid model calls, no new paid service. `caffeinate` active; Docker left running.
+$0.00. No paid model calls, no new paid service. Reddit RSS is free.
+`caffeinate` active; Docker left running.
 
 ## Credentials required (names only)
 
-- `YOUTUBE_DATA_API_V3_KEY` — for keyword search (absent; channel RSS works without it).
+- `YOUTUBE_DATA_API_V3_KEY` — for YouTube keyword search (absent; channel RSS works without it).
+- Reddit — none (first-party RSS; JSON/OAuth API not used).
 
 ## Manual actions required (Bryan)
 
-- (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` for keyword search.
-- Migrations 018–020 are all applied; no further SQL required.
+1. Apply migration 021 (`body_excerpt` column) — unblocks the Reddit Supabase
+   acceptance proof. `pbcopy < infra/supabase/021_loom_discovered_sources_body_excerpt.sql`
+2. (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` for YouTube keyword search.
 
 ## Next
 
-**HOLD.** Reddit + TikTok start only on explicit authorization. No automatic
-download/processing/publication at any point.
+Reddit Supabase proof unblocks as soon as migration 021 is applied. TikTok
+HELD until explicitly authorized. No automatic download/processing/publication
+at any point.

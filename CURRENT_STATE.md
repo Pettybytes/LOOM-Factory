@@ -4,15 +4,17 @@
 
 ---
 
-## STOP STATE — 2026-09-16 ~01:15 EDT
+## STOP STATE — 2026-09-16 ~01:55 EDT
 
 **Automated Source Discovery V1: SEGMENT CLOSED.**
 
 - **Segment 2 — Foundation: COMPLETE.**
 - **Segment 3 — first YouTube connector milestone: RUNTIME-PROVEN (Supabase-backed).**
+- **Segment 3 — Reddit connector milestone: BUILT + TESTS PASS + LIVE DISCOVERY PROVEN;
+  Supabase proof PENDING migration 021 (`body_excerpt` column).**
 
-Both against the production Supabase store. Zero cost. Zero downstream side
- effects (no download, no OpenShorts job, no publication, no distribution).
+Zero cost. Zero downstream side effects (no download, no OpenShorts job, no
+publication, no distribution).
 
 **No source was downloaded, processed, clipped, published, or distributed.**
 
@@ -29,10 +31,13 @@ Both against the production Supabase store. Zero cost. Zero downstream side
   Real YouTube source discovered → normalized → deduplicated → evidence stored
   → qualification applied → one invalid/duplicate rejected → one eligible source
   passed to the manual-ingest boundary → no automatic publication.
+- **Segment 3 — Reddit connector milestone (IN PROGRESS):** connector built via
+  first-party RSS (no credential, no scraping); 38 deterministic tests pass;
+  live discovery of 25 real r/technology posts proven. Supabase proof pending
+  migration 021 (`body_excerpt` column).
 
-Reddit and TikTok remain **planned, not implemented**. X remains deferred.
-Instagram/Facebook remain planned. Do not start Reddit/TikTok until explicitly
-authorized.
+Reddit remains in progress. TikTok remains **held**. X deferred.
+Instagram/Facebook planned. Do not start TikTok until explicitly authorized.
 
 ---
 
@@ -76,7 +81,18 @@ Plus `n8n-workflows/LOOM-06-Source-Discovery.json` (shared, tenant-driven,
 
 ## Tests
 
-`python3 -m unittest discover -s infra/discovery/tests` → **34 passed**.
+`python3 -m unittest discover -s infra/discovery/tests` → **38 passed**.
+
+## Reddit connector (BUILT, live discovery proven)
+
+`infra/discovery/connectors/reddit.py` — subreddit + bounded keyword discovery
+via first-party Reddit RSS (no credential, no scraping, no auth evasion).
+Captures post id, canonical URL, subreddit, author, title, body excerpt,
+publication time, observed metrics (content_type + source URL refs), provenance
+(honest note: RSS omits score/ups/comments). Cross-post dedup via author-agnostic
+`crosspost_key`. Live discovery of 25 real r/technology posts verified.
+
+**Supabase acceptance proof pending migration 021** (`body_excerpt` column).
 
 ## Supabase acceptance proof (12/12 PASS, production Supabase)
 
@@ -112,10 +128,12 @@ excluded from production queries automatically.
 | 018 | `loom_source_briefs` (versioned tenant-scoped briefs) | **Applied** (Bryan, 2026-09-16) |
 | 019 | `loom_discovered_sources` (normalized records, fingerprint-unique, append-only metric history) | **Applied** (Bryan, 2026-09-16) |
 | 020 | `loom_discovered_sources.profile_id` (+ index) | **Applied** (Bryan, 2026-09-16) |
+| 021 | `loom_discovered_sources.body_excerpt` | Written, **NOT applied** |
 
 > Migrations 010–017 remain applied + live-verified (unchanged). 020 added
 > `profile_id`; the 15 acceptance rows were backfilled to
 > `supabase-acceptance-proof` and are excluded from production queries.
+> 021 adds `body_excerpt` (needed for the Reddit Supabase proof).
 
 ## Git state
 
@@ -145,21 +163,22 @@ Desktop left running (existing containers up: `loom-tunnel-proxy`,
 
 - `YOUTUBE_DATA_API_V3_KEY` — needed to enable YouTube keyword *search*
   (Data API v3). Channel discovery already works via free RSS without it.
-- Supabase DDL path — either the Supabase **SQL editor** (paste migrations
-  018/019) or the **database password** for `supabase link` + `supabase db push`.
+- Reddit: **none** — first-party RSS works with no credential. The public JSON
+  API is 403 unauthenticated and the OAuth API requires app registration
+  (neither used).
+- Supabase DDL path — either the Supabase **SQL editor** or the **database
+  password** for `supabase link` + `supabase db push`.
 
 ## Manual actions required (Bryan)
 
-1. (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` to unlock keyword search.
-2. Apply `infra/supabase/018_loom_source_briefs.sql` and
-   `019_loom_discovered_sources.sql` (Supabase SQL editor, or provide DB
-   password for CLI push).
+1. Apply migration 021 (`body_excerpt` column) — needed to finish the Reddit
+   Supabase acceptance proof. `pbcopy < infra/supabase/021_loom_discovered_sources_body_excerpt.sql`
+2. (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` for YouTube keyword search.
 
 ## Next action
 
-Reddit and TikTok connectors are the next Segment 3 milestones (planned, not
-started). Do not begin them without Bryan's approval. Instagram/Facebook remain
-planned; X deferred.
+- **Reddit Supabase proof** — unblocks as soon as migration 021 is applied.
+- **TikTok** — HELD until explicitly authorized. Instagram/Facebook planned; X deferred.
 
 ---
 
@@ -236,7 +255,7 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 - **Review channel:** resolved at runtime by name `clip-review`.
 - **Reviewer (Bryan):** `688976899094872148`
 
-## 4. Migrations — 010–020 (all applied + live-verified)
+## 4. Migrations — 010–020 applied · 021 pending
 
 | # | Change | Status |
 |---|--------|--------|
@@ -251,6 +270,7 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 | 018 | `loom_source_briefs` | Applied (Bryan, 2026-09-16) |
 | 019 | `loom_discovered_sources` | Applied (Bryan, 2026-09-16) |
 | 020 | `loom_discovered_sources.profile_id` (+ index) | Applied (Bryan, 2026-09-16) |
+| 021 | `loom_discovered_sources.body_excerpt` | Written, **not applied** |
 
 ## 5. Credential inventory (names + locations only — never values)
 
@@ -273,12 +293,14 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 - **Missing preview font** `fonts/NotoSerif-Bold.ttf` — cosmetic, deferred.
 - **Topic Intelligence scoring** — reserved fields only in discovery; no scoring
   implemented (correctly out of scope for this segment).
-- **Reddit / TikTok connectors** — planned, not started (held until authorized).
+- **Reddit connector** — built + live discovery proven; Supabase proof pending
+  migration 021.
+- **TikTok connector** — HELD until explicitly authorized.
 - **GHL subaccounts / social accounts / Discord tenant spaces for the three
   profiles** — deliberately NOT created (profiles are fixtures only).
 
 ## 7. Next segment
 
-**HOLD.** Segment 3 remaining milestones (Reddit + TikTok) start only on
-Bryan's explicit authorization. No automatic download/processing/publication at
-any point.
+**Reddit Supabase proof** unblocks as soon as migration 021 is applied.
+**TikTok** remains HELD until explicitly authorized. No automatic
+download/processing/publication at any point.
