@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS discovered_sources (
     velocity_inputs         TEXT,
     opportunity_classification TEXT,
     raw_evidence_reference  TEXT,
+    body_excerpt            TEXT,
     created_at              TEXT,
     updated_at              TEXT
 );
@@ -152,7 +153,7 @@ class DiscoveryStore:
                 SET observed_metrics = ?, metric_history = ?,
                     metric_observation_timestamp = ?, updated_at = ?,
                     processing_eligibility = ?, qualification_status = ?,
-                    rejection_reason = ?, profile_id = ?
+                    rejection_reason = ?, profile_id = ?, body_excerpt = ?
                 WHERE fingerprint = ?
                 """,
                 (
@@ -164,6 +165,7 @@ class DiscoveryStore:
                     record.qualification_status,
                     record.rejection_reason,
                     record.profile_id,
+                    record.body_excerpt,
                     record.duplicate_fingerprint,
                 ),
             )
@@ -181,9 +183,9 @@ class DiscoveryStore:
                 discovery_reason, evidence_confidence, provenance_rights_evidence,
                 processing_eligibility, qualification_status, rejection_reason,
                 connector_name, connector_version, velocity_inputs,
-                opportunity_classification, raw_evidence_reference, created_at, updated_at
+                opportunity_classification, raw_evidence_reference, body_excerpt, created_at, updated_at
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -221,6 +223,7 @@ class DiscoveryStore:
                 json.dumps(record.velocity_inputs, sort_keys=True),
                 record.opportunity_classification,
                 record.raw_evidence_reference,
+                record.body_excerpt,
                 record.created_at,
                 now,
             ),
@@ -253,6 +256,15 @@ class DiscoveryStore:
         return {r[0] for r in self._conn.execute(
             "SELECT near_duplicate_key FROM discovered_sources WHERE near_duplicate_key != ''"
         ).fetchall()}
+
+    def all_crosspost_keys(self) -> set[str]:
+        """Cross-post keys derived from stored (platform, title) pairs."""
+        from .identity import crosspost_key
+
+        rows = self._conn.execute(
+            "SELECT platform, title FROM discovered_sources"
+        ).fetchall()
+        return {crosspost_key(r["platform"], r["title"]) for r in rows if r["title"]}
 
     def all_sources(self) -> list[dict[str, Any]]:
         return [dict(r) for r in self._conn.execute(

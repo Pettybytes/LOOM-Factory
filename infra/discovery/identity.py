@@ -184,6 +184,15 @@ def near_duplicate_key(platform: str, creator_channel_identity: str, title: str)
     return _sha256_hex("near", platform, normalize_creator(creator_channel_identity), title_key(title))
 
 
+def crosspost_key(platform: str, title: str) -> str:
+    """Deterministic cross-post key: same platform + same normalized title,
+    author-agnostic. Reddit cross-posts share a title but a DIFFERENT post ID
+    and (usually) a different author, so the author-aware near_duplicate_key
+    would miss them. This key is a documented heuristic boundary (no API
+    crosspost_parent field available over RSS), not perceptual identity."""
+    return _sha256_hex("crosspost", platform, title_key(title))
+
+
 def classify_duplicate(
     tenant_id: str,
     platform: str,
@@ -191,6 +200,7 @@ def classify_duplicate(
     seen_fingerprints: set[str] | None = None,
     seen_global_ids: set[str] | None = None,
     seen_near_keys: set[str] | None = None,
+    seen_crosspost_keys: set[str] | None = None,
     creator_channel_identity: str = "",
     title: str = "",
 ) -> tuple[str, str]:
@@ -201,26 +211,35 @@ def classify_duplicate(
         (cross-query duplicate within a tenant);
       * ``"repost"`` — same global content id already seen (cross-tenant/cross
         query repost boundary);
+      * ``"crosspost"`` — same platform + normalized title, different content id
+        (author-agnostic cross-post heuristic, no API crosspost_parent field
+        available over RSS);
       * ``"near"`` — same creator + normalized title (near-duplicate policy
         boundary);
       * ``"new"`` — no collision.
 
-    ``seen_fingerprints`` / ``seen_global_ids`` / ``seen_near_keys`` are
-    caller-maintained sets so the classification is explicit and testable.
+    ``seen_fingerprints`` / ``seen_global_ids`` / ``seen_near_keys`` /
+    ``seen_crosspost_keys`` are caller-maintained sets so the classification is
+    explicit and testable.
     """
     seen_fingerprints = seen_fingerprints or set()
     seen_global_ids = seen_global_ids or set()
     seen_near_keys = seen_near_keys or set()
+    seen_crosspost_keys = seen_crosspost_keys or set()
 
     tenant_fp = duplicate_fingerprint(tenant_id, platform, content_id)
     global_fp = global_fingerprint(platform, content_id)
     near_key = near_duplicate_key(platform, creator_channel_identity, title)
+    xpost_key = crosspost_key(platform, title)
 
     if content_id and tenant_fp in seen_fingerprints:
         return "exact", "tenant-scoped fingerprint already observed (exact duplicate)"
 
     if content_id and global_fp in seen_global_ids:
         return "repost", "global content id already observed (repost boundary)"
+
+    if xpost_key and xpost_key in seen_crosspost_keys:
+        return "crosspost", "cross-post (same platform + normalized title, different id)"
 
     if near_key and near_key in seen_near_keys:
         return "near", "near-duplicate (same creator + normalized title)"

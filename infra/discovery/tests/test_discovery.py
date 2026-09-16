@@ -31,8 +31,9 @@ from discovery.identity import (  # noqa: E402
 )
 from discovery.qualification import QualificationGate  # noqa: E402
 from discovery.store import DiscoveryStore  # noqa: E402
-from discovery.connector import AuthRequiredError, DiscoveryRequest  # noqa: E402
+from discovery.connector import AuthRequiredError, DiscoveryRequest, ConnectorError  # noqa: E402
 from discovery.connectors.youtube import YouTubeConnector  # noqa: E402
+from discovery.connectors.reddit import RedditConnector  # noqa: E402
 
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -144,6 +145,17 @@ class TestIdentity(unittest.TestCase):
             title="Hello World!",
         )
         self.assertEqual(kind, "near")
+
+    def test_classify_crosspost(self):
+        from discovery.identity import crosspost_key as _ck
+        key = _ck("reddit", "Amazing puppy rescue")
+        kind, reason = classify_duplicate(
+            "t", "reddit", "newid123",
+            seen_crosspost_keys={key},
+            creator_channel_identity="someoneelse",
+            title="Amazing puppy rescue",
+        )
+        self.assertEqual(kind, "crosspost")
 
     def test_classify_new(self):
         kind, reason = classify_duplicate("t", "youtube", "abc123")
@@ -304,6 +316,54 @@ class TestProductionExclusion(unittest.TestCase):
         self.assertEqual(len(prod_rows), 1)
         self.assertEqual(prod_rows[0]["profile_id"], "bryan-face-reaction")
         store.close()
+
+
+class TestRedditConnector(unittest.TestCase):
+    def test_invalid_query(self):
+        conn = RedditConnector()
+        brief = load_brief("brief_pets_ranking.json")
+        from discovery.connector import ConnectorError
+        with self.assertRaises(ConnectorError):
+            list(conn.discover(DiscoveryRequest(brief=brief, query="nonsense query")))
+
+    def test_subreddit_discovery_network_path(self):
+        # A non-existent subreddit returns 404 — must raise ConnectorError
+        # (not AuthRequiredError, since no credential is needed).
+        conn = RedditConnector()
+        brief = load_brief("brief_pets_ranking.json")
+        req = DiscoveryRequest(brief=brief, query="subreddit:this-subreddit-does-not-exist-xyz")
+        with self.assertRaises(ConnectorError):
+            list(conn.discover(req))
+
+    def test_parse_reddit_rss_entry(self):
+        # Deterministic parsing test against a fixture-style entry.
+        import xml.etree.ElementTree as ET
+        xml = '''<feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <id>t3_1w5k5h4</id>
+            <title>Test post title</title>
+            <published>2026-09-02T19:18:30+00:00</published>
+            <updated>2026-09-02T19:18:30+00:00</updated>
+            <author><name>/u/testauthor</name><uri>https://www.reddit.com/user/testauthor</uri></author>
+            <category term="pets" label="r/pets"/>
+            <content type="html">&lt;!-- SC_OFF --&gt;&lt;div class="md"&gt;&lt;p&gt;Look at &lt;a href="https://example.com/puppy"&gt;this puppy&lt;/a&gt;&lt;/p&gt;&lt;/div&gt;</content>
+            <link href="https://www.reddit.com/r/pets/comments/1w5k5h4/test_post_title/"/>
+          </entry>
+        </feed>'''
+        root = ET.fromstring(xml)
+        entry = root.find("{http://www.w3.org/2005/Atom}entry")
+        conn = RedditConnector()
+        brief = load_brief("brief_pets_ranking.json")
+        rec = conn._entry_to_record(DiscoveryRequest(brief=brief, query="subreddit:pets"), entry, "pets")
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.platform_content_id, "1w5k5h4")
+        self.assertEqual(rec.creator_channel_identity, "testauthor")
+        self.assertEqual(rec.platform, "reddit")
+        self.assertEqual(rec.title.lower(), "test post title")
+        self.assertIn("puppy", rec.body_excerpt)
+        self.assertEqual(rec.observed_metrics.get("content_type"), "post")
+        srcs = rec.observed_metrics.get("source_url_references", [])
+        self.assertTrue(any("example.com/puppy" in s for s in srcs))
 
 
 class TestStore(unittest.TestCase):

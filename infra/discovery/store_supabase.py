@@ -192,6 +192,7 @@ class SupabaseStore:
             "connector_name": r.connector_name,
             "connector_version": r.connector_version,
             "raw_evidence_reference": r.raw_evidence_reference,
+            "body_excerpt": r.body_excerpt,
             "created_at": r.created_at,
             "updated_at": r.updated_at or r.created_at,
         }
@@ -228,6 +229,17 @@ class SupabaseStore:
             "loom_discovered_sources?select=near_duplicate_key&near_duplicate_key=neq.",
         )
         return {r["near_duplicate_key"] for r in rows if r.get("near_duplicate_key")} if isinstance(rows, list) else set()
+
+    def all_crosspost_keys(self) -> set[str]:
+        """Cross-post keys derived from stored (platform, title) pairs."""
+        from .identity import crosspost_key
+
+        rows = self._request(
+            "GET", "loom_discovered_sources?select=platform,title"
+        )
+        if not isinstance(rows, list):
+            return set()
+        return {crosspost_key(r["platform"], r["title"]) for r in rows if r.get("title")}
 
     def all_sources(self) -> list[dict[str, Any]]:
         rows = self._request("GET", "loom_discovered_sources?select=*&order=created_at.asc")

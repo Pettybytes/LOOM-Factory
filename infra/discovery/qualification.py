@@ -53,10 +53,12 @@ class QualificationGate:
         seen_fingerprints: set[str] | None = None,
         seen_global_ids: set[str] | None = None,
         seen_near_keys: set[str] | None = None,
+        seen_crosspost_keys: set[str] | None = None,
     ) -> QualificationResult:
         seen_fingerprints = seen_fingerprints or set()
         seen_global_ids = seen_global_ids or set()
         seen_near_keys = seen_near_keys or set()
+        seen_crosspost_keys = seen_crosspost_keys or set()
         checks: list[str] = []
 
         # 1. Platform policy: platform must be in the brief's target list.
@@ -85,6 +87,7 @@ class QualificationGate:
             seen_fingerprints=seen_fingerprints,
             seen_global_ids=seen_global_ids,
             seen_near_keys=seen_near_keys,
+            seen_crosspost_keys=seen_crosspost_keys,
             creator_channel_identity=record.creator_channel_identity,
             title=record.title,
         )
@@ -92,6 +95,8 @@ class QualificationGate:
             return QualificationResult("rejected", f"duplicate (exact): {reason}", tuple(checks))
         if kind == "repost":
             return QualificationResult("rejected", f"duplicate (repost): {reason}", tuple(checks))
+        if kind == "crosspost":
+            return QualificationResult("rejected", f"duplicate (crosspost): {reason}", tuple(checks))
         if kind == "near":
             return QualificationResult("rejected", f"duplicate (near): {reason}", tuple(checks))
         checks.append("duplicate")

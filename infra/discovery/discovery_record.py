@@ -130,6 +130,9 @@ class DiscoveryRecord:
         ).strip()
 
         self.raw_evidence_reference: str = str(data.get("raw_evidence_reference") or "").strip()
+        # body_excerpt: bounded plain-text excerpt of the source body (optional;
+        # populated by connectors that expose a text body, e.g. Reddit RSS).
+        self.body_excerpt: str = str(data.get("body_excerpt") or "").strip()
         self.created_at: str = _iso(data.get("created_at") or _dt.datetime.now(_dt.timezone.utc))
         self.updated_at: str = _iso(data.get("updated_at") or _dt.datetime.now(_dt.timezone.utc))
 
@@ -167,6 +170,7 @@ class DiscoveryRecord:
             "velocity_inputs": dict(self.velocity_inputs),
             "opportunity_classification": self.opportunity_classification,
             "raw_evidence_reference": self.raw_evidence_reference,
+            "body_excerpt": self.body_excerpt,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

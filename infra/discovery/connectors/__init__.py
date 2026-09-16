@@ -5,13 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 from ..connector import Connector
+from .reddit import RedditConnector
 from .youtube import YouTubeConnector
 
 
 def available_connectors() -> dict[str, Connector]:
-    """Connectors implemented in this segment. Only YouTube is wired; Reddit and
-    TikTok are planned (not implemented) and X is deferred."""
-    return {"youtube": YouTubeConnector()}
+    """Connectors implemented so far. TikTok planned (not implemented); X deferred."""
+    return {
+        "youtube": YouTubeConnector(),
+        "reddit": RedditConnector(),
+    }
 
 
 def get_connector(name: str) -> Connector:
