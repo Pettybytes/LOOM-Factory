@@ -9,9 +9,9 @@
 ---
 
 ## Last Updated
-2026-09-16 01:55 EDT (America/Detroit)
+2026-09-16 02:15 EDT (America/Detroit)
 
-## Segment 3 — Reddit connector milestone: BUILT + TESTS PASS + LIVE DISCOVERY PROVEN
+## Segment 3 — Reddit connector milestone: RUNTIME-PROVEN (Supabase 12/12)
 
 - **RedditConnector** (`connectors/reddit.py`) — subreddit + bounded keyword
   discovery via first-party Reddit RSS (no credential, no scraping, no auth
@@ -21,10 +21,11 @@
   body excerpt, publication time, observed metrics (content_type + source URL
   refs), provenance (honest note: RSS omits score/ups/comments).
 - Cross-post dedup: author-agnostic `crosspost_key` added to identity + gate.
-- `body_excerpt` field added to record + both stores (migration 021).
 - **38 deterministic tests pass** (was 34).
-- **Live discovery proven:** 25 real r/technology posts discovered.
-- **Supabase proof PENDING migration 021** (`body_excerpt` column).
+- **Supabase proof 12/12 PASS**: 25 real r/technology posts discovered → stored
+  (25/25) → replay idempotent → explicit exact-duplicate + cross-post rejection
+  → policy rejection (missing provenance) → manual-ingest boundary only → no
+  forbidden modules / RSS-GET-only → proof profile excluded from production queue.
 
 ## Segment 2 — Automated Source Discovery V1: CLOSED
 
@@ -46,8 +47,7 @@ clipped, published, or distributed.
   → qualification applied → one duplicate rejected → one eligible source passed
   to manual-ingest boundary → no automatic publication.
 
-Reddit is in progress (built + live discovery proven; Supabase proof pending
-migration 021). TikTok is HELD. X deferred.
+Reddit is runtime-proven. TikTok is HELD. X deferred.
 
 ## What was built
 
@@ -71,7 +71,7 @@ n8n-workflows/LOOM-06-Source-Discovery.json   # shared, inactive
 infra/supabase/018_loom_source_briefs.sql      # APPLIED
 infra/supabase/019_loom_discovered_sources.sql # APPLIED
 infra/supabase/020_loom_discovered_sources_profile.sql # APPLIED (15 rows backfilled)
-infra/supabase/021_loom_discovered_sources_body_excerpt.sql # written, NOT applied
+infra/supabase/021_loom_discovered_sources_body_excerpt.sql # APPLIED
 ```
 
 ## Supabase acceptance proof (12/12 PASS, production Supabase)
@@ -97,10 +97,10 @@ evidence and is KEPT (not deleted).
 
 ## Git
 
-- LOOM-Factory `master` HEAD `d97fcf5`, clean, **pushed** to origin.
+- LOOM-Factory `master` HEAD `94607d7`, clean, **pushed** to origin.
 - Chain: `13a8dc6` → `0e23c54` → `4b1da3e` → `8f03e34` → `5ab5283` →
   `d10f002` → `205f1bf` → `708d472` → `4cedf07` → `317cf96` → `defd4ec` →
-  `9d73f12` → `d97fcf5`.
+  `9d73f12` → `d97fcf5` → `94607d7`.
 - No secrets committed; no destructive ops; nested OpenShorts dirty files untouched.
 
 ## Costs
@@ -115,12 +115,10 @@ $0.00. No paid model calls, no new paid service. Reddit RSS is free.
 
 ## Manual actions required (Bryan)
 
-1. Apply migration 021 (`body_excerpt` column) — unblocks the Reddit Supabase
-   acceptance proof. `pbcopy < infra/supabase/021_loom_discovered_sources_body_excerpt.sql`
-2. (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` for YouTube keyword search.
+- (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` for YouTube keyword search.
+- Migrations 018–021 all applied; nothing blocking.
 
 ## Next
 
-Reddit Supabase proof unblocks as soon as migration 021 is applied. TikTok
-HELD until explicitly authorized. No automatic download/processing/publication
-at any point.
+TikTok HELD until explicitly authorized. No automatic download/processing/
+publication at any point.
