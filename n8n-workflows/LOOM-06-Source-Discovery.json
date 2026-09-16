@@ -1,0 +1,100 @@
+{
+  "name": "LOOM \u2014 06 \u2014 Source Discovery (shared, tenant-driven)",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "tenant_id": { "type": "string", "description": "Tenant identity (required)" },
+            "brief_ref": { "type": "string", "description": "Source Brief profile id or tenant:profile:version reference (required)" },
+            "query": { "type": "string", "description": "Discovery query; channel:<id> for competitor-channel RSS, otherwise keyword search" },
+            "platform": { "type": "string", "description": "Target platform (youtube only in V1)" }
+          },
+          "required": ["tenant_id", "brief_ref"]
+        }
+      },
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shared tenant-driven discovery contract.\n// One workflow serves every tenant; NEVER clone per tenant.\n// Inputs: tenant_id + brief_ref (Source Brief reference).\n\nconst input = $json;\n\nif (!input.tenant_id || !input.brief_ref) {\n  throw new Error('LOOM_DISCOVERY_INVALID: tenant_id and brief_ref are required');\n}\n\nconst scope = {\n  tenant_id: input.tenant_id,\n  brief_ref: input.brief_ref,\n  query: input.query || '',\n  platform: input.platform || 'youtube'\n};\n\n// Discovery NEVER authorizes publication. This workflow only reaches the\n// manual-ingest boundary; no download, no OpenShorts, no clip, no publish.\nreturn [{ json: scope }];"
+      },
+      "id": "validate-scope",
+      "name": "Validate Discovery Scope",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.LOOM_DISCOVERY_ENDPOINT }}",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "discovery-request",
+      "name": "Run Discovery (shared connector)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "LOOM_DISCOVERY_AUTH",
+          "name": "LOOM Discovery Auth"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Route to manual-ingest boundary only. No auto download/process/publish.\n// If the discovery call failed, hand off to the shared failure handler (LOOM-00).\nconst p = $json;\nif (p && p.error) {\n  return [{\n    json: {\n      failure_code: 'SOURCE_DISCOVERY_FAILED',\n      stage: 'source-discovery',\n      error_message: String(p.error).substring(0, 1000),\n      tenant_id: p.tenant_id || 'unknown',\n      retryable: false\n    }\n  }];\n}\nreturn [{ json: { status: 'manual_ingest_boundary', records: (p && p.records) || [], tenant_id: p && p.tenant_id } }];"
+      },
+      "id": "boundary",
+      "name": "Manual-Ingest Boundary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "workflowId": "IYB1Pp8cTMrghaoK",
+        "options": {}
+      },
+      "id": "failure-handler",
+      "name": "Execute Failure Handler (LOOM-00)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1080, 420]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "Validate Discovery Scope", "type": "main", "index": 0 }]]
+    },
+    "Validate Discovery Scope": {
+      "main": [[{ "node": "Run Discovery (shared connector)", "type": "main", "index": 0 }]]
+    },
+    "Run Discovery (shared connector)": {
+      "main": [[{ "node": "Manual-Ingest Boundary", "type": "main", "index": 0 }]]
+    },
+    "Manual-Ingest Boundary": {
+      "main": [
+        [{ "node": "Execute Failure Handler (LOOM-00)", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  }
+}
