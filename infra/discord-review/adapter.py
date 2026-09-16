@@ -1116,6 +1116,126 @@ def resolve_clip_clean_source(tenant_id, clip_id):
     return None
 
 
+def _download(url: str, dest: str, timeout: int = 120) -> bool:
+    """Download a URL to a local path (chunked, browser UA). Returns True on
+    success. filesafe CDN rejects the default Python-urllib UA (403)."""
+    try:
+        req = Request(url, method="GET")
+        req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+        with urlopen(req, timeout=timeout) as resp, open(dest, "wb") as out:
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                out.write(chunk)
+        return os.path.exists(dest) and os.path.getsize(dest) > 0
+    except Exception as e:
+        print(f"[rehydrate] download failed: {e}", flush=True)
+        return False
+
+
+def rehydrate_edit_job(edit_session_id, tenant_id, clip_id, source_asset_version):
+    """Reconstruct a LIVE OpenShorts edit-job workspace from the durable clean
+    source, so the existing OpenShorts editor/render endpoints (/api/clip/rerender,
+    /api/hook, /api/subtitle, ...) work after the original job was evicted.
+
+    The OpenShorts editor is NOT stateless — it expects an output/<job_id>/ dir
+    with a <base>_metadata.json (shorts + transcript) and the clean clip file.
+    This rebuilds exactly that from LOOM's durable records and registers it in
+    the backend's in-memory jobs table (via /api/status recovery).
+
+    Idempotent: the temp job id is derived deterministically from the edit
+    session, and an existing workspace is reused. Returns (temp_job_id,
+    clip_index) or (None, None) on failure. The client never chooses the temp id.
+    """
+    if not (edit_session_id and tenant_id and clip_id and source_asset_version):
+        return None, None
+    sid = str(edit_session_id).replace("-", "")
+    temp_job_id = "loom-" + sid[:12]
+    job_dir = os.path.join(OPENSHORTS_OUTPUT, temp_job_id)
+    base_name = f"loom_{sid[:8]}"
+    metadata_path = os.path.join(job_dir, f"{base_name}_metadata.json")
+    clean_name = f"{base_name}_clip_1.mp4"
+    clean_path = os.path.join(job_dir, clean_name)
+
+    # Idempotent: reuse an already-rehydrated workspace.
+    if os.path.exists(metadata_path) and os.path.exists(clean_path):
+        return temp_job_id, 0
+
+    durable = resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version)
+    if not durable:
+        print(f"[rehydrate] no durable bootstrap for {clip_id}@{source_asset_version}", flush=True)
+        return None, None
+    clean_url = durable.get("clean_source_url") or durable.get("media_url")
+    if not clean_url:
+        print(f"[rehydrate] no clean source for {clip_id}", flush=True)
+        return None, None
+
+    os.makedirs(job_dir, exist_ok=True)
+    if not _download(clean_url, clean_path):
+        return None, None
+
+    # The clean source is the full reframed clip; its own timeline is [0, dur].
+    dur = probe_duration(clean_path)
+    if dur <= 0:
+        dur = float(durable.get("duration_seconds") or 0)
+    if dur <= 0:
+        print(f"[rehydrate] unknown duration for {clip_id}", flush=True)
+        return None, None
+
+    # Reconstruct the transcript (Whisper shape) from the durable word blocks.
+    # Always non-empty: the /api/subtitle endpoint requires a truthy transcript
+    # in metadata (even when the caller supplies its own edited `words`).
+    words = []
+    for c in (durable.get("captions") or []):
+        try:
+            words.append({
+                "word": str(c.get("text") or c.get("word") or ""),
+                "start": float(c.get("startMs") or 0) / 1000.0,
+                "end": float(c.get("endMs") or 0) / 1000.0,
+            })
+        except (TypeError, ValueError):
+            continue
+    transcript = ({"segments": [{"start": 0.0, "end": dur, "words": words}], "language": "en"}
+                  if words else {"segments": [], "language": "en"})
+
+    metadata = {
+        "shorts": [{
+            "start": 0.0,
+            "end": dur,
+            "video_title_for_youtube_short": durable.get("title") or "LOOM Edit",
+            "recipe": {
+                "v": 1,
+                "segments": [{"start": 0.0, "end": dur}],
+                "canonical_range": {"start": 0.0, "end": dur},
+                "framing": durable.get("framing") or "auto",
+            },
+        }],
+        "transcript": transcript,
+        "output_format": "auto",
+    }
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f)
+
+    # Register the job in the backend's in-memory table: /api/status triggers
+    # _recover_jobs_from_disk() (the editor endpoints require jobs[id], not just
+    # files on disk).
+    try:
+        req = Request(f"http://127.0.0.1:8000/api/status/{temp_job_id}", method="GET")
+        with urlopen(req, timeout=30) as resp:
+            status = resp.status
+    except HTTPError as e:
+        status = e.code
+    except Exception as e:
+        print(f"[rehydrate] backend recovery probe failed: {e}", flush=True)
+        return None, None
+    if status != 200:
+        print(f"[rehydrate] backend recovery returned {status} for {temp_job_id}", flush=True)
+        return None, None
+    print(f"[rehydrate] temp job {temp_job_id} ready for {clip_id}@{source_asset_version}", flush=True)
+    return temp_job_id, 0
+
+
 def send_review_card(payload: dict):
     """payload: clip_id, job_id, ready_file, master_asset, source_title,
     proposed_shorts_title, caption, hook, overall_score, decision,
@@ -1963,31 +2083,59 @@ class Handler(BaseHTTPRequestHandler):
             return
         raw_body = self._read_body()
 
+        # Rehydrate the live OpenShorts job from the durable clean source (the
+        # original job was evicted). Idempotent per session; the temp job id is
+        # server-derived, never client-supplied.
+        temp_job_id, _temp_clip = rehydrate_edit_job(
+            session["edit_session_id"], session["tenant_id"],
+            session["clip_id"], session["source_asset_version"])
+        if not temp_job_id:
+            print(f"[api] rehydrate failed fp={req_fp}", flush=True)
+            self._send_json(502, {"error": "could not rehydrate edit job"})
+            return
+
         target = self._authorize_editor_path(method, self.path, raw_body,
-                                             session["job_id"], session["clip_index"])
+                                             session["job_id"], session["clip_index"],
+                                             temp_job_id)
         if target is None:
             self._send_json(403, {"error": "forbidden"})
             return
 
-        self._forward_to_backend(method, target, raw_body)
+        # Rewrite the POST body's job identity to the rehydrated temp job
+        # (clip index collapses to 0 — the temp workspace holds a single clip).
+        new_body = raw_body
+        if method == "POST" and raw_body:
+            try:
+                b = json.loads(raw_body.decode() or "{}")
+                if b.get("job_id") == session["job_id"]:
+                    b["job_id"] = temp_job_id
+                b["clip_index"] = 0
+                new_body = json.dumps(b).encode()
+            except Exception:
+                pass
 
-    def _authorize_editor_path(self, method, path, raw_body, job_id, clip_index):
-        """Allowlist the exact editor endpoints + enforce job/clip ownership.
-        Returns the backend path to forward (same as path) or None (reject)."""
+        self._forward_to_backend(method, target, new_body)
+
+    def _authorize_editor_path(self, method, path, raw_body, job_id, clip_index, temp_job_id):
+        """Allowlist the exact editor endpoints + enforce job/clip ownership, then
+        translate the durable job identity to the rehydrated temp job (clip index
+        collapses to 0). Returns the backend path to forward, or None (reject)."""
         m = re.match(r'^/api/status/([^/]+)$', path)
         if m and method == "GET":
-            return path if m.group(1) == job_id else None
+            return f"/api/status/{temp_job_id}" if m.group(1) == job_id else None
         m = re.match(r'^/api/source/([^/]+)$', path)
         if m and method == "GET":
-            return path if m.group(1) == job_id else None
+            return f"/api/source/{temp_job_id}" if m.group(1) == job_id else None
         m = re.match(r'^/api/clip/([^/]+)/([^/]+)/(transcript|edl|scenes)$', path)
         if m and method == "GET":
-            return path if (m.group(1) == job_id and m.group(2) == str(clip_index)) else None
+            if m.group(1) == job_id and m.group(2) == str(clip_index):
+                return f"/api/clip/{temp_job_id}/0/{m.group(3)}"
+            return None
         m = re.match(r'^/api/render/([^/]+)$', path)
         if m and method == "GET":
             return path  # render status (read-only; render_id is a UUID)
         # POST body endpoints: job_id + clip_index must match the session.
-        if method == "POST" and path in ("/api/subtitle", "/api/clip/rerender", "/api/clip/reframe"):
+        if method == "POST" and path in ("/api/subtitle", "/api/clip/rerender", "/api/clip/reframe", "/api/hook", "/api/edit"):
             try:
                 body = json.loads(raw_body.decode() or "{}")
             except Exception:
@@ -2080,13 +2228,21 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # Normalize + verify the rendered file exists before sending the card.
-        ready_file = normalize_ready_file(body.get("ready_file"), body.get("job_id", ""))
+        # The rendered file lives in the rehydrated temp job (the original job
+        # was evicted), so resolve the temp job identity here too.
+        temp_job_id, _tc = rehydrate_edit_job(
+            edit_session_id, session.get("tenant_id"),
+            session.get("clip_id"), session.get("source_asset_version"))
+        if not temp_job_id:
+            self._send_json(502, {"ok": False, "error": "could not rehydrate edit job"})
+            return
+        ready_file = normalize_ready_file(body.get("ready_file"), temp_job_id)
         if not ready_file:
             self._send_json(502, {"ok": False, "error": "rendered file not found or invalid"})
             return
 
         source_version = result.get("source_asset_version") or session.get("source_asset_version")
-        job_id = body.get("job_id", "")
+        job_id = temp_job_id  # the edited master lives in the rehydrated workspace
 
         # Structured corrections for the compact Changes line.
         corrections = {
