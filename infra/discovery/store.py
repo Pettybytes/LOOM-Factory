@@ -149,7 +149,9 @@ class DiscoveryStore:
                 """
                 UPDATE discovered_sources
                 SET observed_metrics = ?, metric_history = ?,
-                    metric_observation_timestamp = ?, updated_at = ?
+                    metric_observation_timestamp = ?, updated_at = ?,
+                    processing_eligibility = ?, qualification_status = ?,
+                    rejection_reason = ?
                 WHERE fingerprint = ?
                 """,
                 (
@@ -157,6 +159,9 @@ class DiscoveryStore:
                     json.dumps(history, sort_keys=True),
                     record.metric_observation_timestamp,
                     now,
+                    record.processing_eligibility,
+                    record.qualification_status,
+                    record.rejection_reason,
                     record.duplicate_fingerprint,
                 ),
             )

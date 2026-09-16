@@ -17,9 +17,11 @@ No media is ever downloaded. No publication is authorized.
 from __future__ import annotations
 
 import datetime as _dt
+import time
 import xml.etree.ElementTree as ET
 import urllib.parse
 import urllib.request
+import urllib.error
 from typing import Any, Iterator
 
 from ..connector import (
@@ -142,20 +144,32 @@ class YouTubeConnector(Connector):
             "User-Agent": _UA,
             "Accept": "application/atom+xml,application/xml,text/xml,*/*",
         })
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                raw = resp.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            raise ConnectorError(
-                "FEED_HTTP_ERROR", f"HTTP {e.code} fetching feed", retryable=(e.code >= 500)
-            ) from e
-        except urllib.error.URLError as e:
-            raise ConnectorError("FEED_NETWORK_ERROR", str(e.reason), retryable=True) from e
-
-        try:
-            return ET.fromstring(raw)
-        except ET.ParseError as e:
-            raise ConnectorError("FEED_PARSE_ERROR", str(e), retryable=False) from e
+        # Bounded retry: YouTube RSS is intermittently 404/5xx under
+        # rate-limiting. Retry transient failures with deterministic backoff.
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                    raw = resp.read().decode("utf-8", "replace")
+                try:
+                    return ET.fromstring(raw)
+                except ET.ParseError as e:
+                    raise ConnectorError("FEED_PARSE_ERROR", str(e), retryable=False) from e
+            except urllib.error.HTTPError as e:
+                last_exc = e
+                if e.code < 500 and e.code != 404:
+                    raise ConnectorError("FEED_HTTP_ERROR", f"HTTP {e.code} fetching feed",
+                                        retryable=False) from e
+                if attempt < 2:
+                    time.sleep(self.retry_backoff_seconds(attempt))
+            except urllib.error.URLError as e:
+                last_exc = e
+                if attempt < 2:
+                    time.sleep(self.retry_backoff_seconds(attempt))
+        if isinstance(last_exc, urllib.error.HTTPError):
+            raise ConnectorError("FEED_HTTP_ERROR", f"HTTP {last_exc.code} fetching feed",
+                                retryable=True) from last_exc
+        raise ConnectorError("FEED_NETWORK_ERROR", str(last_exc), retryable=True) from last_exc
 
     # ------------------------------------------------------------------
     def _entry_to_record(self, request: DiscoveryRequest, entry: ET.Element, feed_title: str) -> DiscoveryRecord | None:
