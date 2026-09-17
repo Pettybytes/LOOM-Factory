@@ -139,7 +139,7 @@ CONTENT_FORMATS: frozenset[str] = frozenset({
 
 _TRACKING_PARAMS: frozenset[str] = frozenset({
     "fbclid", "gclid", "gclsrc", "dclid", "msclkid", "mc_cid", "mc_eid",
-    "igshid", "igsh", "ref", "ref_src", "source", "utm_source", "utm_medium",
+    "igshid", "igsh", "stkn", "ref", "ref_src", "source", "utm_source", "utm_medium",
     "utm_campaign", "utm_term", "utm_content", "utm_id", "si", "feature",
     "embeds_referring_euri", "sharing", "share", "mibextid", "sc_channel",
     "srsltid", "hmac", "wbraid", "gbraid", "twclid", "campaign_id",

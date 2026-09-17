@@ -55,6 +55,7 @@ from urllib.error import HTTPError, URLError
 import source_review  # noqa: E402  (same-dir module; Source Review Inbox)
 import manual_intake  # noqa: E402  (same-dir module; Manual Source Intake)
 import tenant_routing  # noqa: E402  (same-dir module; tenant assignment/reassignment)
+import intake_card  # noqa: E402  (same-dir module; card-based intake wizard)
 
 # ---------------------------------------------------------------------------
 # Config (from env)
@@ -1762,43 +1763,110 @@ class Handler(BaseHTTPRequestHandler):
                 opts[o["name"]] = o.get("value")
 
         url = opts.get("url", "")
-        destination = opts.get("destination", "")
-        fmt = opts.get("format", "")
-        start = opts.get("start")
-        end = opts.get("end")
-        note = opts.get("note", "")
         submitter = self._reviewer_name(interaction)
 
         try:
             active = tenant_routing.list_active_tenants(SUPABASE_URL, SUPABASE_KEY)
+        except Exception as e:
+            print(f"[submit-source] list_active_tenants failed: {e}", flush=True)
+            active = set()
+
+        try:
+            session = intake_card.new_session(url, submitter, active)
+        except manual_intake.SubmissionError as e:
+            self._send_json(200, {"type": 4, "data": {"content": f"❌ {e.message}", "flags": 64}})
+            return
+
+        card = intake_card.render_card(session)
+        self._send_json(200, {"type": 4, "data": {**card, "flags": 64}})
+
+    def _handle_intake_component(self, interaction, intake, component_type, data):
+        action, sid = intake
+        if component_type == 3:  # STRING_SELECT
+            self._intake_select(interaction, action, sid, data.get("values") or [])
+            return
+        if action == "submit":
+            self._intake_submit(interaction, sid)
+        elif action == "cancel":
+            self._intake_cancel(interaction, sid)
+        elif action == "details":
+            self._intake_details_modal(interaction, sid)
+        else:
+            self._send_json(200, {"type": 4, "data": {"content": "Unknown intake action.", "flags": 64}})
+
+    def _intake_select(self, interaction, action, sid, values):
+        session = intake_card.get_session(sid)
+        if session is None:
+            self._send_json(200, {"type": 4, "data": {"content": "This intake has expired or was already submitted.", "flags": 64}})
+            return
+        try:
+            intake_card.apply_select(session, action, values)
+        except ValueError as e:
+            self._send_json(200, {"type": 4, "data": {"content": f"❌ {e}", "flags": 64}})
+            return
+        self._send_json(200, {"type": 7, "data": intake_card.render_card(session)})
+
+    def _intake_submit(self, interaction, sid):
+        session = intake_card.get_session(sid)
+        if session is None:
+            self._send_json(200, {"type": 4, "data": {"content": "This intake has expired or was already submitted.", "flags": 64}})
+            return
+        if not intake_card.is_submittable(session):
+            self._send_json(200, {"type": 7, "data": intake_card.render_card(session)})
+            return
+        # Atomic consume: prevents double-submit / replay from creating duplicates.
+        session = intake_card.consume_session(sid)
+        if session is None:
+            self._send_json(200, {"type": 4, "data": {"content": "This intake was already submitted.", "flags": 64}})
+            return
+        try:
             payload = manual_intake.build_submission(
-                url=url, destination=destination,
-                content_format=fmt, submitter=submitter,
-                time_start_s=start, time_end_s=end, reviewer_note=note,
-                active_tenants=active,
+                url=session["canonical_url"], destination=session["destination"],
+                content_format=session["format"], submitter=session["submitter"],
+                time_start_s=session.get("start_s"), time_end_s=session.get("end_s"),
+                reviewer_note=session.get("note", ""),
+                active_tenants=session["active_tenants"],
             )
             row, created = manual_intake.persist_submission(SUPABASE_URL, SUPABASE_KEY, payload)
         except manual_intake.SubmissionError as e:
             self._send_json(200, {"type": 4, "data": {"content": f"❌ {e.message}", "flags": 64}})
             return
         except Exception as e:
-            print(f"[submit-source] persist failed: {e}", flush=True)
+            print(f"[intake] persist failed: {e}", flush=True)
             self._send_json(200, {"type": 4, "data": {"content": "Failed to save submission.", "flags": 64}})
             return
+        self._send_json(200, {"type": 7, "data": intake_card.render_confirmation(payload, row, created)})
 
-        sub_id = row.get("id", "?")
-        if created:
-            routing = manual_intake.routing_label(payload.get("tenant_id", ""))
-            support = manual_intake.platform_support_label(payload["platform"])
-            msg = (f"✅ Source submitted (candidate only — no analysis, score, acquisition, or download)\n"
-                   f"ID: `{sub_id}`\n"
-                   f"Platform: `{payload['platform']}` · Format: `{payload['content_format']}`\n"
-                   f"Routing: {routing}\n"
-                   f"Platform support: {support}\n"
-                   f"URL: {payload['source_url']}")
-        else:
-            msg = f"ℹ️ Duplicate submission (already accepted). ID: `{sub_id}`"
-        self._send_json(200, {"type": 4, "data": {"content": msg, "flags": 64}})
+    def _intake_cancel(self, interaction, sid):
+        session = intake_card.consume_session(sid)
+        if session is None:
+            self._send_json(200, {"type": 4, "data": {"content": "This intake is no longer active.", "flags": 64}})
+            return
+        self._send_json(200, {"type": 7, "data": intake_card.render_cancelled(session)})
+
+    def _intake_details_modal(self, interaction, sid):
+        session = intake_card.get_session(sid)
+        if session is None:
+            self._send_json(200, {"type": 4, "data": {"content": "This intake has expired or was already submitted.", "flags": 64}})
+            return
+        self._send_json(200, {"type": 9, "data": intake_card.details_modal(sid, session)})
+
+    def _intake_details_submit(self, interaction, sid, data):
+        session = intake_card.get_session(sid)
+        if session is None:
+            self._send_json(200, {"type": 4, "data": {"content": "This intake has expired or was already submitted.", "flags": 64}})
+            return
+        values = {}
+        for row in data.get("components", []) or []:
+            for comp in row.get("components", []) or []:
+                values[comp.get("custom_id")] = comp.get("value", "")
+        try:
+            intake_card.apply_details(session, values.get("mi_start", ""),
+                                      values.get("mi_end", ""), values.get("mi_note", ""))
+        except ValueError as e:
+            self._send_json(200, {"type": 4, "data": {"content": f"❌ {e}", "flags": 64}})
+            return
+        self._send_json(200, {"type": 7, "data": intake_card.render_card(session)})
 
     def _handle_assign_source_command(self, interaction):
         data = interaction.get("data", {})
@@ -1861,6 +1929,14 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_button(self, interaction):
         data = interaction.get("data", {})
         custom_id = data.get("custom_id", "")
+        component_type = data.get("component_type", 2)
+
+        # Manual Source Intake wizard (select menus + buttons) — distinct prefix.
+        intake = intake_card.parse_cid(custom_id)
+        if intake is not None:
+            self._handle_intake_component(interaction, intake, component_type, data)
+            return
+
         # Source Review Inbox buttons use a distinct compact encoding.
         src = source_review.parse_source_custom_id(custom_id)
         if src is not None:
@@ -2481,6 +2557,10 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_modal_submit(self, interaction):
         data = interaction.get("data", {})
         custom_id = data.get("custom_id", "")
+        intake = intake_card.parse_cid(custom_id)
+        if intake is not None and intake[0] == "details":
+            self._intake_details_submit(interaction, intake[1], data)
+            return
         parsed = parse_custom_id(custom_id)
         if not parsed or parsed.get("d") != "reject":
             self._send_json(200, {"type": 4, "data": {"content": "Invalid modal.", "flags": 64}})

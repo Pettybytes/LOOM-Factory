@@ -40,20 +40,6 @@ SUBMIT_SOURCE_COMMAND = {
     "options": [
         {"name": "url", "description": "Source URL (YouTube, Reddit, TikTok, Instagram, Twitch, Kick)",
          "type": 3, "required": True},
-        {"name": "destination", "description": "Destination: Unassigned / General or an active tenant",
-         "type": 3, "required": True, "autocomplete": True},
-        {"name": "format", "description": "Intended content format", "type": 3, "required": True,
-         "choices": [
-             {"name": "reaction_single", "value": "reaction_single"},
-             {"name": "reaction_compilation", "value": "reaction_compilation"},
-             {"name": "commentary_story", "value": "commentary_story"},
-             {"name": "ranking_top5", "value": "ranking_top5"},
-             {"name": "stream_highlight", "value": "stream_highlight"},
-             {"name": "hold_unassigned", "value": "hold_unassigned"},
-         ]},
-        {"name": "start", "description": "Optional start timestamp (seconds)", "type": 10, "required": False},
-        {"name": "end", "description": "Optional end timestamp (seconds)", "type": 10, "required": False},
-        {"name": "note", "description": "Optional reviewer note", "type": 3, "required": False},
     ],
 }
 
