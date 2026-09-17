@@ -24,6 +24,7 @@ deterministic and portable.
 """
 
 from . import source_brief, discovery_record, identity, connector, qualification, store  # noqa: F401
+from . import normalization, velocity, topic_intelligence  # noqa: F401
 
 __version__ = "1.0.0"
 # The Source Brief and discovery-record contracts are independently versioned;
@@ -37,6 +38,9 @@ __all__ = [
     "connector",
     "qualification",
     "store",
+    "normalization",
+    "velocity",
+    "topic_intelligence",
     "__version__",
     "SCHEMA_VERSION",
 ]

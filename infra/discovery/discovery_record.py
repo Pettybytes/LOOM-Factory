@@ -133,6 +133,13 @@ class DiscoveryRecord:
         # body_excerpt: bounded plain-text excerpt of the source body (optional;
         # populated by connectors that expose a text body, e.g. Reddit RSS).
         self.body_excerpt: str = str(data.get("body_excerpt") or "").strip()
+        # content_format: content routing field (deferred assignment; default
+        # 'hold_unassigned' until a later routing segment). Reserved values:
+        # reaction_single | reaction_compilation | commentary_story |
+        # ranking_top5 | stream_highlight | hold_unassigned.
+        self.content_format: str = str(
+            data.get("content_format") or "hold_unassigned"
+        ).strip() or "hold_unassigned"
         self.created_at: str = _iso(data.get("created_at") or _dt.datetime.now(_dt.timezone.utc))
         self.updated_at: str = _iso(data.get("updated_at") or _dt.datetime.now(_dt.timezone.utc))
 
@@ -171,6 +178,7 @@ class DiscoveryRecord:
             "opportunity_classification": self.opportunity_classification,
             "raw_evidence_reference": self.raw_evidence_reference,
             "body_excerpt": self.body_excerpt,
+            "content_format": self.content_format,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

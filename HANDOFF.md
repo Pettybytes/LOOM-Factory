@@ -9,7 +9,21 @@
 ---
 
 ## Last Updated
-2026-09-16 02:15 EDT (America/Detroit)
+2026-09-17 13:50 EDT (America/Detroit)
+
+## Segment — Topic Intelligence V1: RUNTIME-PROVEN (local, $0)
+
+- **`normalization.py`** — platform-aware signal normalization (YouTube `views`; Reddit engagement honestly absent over RSS). Missing metrics recorded, never fabricated.
+- **`velocity.py`** — velocity ONLY from ≥2 valid time-separated observations; unavailable otherwise (honest reason).
+- **`topic_intelligence.py`** — 7-signal weighted score → opportunity class (strong/moderate/weak/stale/duplicate/incomplete) + confidence + data-completeness + reason codes + missing-data/low-confidence flags. No LLM, no paid service, deterministic.
+- **`content_format`** routing field added (default `hold_unassigned`).
+- **Assessment store:** SQLite built+tested; Supabase built (migration 022 pending).
+- **62 deterministic tests pass** (was 38).
+- **Real-data proof 28/28 PASS** (15 real YouTube candidates, local SQLite, $0).
+- Proof profiles auto-excluded from `production_assessments()`. No candidate advanced beyond `manual_ingest_only`.
+
+Zero cost. Zero downstream side effects. No media download, no OpenShorts job,
+no publication, no distribution.
 
 ## Segment 3 — Reddit connector milestone: RUNTIME-PROVEN (Supabase 12/12)
 
@@ -72,6 +86,8 @@ infra/supabase/018_loom_source_briefs.sql      # APPLIED
 infra/supabase/019_loom_discovered_sources.sql # APPLIED
 infra/supabase/020_loom_discovered_sources_profile.sql # APPLIED (15 rows backfilled)
 infra/supabase/021_loom_discovered_sources_body_excerpt.sql # APPLIED
+infra/supabase/022_loom_topic_assessments.sql            # CREATED (pending Bryan DDL)
+infra/supabase/023_loom_discovered_sources_content_format.sql # CREATED (pending Bryan DDL)
 ```
 
 ## Supabase acceptance proof (12/12 PASS, production Supabase)
@@ -93,7 +109,12 @@ evidence and is KEPT (not deleted).
 
 ## Tests
 
-`python3 -m unittest discover -s infra/discovery/tests` → **38 passed**.
+`python3 -m unittest discover -s infra/discovery/tests` → **62 passed**.
+
+## Bounded real-data proof (Topic Intelligence)
+
+`python3 infra/discovery/prove_topic_intelligence.py` → **28/28 PASS** (local
+SQLite, 15 real YouTube candidates via first-party RSS, $0).
 
 ## Git
 
@@ -120,5 +141,7 @@ $0.00. No paid model calls, no new paid service. Reddit RSS is free.
 
 ## Next
 
-TikTok HELD until explicitly authorized. No automatic download/processing/
-publication at any point.
+Apply migrations 022/023 (Supabase SQL editor), then optional Supabase-backed
+Topic Intelligence proof. Next segment: **Source Review Inbox** (Discord) →
+Acquisition Boundary. TikTok HELD until explicitly authorized. No automatic
+download/processing/publication at any point.

@@ -193,6 +193,7 @@ class SupabaseStore:
             "connector_version": r.connector_version,
             "raw_evidence_reference": r.raw_evidence_reference,
             "body_excerpt": r.body_excerpt,
+            "content_format": getattr(r, "content_format", "") or "hold_unassigned",
             "created_at": r.created_at,
             "updated_at": r.updated_at or r.created_at,
         }
@@ -276,6 +277,101 @@ class SupabaseStore:
         # full select and count locally (bounded by the small proof dataset).
         all_rows = self._request("GET", "loom_discovered_sources?select=duplicate_fingerprint")
         return len(all_rows) if isinstance(all_rows, list) else 0
+
+    # -- Saturation context ------------------------------------------------
+    def saturation_count(self, platform: str, title: str, *,
+                         exclude_fingerprint: str = "") -> int:
+        """Number of other stored candidates sharing the same near/cross-post
+        key (competition/saturation), excluding the given fingerprint."""
+        from .identity import crosspost_key
+
+        if not title:
+            return 0
+        xpost = crosspost_key(platform, title)
+        rows = self._request("GET", "loom_discovered_sources?select=duplicate_fingerprint,platform,title")
+        if not isinstance(rows, list):
+            return 0
+        count = 0
+        for r in rows:
+            if exclude_fingerprint and r.get("duplicate_fingerprint") == exclude_fingerprint:
+                continue
+            if r.get("title") and crosspost_key(r["platform"], r["title"]) == xpost:
+                count += 1
+        return count
+
+    # -- Topic Intelligence assessments ------------------------------------
+    def upsert_assessment(self, assessment: Any) -> str:
+        """Idempotently store an assessment keyed by
+        (duplicate_fingerprint, score_version)."""
+        data = assessment.to_dict()
+        sig = assessment.normalized_signals
+        payload = {
+            "duplicate_fingerprint": assessment.duplicate_fingerprint,
+            "score_version": assessment.score_version,
+            "tenant_id": assessment.tenant_id,
+            "profile_id": assessment.profile_id,
+            "platform": assessment.platform,
+            "platform_content_id": assessment.platform_content_id,
+            "opportunity_score": assessment.opportunity_score,
+            "opportunity_class": assessment.opportunity_class,
+            "confidence": assessment.confidence,
+            "data_completeness": assessment.data_completeness,
+            "content_format": assessment.content_format,
+            "reasons": data["reasons"],
+            "flags": data["flags"],
+            "signal_scores": data["signal_scores"],
+            "normalized_signals": {
+                "platform": sig.platform,
+                "content_type": sig.content_type,
+                "volume": sig.volume,
+                "volume_metric": sig.volume_metric,
+                "likes": sig.likes,
+                "comments": sig.comments,
+                "engagement_rate": sig.engagement_rate,
+                "source_url_references": list(sig.source_url_references),
+                "missing_metrics": list(sig.missing_metrics),
+            },
+            "velocity": assessment.velocity.to_dict(),
+            "assessed_at": assessment.assessed_at,
+        }
+        existing = self._get_assessment(
+            assessment.duplicate_fingerprint, assessment.score_version
+        )
+        self._request(
+            "POST",
+            "loom_topic_assessments?on_conflict=duplicate_fingerprint,score_version",
+            body=payload,
+            prefer="resolution=merge-duplicates,return=representation",
+        )
+        return "updated" if existing is not None else "inserted"
+
+    def _get_assessment(self, fingerprint: str, score_version: str) -> dict[str, Any] | None:
+        rows = self._request(
+            "GET",
+            "loom_topic_assessments?duplicate_fingerprint=eq.{0}&score_version=eq.{1}&select=duplicate_fingerprint".format(
+                urllib.parse.quote(fingerprint), urllib.parse.quote(score_version)
+            ),
+        )
+        if isinstance(rows, list) and rows:
+            return rows[0]
+        return None
+
+    def assessment_count(self) -> int:
+        rows = self._request("GET", "loom_topic_assessments?select=duplicate_fingerprint")
+        return len(rows) if isinstance(rows, list) else 0
+
+    def assessments(self) -> list[dict[str, Any]]:
+        rows = self._request("GET", "loom_topic_assessments?select=*&order=created_at.asc")
+        return rows if isinstance(rows, list) else []
+
+    def production_assessments(self) -> list[dict[str, Any]]:
+        """Assessments for normal production candidates (proof profiles excluded)."""
+        from .source_brief import is_non_production
+
+        return [
+            a for a in self.assessments()
+            if not is_non_production(a.get("profile_id") or "", a.get("tenant_id") or "")
+        ]
 
     def delete_all(self) -> int:
         """Delete all discovered sources (used only by the proof harness to

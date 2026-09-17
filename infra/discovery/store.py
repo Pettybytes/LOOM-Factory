@@ -2,16 +2,18 @@
 
 V1 uses a local SQLite store so the foundation is fully testable and runnable
 with zero external services. The canonical production schema is defined in
-``infra/supabase/`` migrations (018/019); those SQL files are the durable
-schema contract, and applying them to Supabase is a separate manual step
-(Supabase DDL is not reachable from this execution context without the
+``infra/supabase/`` migrations (018/019/022/023); those SQL files are the
+durable schema contract, and applying them to Supabase is a separate manual
+step (Supabase DDL is not reachable from this execution context without the
 database password).
 
 The store guarantees:
   * idempotent upsert keyed by ``duplicate_fingerprint``;
   * metric-history preservation (a re-observation appends, never overwrites);
   * tenant-scoped + global fingerprint indexes;
-  * explicit duplicate rejection reasons are computed by the caller, not here.
+  * explicit duplicate rejection reasons are computed by the caller, not here;
+  * idempotent Topic Intelligence assessments keyed by
+    ``(duplicate_fingerprint, score_version)`` (replay never duplicates state).
 """
 
 from __future__ import annotations
@@ -65,6 +67,7 @@ CREATE TABLE IF NOT EXISTS discovered_sources (
     opportunity_classification TEXT,
     raw_evidence_reference  TEXT,
     body_excerpt            TEXT,
+    content_format          TEXT NOT NULL DEFAULT 'hold_unassigned',
     created_at              TEXT,
     updated_at              TEXT
 );
@@ -73,11 +76,39 @@ CREATE INDEX IF NOT EXISTS idx_ds_global_fp ON discovered_sources (global_finger
 CREATE INDEX IF NOT EXISTS idx_ds_near_key ON discovered_sources (near_duplicate_key);
 CREATE INDEX IF NOT EXISTS idx_ds_tenant ON discovered_sources (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_ds_platform ON discovered_sources (platform);
+
+CREATE TABLE IF NOT EXISTS topic_assessments (
+    duplicate_fingerprint   TEXT NOT NULL,
+    score_version           TEXT NOT NULL,
+    tenant_id               TEXT NOT NULL,
+    profile_id              TEXT NOT NULL DEFAULT '',
+    platform                TEXT NOT NULL,
+    platform_content_id     TEXT NOT NULL,
+    opportunity_score       INTEGER NOT NULL DEFAULT 0,
+    opportunity_class       TEXT NOT NULL DEFAULT '',
+    confidence              REAL NOT NULL DEFAULT 0,
+    data_completeness       REAL NOT NULL DEFAULT 0,
+    content_format          TEXT NOT NULL DEFAULT 'hold_unassigned',
+    reasons                 TEXT NOT NULL,
+    flags                   TEXT NOT NULL,
+    signal_scores           TEXT NOT NULL,
+    normalized_signals      TEXT NOT NULL,
+    velocity                TEXT NOT NULL,
+    assessed_at             TEXT NOT NULL,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL,
+    PRIMARY KEY (duplicate_fingerprint, score_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ta_tenant ON topic_assessments (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_ta_profile ON topic_assessments (profile_id);
+CREATE INDEX IF NOT EXISTS idx_ta_class ON topic_assessments (opportunity_class);
 """
 
 
 class DiscoveryStore:
-    """SQLite-backed store for Source Briefs + discovered sources."""
+    """SQLite-backed store for Source Briefs + discovered sources + Topic
+    Intelligence assessments."""
 
     def __init__(self, path: str | Path = ":memory:") -> None:
         self._conn = sqlite3.connect(str(path))
@@ -153,7 +184,8 @@ class DiscoveryStore:
                 SET observed_metrics = ?, metric_history = ?,
                     metric_observation_timestamp = ?, updated_at = ?,
                     processing_eligibility = ?, qualification_status = ?,
-                    rejection_reason = ?, profile_id = ?, body_excerpt = ?
+                    rejection_reason = ?, profile_id = ?, body_excerpt = ?,
+                    content_format = ?
                 WHERE fingerprint = ?
                 """,
                 (
@@ -166,6 +198,7 @@ class DiscoveryStore:
                     record.rejection_reason,
                     record.profile_id,
                     record.body_excerpt,
+                    record.content_format,
                     record.duplicate_fingerprint,
                 ),
             )
@@ -183,9 +216,10 @@ class DiscoveryStore:
                 discovery_reason, evidence_confidence, provenance_rights_evidence,
                 processing_eligibility, qualification_status, rejection_reason,
                 connector_name, connector_version, velocity_inputs,
-                opportunity_classification, raw_evidence_reference, body_excerpt, created_at, updated_at
+                opportunity_classification, raw_evidence_reference, body_excerpt,
+                content_format, created_at, updated_at
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -224,6 +258,7 @@ class DiscoveryStore:
                 record.opportunity_classification,
                 record.raw_evidence_reference,
                 record.body_excerpt,
+                record.content_format,
                 record.created_at,
                 now,
             ),
@@ -283,7 +318,7 @@ class DiscoveryStore:
 
     def production_fingerprints(self) -> set[str]:
         """Seen fingerprints scoped to production profiles only."""
-        return {s["duplicate_fingerprint"] for s in self.production_sources()}
+        return {s["fingerprint"] for s in self.production_sources()}
 
     def production_global_fingerprints(self) -> set[str]:
         return {
@@ -293,3 +328,121 @@ class DiscoveryStore:
 
     def count(self) -> int:
         return self._conn.execute("SELECT count(*) FROM discovered_sources").fetchone()[0]
+
+    # -- Saturation context ------------------------------------------------
+    def saturation_count(self, platform: str, title: str, *,
+                         exclude_fingerprint: str = "") -> int:
+        """Number of other stored candidates sharing the same cross-post key
+        (competition/saturation), excluding the given fingerprint."""
+        from .identity import crosspost_key
+
+        if not title:
+            return 0
+        xpost = crosspost_key(platform, title)
+        rows = self._conn.execute(
+            "SELECT fingerprint, platform, title FROM discovered_sources"
+        ).fetchall()
+        count = 0
+        for r in rows:
+            if exclude_fingerprint and r["fingerprint"] == exclude_fingerprint:
+                continue
+            if r["title"] and crosspost_key(r["platform"], r["title"]) == xpost:
+                count += 1
+        return count
+
+    # -- Topic Intelligence assessments ------------------------------------
+    def upsert_assessment(self, assessment: Any) -> str:
+        """Idempotently store an assessment keyed by
+        (duplicate_fingerprint, score_version). Replay overwrites the existing
+        row (same key) rather than appending a duplicate.
+
+        Returns ``"inserted"`` or ``"updated"``.
+        """
+        data = assessment.to_dict()
+        sig = assessment.normalized_signals
+
+        exists = self._conn.execute(
+            "SELECT 1 FROM topic_assessments WHERE duplicate_fingerprint = ? AND score_version = ?",
+            (assessment.duplicate_fingerprint, assessment.score_version),
+        ).fetchone() is not None
+
+        row = (
+            assessment.duplicate_fingerprint,
+            assessment.score_version,
+            assessment.tenant_id,
+            assessment.profile_id,
+            assessment.platform,
+            assessment.platform_content_id,
+            assessment.opportunity_score,
+            assessment.opportunity_class,
+            assessment.confidence,
+            assessment.data_completeness,
+            assessment.content_format,
+            json.dumps(data["reasons"], sort_keys=True),
+            json.dumps(data["flags"], sort_keys=True),
+            json.dumps(data["signal_scores"], sort_keys=True),
+            json.dumps({
+                "platform": sig.platform,
+                "content_type": sig.content_type,
+                "volume": sig.volume,
+                "volume_metric": sig.volume_metric,
+                "likes": sig.likes,
+                "comments": sig.comments,
+                "engagement_rate": sig.engagement_rate,
+                "source_url_references": list(sig.source_url_references),
+                "missing_metrics": list(sig.missing_metrics),
+            }, sort_keys=True),
+            json.dumps(assessment.velocity.to_dict(), sort_keys=True),
+            assessment.assessed_at,
+            _now(),
+            _now(),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO topic_assessments (
+                duplicate_fingerprint, score_version, tenant_id, profile_id,
+                platform, platform_content_id, opportunity_score,
+                opportunity_class, confidence, data_completeness, content_format,
+                reasons, flags, signal_scores, normalized_signals, velocity,
+                assessed_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(duplicate_fingerprint, score_version) DO UPDATE SET
+                opportunity_score = excluded.opportunity_score,
+                opportunity_class = excluded.opportunity_class,
+                confidence = excluded.confidence,
+                data_completeness = excluded.data_completeness,
+                content_format = excluded.content_format,
+                reasons = excluded.reasons,
+                flags = excluded.flags,
+                signal_scores = excluded.signal_scores,
+                normalized_signals = excluded.normalized_signals,
+                velocity = excluded.velocity,
+                assessed_at = excluded.assessed_at,
+                updated_at = excluded.updated_at
+            """,
+            row,
+        )
+        self._conn.commit()
+        return "updated" if exists else "inserted"
+
+    def assessment_count(self) -> int:
+        return self._conn.execute("SELECT count(*) FROM topic_assessments").fetchone()[0]
+
+    def assessments(self) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._conn.execute(
+            "SELECT * FROM topic_assessments ORDER BY created_at"
+        ).fetchall()]
+
+    def production_assessments(self) -> list[dict[str, Any]]:
+        """Assessments for normal production candidates (proof profiles excluded)."""
+        from .source_brief import is_non_production
+
+        return [
+            a for a in self.assessments()
+            if not is_non_production(a.get("profile_id") or "", a.get("tenant_id") or "")
+        ]
+
+
+def _now() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()

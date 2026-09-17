@@ -4,6 +4,25 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~13:50 EDT
+
+**Topic Intelligence V1: SEGMENT COMPLETE (built + tested + runtime-proven locally).**
+
+- Deterministic opportunity scoring layer built on top of Source Discovery V1.
+- Platform-aware normalization (YouTube vs Reddit) without pretending metrics are identical.
+- Velocity computed ONLY from valid time-separated observations (honest, no fabrication).
+- 7-signal weighted score → opportunity class (strong/moderate/weak/stale/duplicate/incomplete) + confidence + reason codes + missing-data flags.
+- `content_format` routing field added (default `hold_unassigned`).
+- Assessment store: SQLite (built+tested) + Supabase (built; migration 022 pending Bryan DDL).
+- Real-data proof (local SQLite, $0): **28/28 PASS** on 15 real YouTube candidates.
+
+Zero cost. Zero downstream side effects. No media download, no OpenShorts job,
+no publication, no distribution. No candidate advanced beyond `manual_ingest_only`.
+
+**No source was downloaded, processed, clipped, published, or distributed.**
+
+---
+
 ## STOP STATE — 2026-09-16 ~02:15 EDT
 
 **Automated Source Discovery V1: SEGMENT CLOSED.**
@@ -40,6 +59,21 @@ TikTok remains **held**. X deferred. Instagram/Facebook planned. Do not start
 TikTok until explicitly authorized.
 
 ---
+
+## What was built (`infra/discovery/` — Topic Intelligence V1)
+
+| Module | Responsibility |
+|---|---|
+| `normalization.py` | Platform-aware signal normalization → `NormalizedSignals` |
+| `velocity.py` | Velocity from valid time-separated observations (honest) |
+| `topic_intelligence.py` | Deterministic scoring + reason codes + opportunity class |
+| `prove_topic_intelligence.py` | Bounded $0 real-data proof (local SQLite) |
+| `tests/test_topic_intelligence.py` | 24 deterministic tests |
+
+Plus `content_format` on `discovery_record.py` + both stores; migrations
+`022_loom_topic_assessments.sql` and `023_loom_discovered_sources_content_format.sql`.
+
+See `infra/discovery/TOPIC_INTELLIGENCE.md` for the full model.
 
 ## What was built (`infra/discovery/`)
 
@@ -136,6 +170,8 @@ excluded from production queries automatically.
 | 019 | `loom_discovered_sources` (normalized records, fingerprint-unique, append-only metric history) | **Applied** (Bryan, 2026-09-16) |
 | 020 | `loom_discovered_sources.profile_id` (+ index) | **Applied** (Bryan, 2026-09-16) |
 | 021 | `loom_discovered_sources.body_excerpt` | **Applied** (Bryan, 2026-09-16) |
+| 022 | `loom_topic_assessments` (Topic Intelligence V1) | **Created, NOT yet applied** (pending Bryan DDL) |
+| 023 | `loom_discovered_sources.content_format` | **Created, NOT yet applied** (pending Bryan DDL) |
 
 > Migrations 010–017 remain applied + live-verified (unchanged). 020 added
 > `profile_id`; the 15 YouTube acceptance rows were backfilled to
@@ -183,7 +219,9 @@ Desktop left running (existing containers up: `loom-tunnel-proxy`,
 
 ## Next action
 
-- **TikTok** — HELD until explicitly authorized. Instagram/Facebook planned; X deferred.
+- **Apply migrations 022 + 023** (Supabase SQL editor or `supabase link` + `db push`) — then optionally run a Supabase-backed Topic Intelligence acceptance proof.
+- **Next segment: Source Review Inbox** (Discord) — surface scored candidates for Bryan review; Topic Intelligence scores are ready as the ranking input.
+- **TikTok** — HELD until explicitly authorized.
 
 ---
 
@@ -305,5 +343,7 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 
 ## 7. Next segment
 
-**TikTok** remains HELD until explicitly authorized. No automatic
-download/processing/publication at any point.
+**Source Review Inbox** (Discord source review) — recommended next. Topic
+Intelligence V1 is the ranking input; the inbox presents scored candidates for
+Bryan's review (then **Acquisition Boundary**). **TikTok** remains HELD until
+explicitly authorized. No automatic download/processing/publication at any point.
