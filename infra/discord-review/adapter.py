@@ -52,6 +52,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
+import source_review  # noqa: E402  (same-dir module; Source Review Inbox)
+
 # ---------------------------------------------------------------------------
 # Config (from env)
 # ---------------------------------------------------------------------------
@@ -1650,6 +1652,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"type": 1})
             return
 
+        if itype == 2:  # APPLICATION_COMMAND (slash command)
+            self._handle_slash_command(interaction)
+            return
+
         if itype == 3:  # MESSAGE_COMPONENT (button click)
             self._handle_button(interaction)
             return
@@ -1665,9 +1671,80 @@ class Handler(BaseHTTPRequestHandler):
         token = parsed.get("t")
         return resolve_review_token(token) if token else None
 
+    # -- Source Review Inbox (slash command + buttons) ---------------------
+
+    def _handle_slash_command(self, interaction):
+        data = interaction.get("data", {})
+        name = data.get("name", "")
+        if name != source_review.COMMAND_NAME:
+            self._send_json(200, {"type": 4, "data": {"content": "Unknown command.", "flags": 64}})
+            return
+        self._handle_source_review_command(interaction)
+
+    def _handle_source_review_command(self, interaction):
+        data = interaction.get("data", {})
+        limit = source_review.DEFAULT_LIMIT
+        for opt in data.get("options", []) or []:
+            if opt.get("name") == "limit":
+                try:
+                    limit = max(1, min(source_review.MAX_LIMIT, int(opt.get("value", 5))))
+                except (TypeError, ValueError):
+                    pass
+        channel_id = interaction.get("channel_id") or ""
+        try:
+            candidates = source_review.fetch_pending_candidates(SUPABASE_URL, SUPABASE_KEY, limit)
+        except Exception as e:
+            print(f"[source-review] fetch failed: {e}", flush=True)
+            self._send_json(200, {"type": 4, "data": {"content": "Failed to fetch candidates.", "flags": 64}})
+            return
+        if not candidates:
+            self._send_json(200, {"type": 4, "data": {"content": "No pending candidates.", "flags": 64}})
+            return
+        self._send_json(200, {"type": 4, "data": {"content": f"Pulled {len(candidates)} candidate(s) for review.", "flags": 64}})
+        for c in candidates:
+            self._post_source_card(channel_id, c)
+
+    def _post_source_card(self, channel_id, candidate):
+        payload = {
+            "embeds": [source_review.format_source_embed(candidate)],
+            "components": source_review.format_source_buttons(candidate["duplicate_fingerprint"]),
+        }
+        try:
+            http_json("POST", f"{DISCORD_API}/channels/{channel_id}/messages",
+                      DISCORD_BOT_TOKEN, body=payload, timeout=15)
+        except Exception as e:
+            print(f"[source-review] card post failed: {e}", flush=True)
+
+    def _handle_source_button(self, interaction, src):
+        fp = src["fingerprint"]
+        decision = src["decision"]
+        reviewer = self._reviewer_name(interaction)
+        try:
+            candidate = source_review.fetch_candidate_by_fingerprint(SUPABASE_URL, SUPABASE_KEY, fp)
+        except Exception as e:
+            print(f"[source-review] candidate lookup failed: {e}", flush=True)
+            candidate = None
+        if not candidate:
+            self._send_json(200, {"type": 4, "data": {"content": "Unknown candidate.", "flags": 64}})
+            return
+        payload = source_review.source_decision_payload(candidate, decision, reviewer)
+        try:
+            row, created = source_review.persist_decision(SUPABASE_URL, SUPABASE_KEY, payload)
+        except Exception as e:
+            print(f"[source-review] persist failed: {e}", flush=True)
+            self._send_json(200, {"type": 4, "data": {"content": "Failed to record decision.", "flags": 64}})
+            return
+        embed = source_review.decided_embed(decision, reviewer, created)
+        self._send_json(200, {"type": 7, "data": {"embeds": [embed], "components": []}})
+
     def _handle_button(self, interaction):
         data = interaction.get("data", {})
         custom_id = data.get("custom_id", "")
+        # Source Review Inbox buttons use a distinct compact encoding.
+        src = source_review.parse_source_custom_id(custom_id)
+        if src is not None:
+            self._handle_source_button(interaction, src)
+            return
         parsed = parse_custom_id(custom_id)
         if not parsed:
             self._send_json(200, {"type": 4, "data": {"content": "Invalid button.", "flags": 64}})
