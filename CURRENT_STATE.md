@@ -20,6 +20,8 @@
 
 Zero download. No OpenShorts/Acquisition/publishing. Proof profile auto-excluded.
 
+> **Fixture distinction (recorded):** the Linus Tech Tips video used in the demo card is a UI/test fixture ONLY. Its appearance does NOT constitute tenant relevance or source-selection acceptance. Before production, candidate qualification must enforce the selected tenant's niche, audience, content strategy, exclusions and desired reaction formats — a generally-popular video must not enter a tenant's queue merely because it performs well globally.
+
 ---
 
 ## STOP STATE — 2026-09-17 ~15:30 EDT

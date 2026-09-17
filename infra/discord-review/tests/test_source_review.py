@@ -23,6 +23,8 @@ from source_review import (  # noqa: E402
     source_decision_payload,
     decided_embed,
     class_color,
+    _format_timestamps,
+    _fmt_seconds,
     fetch_pending_candidates,
     persist_decision,
     _is_non_production,
@@ -147,6 +149,53 @@ class TestDecisionPayload(unittest.TestCase):
     def test_decided_embed(self):
         e = decided_embed(DECISION_APPROVE, "bryan#1", created=True)
         self.assertIn("Decision recorded", e["title"])
+
+
+class TestTimestampFormatting(unittest.TestCase):
+    def test_fractional_seconds_floored(self):
+        out = _format_timestamps([{"start_s": 10.5, "end_s": 22.5}])
+        self.assertEqual(out, "00:10–00:22")
+
+    def test_below_hour_mmss(self):
+        out = _format_timestamps([
+            {"start_s": 110.0, "end_s": 116.5},
+            {"start_s": 215.5, "end_s": 228.3},
+        ])
+        self.assertIn("01:50–01:56", out)
+        self.assertIn("03:35–03:48", out)
+
+    def test_above_hour_hms(self):
+        out = _format_timestamps([{"start_s": 3661.0, "end_s": 3720.0}])
+        self.assertEqual(out, "1:01:01–1:02:00")
+
+    def test_missing_timestamps(self):
+        self.assertIsNone(_format_timestamps(None))
+        self.assertIsNone(_format_timestamps([]))
+
+    def test_malformed_skipped(self):
+        out = _format_timestamps([
+            {"start_s": "bad", "end_s": "bad"},
+            {"start_s": 10, "end_s": 20},
+        ])
+        self.assertEqual(out, "00:10–00:20")
+
+    def test_boundaries(self):
+        self.assertEqual(_fmt_seconds(0), "00:00")
+        self.assertEqual(_fmt_seconds(59), "00:59")
+        self.assertEqual(_fmt_seconds(60), "01:00")
+        self.assertEqual(_fmt_seconds(3599), "59:59")
+        self.assertEqual(_fmt_seconds(3600, force_hms=True), "1:00:00")
+
+    def test_reason_label_preserved(self):
+        out = _format_timestamps([{"start_s": 10.5, "end_s": 22.5, "basis": "Opening hook"}])
+        self.assertEqual(out, "00:10–00:22 — Opening hook")
+
+    def test_never_raw_format(self):
+        out = _format_timestamps([{"start_s": 110, "end_s": 116.5}])
+        self.assertEqual(out, "01:50–01:56")
+        self.assertNotIn("110", out)   # no raw seconds
+        self.assertNotIn("116.5", out)  # no fractional raw
+        self.assertNotIn("s", out)      # no 's' suffix
 
 
 class TestNonProduction(unittest.TestCase):

@@ -10,6 +10,13 @@ format_source_buttons) — not a manual mock. The card:
   * includes a safe "Open Source" link (public YouTube URL only — no secrets).
 
 Run from repo root:  python3 infra/discord-review/post_demo_card.py
+
+Fixture distinction (recorded for correctness): the Linus Tech Tips video is a
+UI/test fixture ONLY. Its appearance does NOT constitute tenant relevance or
+source-selection acceptance. Before production, candidate qualification must
+enforce the selected tenant's niche, audience, content strategy, exclusions and
+desired reaction formats — a generally-popular video must not enter a tenant's
+queue merely because it performs well globally.
 """
 
 from __future__ import annotations
@@ -95,9 +102,9 @@ def _demo_candidate() -> dict:
         "recommended_format": "commentary_story",
         "recommended_angle": "Break down why ultra-cheap smart home tech becomes a subscription trap once the hidden fees kick in.",
         "suggested_timestamps": [
-            {"start_s": 10.5, "end_s": 22.5, "basis": "hook (pumpkin metaphor)"},
-            {"start_s": 110.0, "end_s": 116.5, "basis": "twist / payoff"},
-            {"start_s": 215.5, "end_s": 228.3, "basis": "hidden subscription costs"},
+            {"start_s": 10.5, "end_s": 22.5, "basis": "Opening hook"},
+            {"start_s": 110.0, "end_s": 116.5, "basis": "Twist"},
+            {"start_s": 215.5, "end_s": 228.3, "basis": "Hidden-cost reveal"},
         ],
         "top_reasons": [
             "Relatable subscription-trap pain point",

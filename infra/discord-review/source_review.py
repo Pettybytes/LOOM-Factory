@@ -90,16 +90,33 @@ def class_color(outcome: str) -> int:
     return _OUTCOME_COLORS.get(outcome, 0x95A5A6)
 
 
-def _compact_timestamps(ts: list[dict[str, Any]] | None) -> str | None:
+def _fmt_seconds(s: float, force_hms: bool = False) -> str:
+    """Human display of seconds: MM:SS under 1 hour, H:MM:SS at/over 1 hour.
+    Fractional seconds are floored for display only; raw numeric values are
+    preserved upstream (never mutated)."""
+    s = max(0, int(float(s)))
+    if force_hms or s >= 3600:
+        return f"{s // 3600}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+    return f"{s // 60:02d}:{s % 60:02d}"
+
+
+def _format_timestamps(ts: list[dict[str, Any]] | None) -> str | None:
+    """Format suggested moments one per line: MM:SS–MM:SS (or H:MM:SS–H:MM:SS),
+    with an optional reason/label. Never shows raw '110–116.5s' style."""
     if not ts:
         return None
-    parts = []
+    lines: list[str] = []
     for t in ts[:5]:
         try:
-            parts.append(f"{float(t['start_s']):g}–{float(t['end_s']):g}s")
+            start = float(t["start_s"])
+            end = float(t["end_s"])
+            force_hms = end >= 3600
+            pair = f"{_fmt_seconds(start, force_hms)}–{_fmt_seconds(end, force_hms)}"
+            basis = (t.get("basis") or "").strip()
+            lines.append(f"{pair} — {basis}" if basis else pair)
         except (KeyError, TypeError, ValueError):
             continue
-    return " · ".join(parts) if parts else None
+    return "\n".join(lines) if lines else None
 
 
 def _thumbnail_url(platform: str, platform_content_id: str) -> str | None:
@@ -168,7 +185,7 @@ def format_source_embed(candidate: dict[str, Any], *, fixture: bool = False) -> 
         fields.append({"name": "Why selected", "value": why[:600], "inline": False})
 
     # 9. Suggested timestamps.
-    ts_line = _compact_timestamps(candidate.get("suggested_timestamps"))
+    ts_line = _format_timestamps(candidate.get("suggested_timestamps"))
     if ts_line:
         fields.append({"name": "Suggested timestamps", "value": ts_line, "inline": False})
 
