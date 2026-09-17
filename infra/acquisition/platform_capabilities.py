@@ -21,12 +21,14 @@ CAP_RUNTIME_PROVEN = "runtime_proven"
 CAP_IMPLEMENTED_NOT_PROVEN = "implemented_not_proven"
 CAP_BLOCKED_PENDING_ADAPTER = "blocked_pending_adapter"
 CAP_UNSUPPORTED_WITH_REASON = "unsupported_with_reason"
+CAP_BLOCKED_LOCAL_FMP4_INCOMPLETE = "blocked_local_fmp4_incomplete"
 
 CAPABILITY_STATES = frozenset({
     CAP_RUNTIME_PROVEN,
     CAP_IMPLEMENTED_NOT_PROVEN,
     CAP_BLOCKED_PENDING_ADAPTER,
     CAP_UNSUPPORTED_WITH_REASON,
+    CAP_BLOCKED_LOCAL_FMP4_INCOMPLETE,
 })
 
 # Platform set (must match manual_intake PLATFORM_HOSTS keys).
@@ -63,9 +65,9 @@ _CAPABILITY: dict[str, dict] = {
         "candidates": ["yt-dlp", "cobalt", "streamlink"],
     },
     "instagram": {
-        "state": CAP_IMPLEMENTED_NOT_PROVEN,
-        "reason": "Resolution browser-assisted (chrome_network_capture), HUMAN-PROVEN. Acquisition implemented_not_proven until the bounded MP4 download succeeds.",
-        "candidates": ["chrome-extension"],
+        "state": CAP_BLOCKED_LOCAL_FMP4_INCOMPLETE,
+        "reason": "Local browser-assisted fMP4 assembly failed the agreed proof threshold (INSUFFICIENT_FMP4_SET — no assemblable manifest/init+segments set). Local chrome-extension code retained; pivoting to Apify paid provider (evaluation in progress, $0 spent).",
+        "candidates": ["chrome-extension", "apify"],
     },
 }
 

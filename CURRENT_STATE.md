@@ -6,6 +6,40 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~19:45 EDT — LOCAL INSTAGRAM CLOSED OUT; APIFY PHASE 1 DONE (awaiting approval)
+
+### Local Instagram — crossed pivot threshold (verified + closed out)
+- Final proof failed locally with `INSUFFICIENT_FMP4_SET` (no assemblable
+  manifest/init+segments set). The extension failed closed BEFORE any helper POST —
+  helper.log shows no `/acquire` request post-restart; no new job row; library +
+  tmp dirs empty; no signed URL leaked. Honest record: an `INSUFFICIENT_FMP4_SET`
+  failure is pre-dispatch, so it creates NO acquisition-job row.
+- Instagram capability → `blocked_local_fmp4_incomplete` (new state). Candidates
+  ladder → `["chrome-extension", "apify"]`. Local code retained, NOT deleted,
+  NOT further repaired.
+
+### Apify paid-provider fallback — Phase 1 (evaluation + design, $0)
+- Actor evaluation: `infra/acquisition/APIFY_INSTAGRAM_ACTOR_EVALUATION.md`
+  (primary `agentx/instagram-reels-downloader`, Actor ID `59aU9vig8wglWOBe1`,
+  $0.29/single-Reel-with-file free tier; alt `thenetaji/instagram-video-downloader`).
+- Provider-neutral boundary: `infra/acquisition/APIFY_PROVIDER_BOUNDARY.md`
+  (15 shared contracts, 2 intake lanes, cost controls, secret handling,
+  migrations 034/035 identified, 14-case mock-test plan).
+- ⚠️ COST CONFLICT: "$1 ceiling" + "max 10 acquisitions" are incompatible
+  ($0.29×10=$2.90). Recommendation: $1 hard ceiling + **max 3** successful
+  pilot acquisitions (3×$0.29=$0.87).
+- $0 spent. No Apify call. Token present-but-unused (presence verified only).
+
+### STOP — awaiting Bryan's approval before Phase 2
+- Phase 2 (only after approval): add token securely; build provider adapter +
+  mocks; cost/circuit persistence; tests; stop before any real call.
+- Phase 3 (separately authorized): ONE proof on
+  `https://www.instagram.com/reel/DdZS1QRhrXE/`.
+- Hard gates unchanged: no token use, no Apify call/spend, no other platform
+  activation, no OpenShorts/OBS/GHL/publish.
+
+---
+
 ## STOP STATE — 2026-09-17 ~19:10 EDT — SESSION HANDOFF (fMP4 built; proof authorized, NOT run)
 
 ### Git

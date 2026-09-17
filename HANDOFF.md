@@ -9,7 +9,29 @@
 ---
 
 ## Last Updated
-2026-09-17 19:10 EDT (America/Detroit) — SESSION HANDOFF (fMP4 built; proof authorized, NOT run)
+2026-09-17 19:45 EDT (America/Detroit) — LOCAL INSTAGRAM CLOSED OUT; APIFY PHASE 1 DONE (awaiting approval)
+
+## HANDOFF — local Instagram closed out; Apify Phase 1 done (awaiting approval)
+
+Local Instagram acquisition crossed the agreed proof threshold: the final proof
+failed locally with `INSUFFICIENT_FMP4_SET` (no assemblable manifest/init+segments
+set). Verified close-out: helper.log shows no post-restart `/acquire` request; no
+new job row; library + tmp dirs empty; no signed URL leaked. Instagram capability
+→ `blocked_local_fmp4_incomplete` (candidates `["chrome-extension", "apify"]`);
+local code retained, not deleted, not further repaired.
+
+Apify paid-provider fallback — Phase 1 complete ($0, no call, token unused):
+- `infra/acquisition/APIFY_INSTAGRAM_ACTOR_EVALUATION.md` (primary
+  `agentx/instagram-reels-downloader`, Actor `59aU9vig8wglWOBe1`, $0.29/single
+  Reel with file; alt `thenetaji/instagram-video-downloader`).
+- `infra/acquisition/APIFY_PROVIDER_BOUNDARY.md` (15 shared contracts, 2 intake
+  lanes, cost controls, secret handling, migrations 034/035, 14-case mock plan).
+- ⚠️ COST CONFLICT: $1 ceiling + max 10 acquisitions are incompatible
+  ($0.29×10=$2.90). Recommend $1 ceiling + max 3 (3×$0.29=$0.87).
+
+Next: STOP for Bryan's approval before Phase 2 (token + adapter + mocks + tests).
+
+---
 
 ## HANDOFF — fMP4 assembly built; authorized proof NOT yet run
 
