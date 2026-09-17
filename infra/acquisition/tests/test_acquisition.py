@@ -105,6 +105,11 @@ class TestCapabilities(unittest.TestCase):
         for p, entry in m.items():
             self.assertIn(entry["state"], caps.CAPABILITY_STATES)
             self.assertTrue(entry["reason"])
+            self.assertTrue(entry["candidates"])
+
+    def test_candidate_ladder(self):
+        self.assertEqual(caps.candidates("instagram"), ["cobalt", "gallery-dl", "chrome-extension"])
+        self.assertEqual(caps.candidates("youtube")[0], "yt-dlp")
 
 
 if __name__ == "__main__":

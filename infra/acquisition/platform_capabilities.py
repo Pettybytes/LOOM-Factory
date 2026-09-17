@@ -36,30 +36,36 @@ PLATFORMS = frozenset({"youtube", "reddit", "tiktok", "instagram", "twitch", "ki
 # a runtime-proven acquisition adapter yet (no bounded media download has been
 # authorized or run). yt-dlp is integrated for transcript-only extraction
 # (0 media bytes) but a bounded media acquisition proof has NOT run.
-_CAPABILITY: dict[str, dict[str, str]] = {
+_CAPABILITY: dict[str, dict] = {
     "youtube": {
         "state": CAP_IMPLEMENTED_NOT_PROVEN,
-        "reason": "yt-dlp integrated (transcript-only proven, 0 media bytes); bounded media acquisition proof not yet run.",
+        "reason": "yt-dlp 2026.03.13 installed; transcript-only extraction proven (0 media bytes); bounded media acquisition proof not yet run.",
+        "candidates": ["yt-dlp", "cobalt"],
     },
     "reddit": {
-        "state": CAP_BLOCKED_PENDING_ADAPTER,
-        "reason": "Reddit media is host-diverse (v.redd.it / external links); per-host resolver not yet implemented.",
+        "state": CAP_IMPLEMENTED_NOT_PROVEN,
+        "reason": "yt-dlp Reddit extractor installed; media is host-diverse (v.redd.it / external) so per-host behavior is unproven.",
+        "candidates": ["yt-dlp", "cobalt", "gallery-dl"],
     },
     "twitch": {
-        "state": CAP_BLOCKED_PENDING_ADAPTER,
-        "reason": "Clip + bounded VOD adapter not yet implemented.",
+        "state": CAP_IMPLEMENTED_NOT_PROVEN,
+        "reason": "yt-dlp twitch:clips/vod installed; streamlink (live) not installed. No bounded acquisition proof yet.",
+        "candidates": ["yt-dlp", "streamlink", "cobalt"],
     },
     "kick": {
-        "state": CAP_BLOCKED_PENDING_ADAPTER,
-        "reason": "Clip + bounded VOD adapter not yet implemented.",
+        "state": CAP_IMPLEMENTED_NOT_PROVEN,
+        "reason": "yt-dlp kick:clips/vod/live installed; no bounded acquisition proof yet.",
+        "candidates": ["yt-dlp", "streamlink"],
+    },
+    "tiktok": {
+        "state": CAP_IMPLEMENTED_NOT_PROVEN,
+        "reason": "yt-dlp TikTok extractor installed but anonymous resolution is hit-or-miss (anti-bot); cobalt + browser-assisted candidates unproven. No bounded proof.",
+        "candidates": ["yt-dlp", "cobalt", "streamlink"],
     },
     "instagram": {
         "state": CAP_BLOCKED_PENDING_ADAPTER,
-        "reason": "Anonymous public Reel acquisition blocked: yt-dlp 2026.03.13 returns 'Requested content is not available, rate-limit reached or login required' — Instagram requires authentication/cookies to expose the media URL. No cookie/browser-session extraction or auth bypass is permitted.",
-    },
-    "tiktok": {
-        "state": CAP_BLOCKED_PENDING_ADAPTER,
-        "reason": "No first-party adapter; TikTok remains held pending explicit authorization.",
+        "reason": "yt-dlp 2026.03.13 anonymous Reel resolution fails ('login required'). Cobalt/gallery-dl/chrome-extension candidates not yet installed/proven; no cookie or auth-bypass permitted.",
+        "candidates": ["cobalt", "gallery-dl", "chrome-extension"],
     },
 }
 
@@ -81,9 +87,15 @@ def can_acquire(platform: str) -> bool:
     return capability(platform) == CAP_RUNTIME_PROVEN
 
 
-def matrix() -> dict[str, dict[str, str]]:
-    """Read-only copy of the full capability matrix ({platform: {state, reason}})."""
+def matrix() -> dict[str, dict]:
+    """Read-only copy of the full capability matrix ({platform: {state, reason, candidates}})."""
     return {p: dict(entry) for p, entry in sorted(_CAPABILITY.items())}
+
+
+def candidates(platform: str) -> list[str]:
+    """Ordered candidate adapter ladder for a platform."""
+    entry = _CAPABILITY.get(platform)
+    return list(entry.get("candidates", [])) if entry else []
 
 
 def capability_map() -> dict[str, str]:
