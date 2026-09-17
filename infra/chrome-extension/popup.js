@@ -14,8 +14,9 @@ const PHASE_LABEL = {
   active: 'Inspecting playing media…',
   collecting: 'Inspecting playing media…',
   found: 'Media found',
-  sending: 'Sending to local LOOM',
-  downloading: 'Downloading within limits',
+  sending: 'Capturing manifest/segments',
+  downloading: 'Downloading',
+  assembling: 'Assembling',
   validating: 'Validating',
   complete: 'Complete',
   no_traffic: 'No new media traffic observed',
@@ -24,7 +25,7 @@ const PHASE_LABEL = {
   failed: 'Failed',
 };
 
-const ACTIVE_PHASES = ['attaching', 'active', 'collecting', 'found', 'sending', 'downloading', 'validating'];
+const ACTIVE_PHASES = ['attaching', 'active', 'collecting', 'found', 'sending', 'downloading', 'assembling', 'validating'];
 
 function fmtCountdown(state) {
   if (!state || !state.deadline) return '';

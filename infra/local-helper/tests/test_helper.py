@@ -59,7 +59,18 @@ class TestParseBody(unittest.TestCase):
     def test_missing_candidate(self):
         body = json.dumps({"canonical_url": "https://x"}).encode()
         payload, err = helper.parse_body(body)
-        self.assertEqual(err, "missing candidate_url")
+        self.assertEqual(err, "need manifest_url, segments, or candidate_url")
+
+    def test_manifest_url_accepted(self):
+        body = json.dumps({"canonical_url": "https://x", "manifest_url": "https://y/manifest.mpd"}).encode()
+        payload, err = helper.parse_body(body)
+        self.assertIsNone(err)
+
+    def test_segments_accepted(self):
+        body = json.dumps({"canonical_url": "https://x", "init_url": "https://y/init.mp4",
+                           "segments": ["https://y/s0.m4s"]}).encode()
+        payload, err = helper.parse_body(body)
+        self.assertIsNone(err)
 
     def test_default_actor(self):
         body = json.dumps({"canonical_url": "https://x", "candidate_url": "https://y"}).encode()

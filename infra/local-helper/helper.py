@@ -20,7 +20,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import acquisition
 import acquire as acq
-from validate import ValidationError, validate_candidate
+import assemble as asm
+import fmp4
+from validate import ValidationError, validate_candidate, validate_media_url
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOKEN_PATH = os.path.join(HERE, ".token")
@@ -73,14 +75,27 @@ def parse_body(body_bytes: bytes):
     if not isinstance(payload, dict):
         return None, "body must be a JSON object"
     canonical = payload.get("canonical_url", "")
-    candidate = payload.get("candidate_url", "")
     if not isinstance(canonical, str) or not canonical:
         return None, "missing canonical_url"
-    if not isinstance(candidate, str) or not candidate:
-        return None, "missing candidate_url"
+    has_manifest = isinstance(payload.get("manifest_url"), str) and bool(payload["manifest_url"])
+    has_segments = isinstance(payload.get("segments"), list) and bool(payload["segments"])
+    has_candidate = isinstance(payload.get("candidate_url"), str) and bool(payload["candidate_url"])
+    if not (has_manifest or has_segments or has_candidate):
+        return None, "need manifest_url, segments, or candidate_url"
     actor = payload.get("actor", "bryan")
     payload["actor"] = (actor or "").strip() or "bryan"
     return payload, None
+
+
+def _cleanup_tmp_dir():
+    """Remove all temp files (manifests, init, fragments, intermediates)."""
+    try:
+        for name in os.listdir(TMP_DIR):
+            p = os.path.join(TMP_DIR, name)
+            if os.path.isfile(p):
+                os.remove(p)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -204,36 +219,59 @@ class Handler(BaseHTTPRequestHandler):
         # Idempotency: first-wins on dedup_key (duplicate click -> no new job).
         job_row, created = acquisition.persist_job(supabase_url, key, job) if (supabase_url and key) else (job, True)
         if not created:
-            return {"ok": True, "status": "duplicate", "submission_id": job_row.get("id"),
-                    "message": "already acquired (no duplicate job created)"}
+            action = asm.plan_job_retry(job_row.get("status"))
+            if action == "duplicate":
+                return {"ok": True, "status": "duplicate", "submission_id": job_row.get("id"),
+                        "job_status": job_row.get("status"),
+                        "message": "already acquired (no new download)"}
+            # Idempotent retry: reset a failed/blocked job back to running.
+            if supabase_url and key:
+                update_job_status(supabase_url, key, job["dedup_key"],
+                                  acquisition.STATUS_RUNNING, "retry")
 
         os.makedirs(LIBRARY_DIR, exist_ok=True)
         os.makedirs(TMP_DIR, exist_ok=True)
 
-        tmp_path = None
+        final_tmp = None
         try:
-            # Download (validated redirects + byte ceiling) to a temp file.
-            tmp_path, written, http_status, content_type = acq.download_one_video(
-                payload["candidate_url"], TMP_DIR, max_bytes=MAX_BYTES,
-                timeout=DOWNLOAD_TIMEOUT, max_redirects=MAX_REDIRECTS)
-
-            # Validate HTTP status + Content-Type + MP4 signature BEFORE ffprobe.
-            acq.classify_downloaded_file(tmp_path, http_status=http_status,
-                                         content_type=content_type, size_bytes=written)
+            manifest_url = payload.get("manifest_url", "")
+            segments = payload.get("segments") or []
+            if manifest_url:
+                validate_media_url(manifest_url)
+                final_tmp, written = fmp4.assemble_from_manifest(
+                    manifest_url=manifest_url, tmp_dir=TMP_DIR,
+                    max_bytes=MAX_BYTES, timeout=DOWNLOAD_TIMEOUT)
+            elif segments:
+                init_url = payload.get("init_url", "")
+                audio_init = payload.get("audio_init_url", "")
+                audio_segments = payload.get("audio_segments") or []
+                for u in [init_url] + list(segments) + ([audio_init] if audio_init else []) + list(audio_segments):
+                    validate_media_url(u)
+                final_tmp, written = fmp4.assemble_fmp4(
+                    video_init=init_url, video_segments=segments,
+                    audio_init=audio_init, audio_segments=audio_segments,
+                    tmp_dir=TMP_DIR, max_bytes=MAX_BYTES, timeout=DOWNLOAD_TIMEOUT)
+            else:
+                tmp, written, status, ct = acq.download_one_video(
+                    payload["candidate_url"], TMP_DIR, max_bytes=MAX_BYTES,
+                    timeout=DOWNLOAD_TIMEOUT, max_redirects=MAX_REDIRECTS)
+                acq.classify_downloaded_file(tmp, http_status=status,
+                                             content_type=ct, size_bytes=written)
+                final_tmp = tmp
 
             meta = acq.parse_ffprobe_result(
-                acq.run_ffprobe(tmp_path), actual_size_bytes=written,
+                acq.run_ffprobe(final_tmp), actual_size_bytes=written,
                 max_bytes=MAX_BYTES, max_duration=MAX_DURATION)
 
-            digest = acq.checksum_sha256(tmp_path)
+            digest = acq.checksum_sha256(final_tmp)
             filename = acq.library_filename(payload["canonical_url"], digest)
             final_path = os.path.join(LIBRARY_DIR, filename)
-            acq.finalize(tmp_path, final_path)  # atomic rename after validation
-            tmp_path = None  # finalized (renamed) — no cleanup needed
+            acq.finalize(final_tmp, final_path)  # atomic rename after validation
+            final_tmp = None
         except Exception as e:
             # Guarantee no final or partial asset on ANY failure.
-            if tmp_path:
-                acq.cleanup_temp(tmp_path)
+            if final_tmp:
+                acq.cleanup_temp(final_tmp)
             try:
                 if supabase_url and key:
                     reason = getattr(e, "code", None) or type(e).__name__
@@ -245,6 +283,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             raise
+        finally:
+            _cleanup_tmp_dir()
 
         # Persist the Reaction Library ledger entry.
         rec = acq.build_library_entry(

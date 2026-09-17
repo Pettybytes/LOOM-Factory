@@ -180,39 +180,64 @@ function maybeHandoff(timedOut) {
     if (timedOut) finishAcquire('failed', 'no media candidate captured — replay the Reel and retry Acquire for Reaction');
     return;
   }
+  // Prefer the DASH/HLS manifest — it lists all init + segments for assembly.
+  const manifest = mem.accepted.find((c) => c.type === 'manifest');
+  if (manifest) {
+    acquireSent = true;
+    mem.fullCandidate = manifest.fullUrl;
+    onHandoff({ manifest_url: manifest.fullUrl });
+    return;
+  }
   const best = selectBestCandidate(mem.accepted);
-  if (best.type === 'direct_video' || timedOut) {
+  if (best.type === 'direct_video') {
     acquireSent = true;
     mem.fullCandidate = best.fullUrl;
-    onHandoff(best.fullUrl);
+    onHandoff({ candidate_url: best.fullUrl, media_type: 'direct_video' });
+    return;
   }
-  // else: a manifest/segment is present but not an unambiguous MP4 — wait.
+  if (timedOut) {
+    // No manifest / direct MP4: fall back to init + ordered fragments.
+    const init = mem.accepted.find((c) => c.type === 'direct_video');
+    const segs = mem.accepted.filter((c) => c.type === 'segment').map((c) => c.fullUrl);
+    const audio = mem.accepted.filter((c) => c.type === 'audio').map((c) => c.fullUrl);
+    if (init && segs.length) {
+      acquireSent = true;
+      mem.fullCandidate = init.fullUrl;
+      onHandoff({ init_url: init.fullUrl, segments: segs, audio_segments: audio });
+      return;
+    }
+    finishAcquire('failed', 'no playable media representation captured — replay the Reel and retry');
+  }
 }
 
-async function onHandoff(candidateUrl) {
+async function onHandoff(payload) {
   stopTimer();
   clearPhaseTimers();
   await detach();
   mem.deadline = null;
   await persist('sending', {});
   phaseTimers.push(setTimeout(() => { if (acquireMode) persist('downloading', {}); }, 1500));
-  phaseTimers.push(setTimeout(() => { if (acquireMode) persist('validating', {}); }, 6000));
-  await postToHelper(candidateUrl);
+  phaseTimers.push(setTimeout(() => { if (acquireMode) persist('assembling', {}); }, 4500));
+  phaseTimers.push(setTimeout(() => { if (acquireMode) persist('validating', {}); }, 7000));
+  await postToHelper(payload);
 }
 
-async function postToHelper(candidateUrl) {
+function buildBody(payload) {
+  const body = { canonical_url: acquireCanonical, actor: ACTOR };
+  if (payload.manifest_url) body.manifest_url = payload.manifest_url;
+  if (payload.init_url) body.init_url = payload.init_url;
+  if (payload.segments && payload.segments.length) body.segments = payload.segments;
+  if (payload.audio_segments && payload.audio_segments.length) body.audio_segments = payload.audio_segments;
+  if (payload.candidate_url) body.candidate_url = payload.candidate_url;
+  return body;
+}
+
+async function postToHelper(payload) {
   try {
     const resp = await fetch(HELPER_URL + '/acquire', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + HELPER_TOKEN },
-      body: JSON.stringify({
-        canonical_url: acquireCanonical,
-        candidate_url: candidateUrl,
-        candidate_host: (() => { try { return new URL(candidateUrl).hostname; } catch { return ''; } })(),
-        mime_type: 'video/mp4',
-        media_type: 'direct_video',
-        actor: ACTOR,
-      }),
+      body: JSON.stringify(buildBody(payload)),
     });
     let data = null;
     try { data = await resp.json(); } catch (e) { data = null; }
