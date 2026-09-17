@@ -18,6 +18,10 @@ from manual_intake import (  # noqa: E402
     status_for_platform,
     build_submission,
     validate_destination,
+    normalize_destination,
+    destination_choices,
+    routing_label,
+    platform_support_label,
     STATUS_ACCEPTED,
     STATUS_PENDING_PLATFORM,
     STATUS_AWAITING_TENANT,
@@ -183,6 +187,31 @@ class TestBuildSubmission(unittest.TestCase):
         with self.assertRaises(SubmissionError) as cm:
             validate_destination("inactive-tenant", self.ACTIVE)
         self.assertEqual(cm.exception.code, "INVALID_DESTINATION")
+
+
+class TestDestinationUX(unittest.TestCase):
+    ACTIVE = {"dreemzy", "client-a", "proof-tenant"}
+
+    def test_normalize_destination(self):
+        self.assertEqual(normalize_destination(""), "")
+        self.assertEqual(normalize_destination("unassigned"), "")
+        self.assertEqual(normalize_destination("UNASSIGNED"), "")
+        self.assertEqual(normalize_destination("dreemzy"), "dreemzy")
+
+    def test_destination_choices_leads_unassigned_and_excludes_proof(self):
+        choices = destination_choices(self.ACTIVE)
+        self.assertEqual(choices[0], {"name": "Unassigned / General", "value": "unassigned"})
+        names = [c["name"] for c in choices]
+        self.assertIn("dreemzy", names)
+        self.assertIn("client-a", names)
+        self.assertNotIn("proof-tenant", names)
+
+    def test_routing_and_platform_labels(self):
+        self.assertEqual(routing_label(""), "Awaiting tenant assignment")
+        self.assertEqual(routing_label("dreemzy"), "Assigned to dreemzy")
+        self.assertEqual(platform_support_label("youtube"), "Supported")
+        self.assertEqual(platform_support_label("instagram"), "Pending Instagram support")
+        self.assertEqual(platform_support_label("tiktok"), "Pending TikTok support")
 
 
 if __name__ == "__main__":

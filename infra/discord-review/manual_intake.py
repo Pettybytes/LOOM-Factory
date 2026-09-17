@@ -52,6 +52,15 @@ HOST_TO_PLATFORM: dict[str, str] = {
 SUPPORTED_PLATFORMS: frozenset[str] = frozenset({"youtube", "reddit"})
 PENDING_PLATFORMS: frozenset[str] = frozenset({"tiktok", "instagram", "twitch", "kick"})
 
+PLATFORM_DISPLAY_NAMES: dict[str, str] = {
+    "youtube": "YouTube",
+    "reddit": "Reddit",
+    "tiktok": "TikTok",
+    "instagram": "Instagram",
+    "twitch": "Twitch",
+    "kick": "Kick",
+}
+
 STATUS_ACCEPTED = "accepted"
 STATUS_PENDING_PLATFORM = "accepted_pending_platform_support"
 STATUS_AWAITING_TENANT = "awaiting_tenant_assignment"
@@ -60,6 +69,12 @@ COMMAND_NAME = "submit-source"
 
 # Unassigned routing state: tenant_id == '' (NOT a tenant).
 DESTINATION_UNASSIGNED = ""
+
+# Discord-facing token/label for the Unassigned/General choice. Discord option
+# choice values cannot be empty, so autocomplete returns this sentinel and the
+# server normalizes it back to '' (see normalize_destination).
+DESTINATION_UNASSIGNED_TOKEN = "unassigned"
+DESTINATION_UNASSIGNED_LABEL = "Unassigned / General"
 
 _NON_PRODUCTION_MARKERS = (
     "acceptance", "test", "proof", "example", "fixture",
@@ -71,10 +86,18 @@ def is_non_production_tenant(tenant_id: str) -> bool:
     return any(m in (tenant_id or "").lower() for m in _NON_PRODUCTION_MARKERS)
 
 
-def validate_destination(destination: str, active_tenants: set[str]) -> str:
-    """Validate a destination: '' (Unassigned) or an active, non-proof tenant.
-    Returns the normalized destination. Raises SubmissionError otherwise."""
+def normalize_destination(destination: str) -> str:
+    """Map the human-facing 'unassigned' token (and blank) to '' (Unassigned)."""
     dest = (destination or "").strip()
+    if dest == "" or dest.lower() == DESTINATION_UNASSIGNED_TOKEN:
+        return DESTINATION_UNASSIGNED
+    return dest
+
+
+def validate_destination(destination: str, active_tenants: set[str]) -> str:
+    """Validate a destination: Unassigned/General or an active, non-proof tenant.
+    Returns the normalized destination ('' for Unassigned). Raises SubmissionError otherwise."""
+    dest = normalize_destination(destination)
     if dest == DESTINATION_UNASSIGNED:
         return DESTINATION_UNASSIGNED
     if dest not in active_tenants:
@@ -82,6 +105,32 @@ def validate_destination(destination: str, active_tenants: set[str]) -> str:
     if is_non_production_tenant(dest):
         raise SubmissionError("INVALID_DESTINATION", f"{dest!r} is a non-production tenant")
     return dest
+
+
+def destination_choices(active_tenants: set[str]) -> list[dict[str, str]]:
+    """Discord autocomplete choices: Unassigned/General first, then active tenants (sorted)."""
+    choices = [{"name": DESTINATION_UNASSIGNED_LABEL, "value": DESTINATION_UNASSIGNED_TOKEN}]
+    for tenant in sorted(t for t in active_tenants if not is_non_production_tenant(t)):
+        choices.append({"name": tenant, "value": tenant})
+    return choices
+
+
+def routing_label(tenant_id: str) -> str:
+    """Human-facing routing state label."""
+    dest = normalize_destination(tenant_id)
+    if dest == DESTINATION_UNASSIGNED:
+        return "Awaiting tenant assignment"
+    return f"Assigned to {dest}"
+
+
+def platform_support_label(platform: str) -> str:
+    """Human-facing platform support label."""
+    name = PLATFORM_DISPLAY_NAMES.get(platform, platform.title())
+    if platform in SUPPORTED_PLATFORMS:
+        return "Supported"
+    if platform in PENDING_PLATFORMS:
+        return f"Pending {name} support"
+    return "Unknown"
 
 CONTENT_FORMATS: frozenset[str] = frozenset({
     "reaction_single", "reaction_compilation", "commentary_story",
@@ -265,7 +314,7 @@ def build_submission(
     is derived server-side later (not asked from the human)."""
     if content_format not in CONTENT_FORMATS:
         raise SubmissionError("BAD_FORMAT", f"unknown content_format {content_format!r}")
-    dest = (destination or "").strip()
+    dest = normalize_destination(destination)
     if active_tenants is not None:
         dest = validate_destination(dest, active_tenants)
     if time_start_s is not None and time_start_s < 0:

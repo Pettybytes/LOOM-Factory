@@ -1662,6 +1662,10 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_button(interaction)
             return
 
+        if itype == 4:  # APPLICATION_COMMAND_AUTOCOMPLETE (destination choices)
+            self._handle_autocomplete(interaction)
+            return
+
         if itype == 5:  # MODAL_SUBMIT (reject modal)
             self._handle_modal_submit(interaction)
             return
@@ -1688,6 +1692,33 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_assign_source_command(interaction)
             return
         self._send_json(200, {"type": 4, "data": {"content": "Unknown command.", "flags": 64}})
+
+    def _handle_autocomplete(self, interaction):
+        data = interaction.get("data", {})
+        focused = None
+        for opt in data.get("options", []) or []:
+            if isinstance(opt, dict) and opt.get("focused"):
+                focused = opt
+                break
+        if not focused:
+            self._send_json(200, {"type": 8, "data": {"choices": []}})
+            return
+
+        opt_name = focused.get("name", "")
+        if opt_name == "destination":
+            try:
+                active = tenant_routing.list_active_tenants(SUPABASE_URL, SUPABASE_KEY)
+            except Exception as e:
+                print(f"[autocomplete] list_active_tenants failed: {e}", flush=True)
+                active = set()
+            partial = (focused.get("value") or "").strip().lower()
+            choices = manual_intake.destination_choices(active)
+            if partial:
+                choices = [c for c in choices
+                           if partial in c["name"].lower() or partial in c["value"].lower()]
+            self._send_json(200, {"type": 8, "data": {"choices": choices[:25]}})
+            return
+        self._send_json(200, {"type": 8, "data": {"choices": []}})
 
     def _handle_source_review_command(self, interaction):
         data = interaction.get("data", {})
@@ -1756,17 +1787,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         sub_id = row.get("id", "?")
-        dest = payload["tenant_id"] or "Unassigned"
         if created:
-            if payload["status"] == manual_intake.STATUS_AWAITING_TENANT:
-                label = "accepted · Destination: Unassigned"
-            elif payload["status"] == manual_intake.STATUS_ACCEPTED:
-                label = f"accepted · Destination: {dest}"
-            else:
-                label = f"accepted (platform support pending) · Destination: {dest}"
-            msg = (f"✅ Submission {label}\n"
+            routing = manual_intake.routing_label(payload.get("tenant_id", ""))
+            support = manual_intake.platform_support_label(payload["platform"])
+            msg = (f"✅ Source submitted (candidate only — no analysis, score, acquisition, or download)\n"
                    f"ID: `{sub_id}`\n"
                    f"Platform: `{payload['platform']}` · Format: `{payload['content_format']}`\n"
+                   f"Routing: {routing}\n"
+                   f"Platform support: {support}\n"
                    f"URL: {payload['source_url']}")
         else:
             msg = f"ℹ️ Duplicate submission (already accepted). ID: `{sub_id}`"
