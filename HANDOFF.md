@@ -9,17 +9,19 @@
 ---
 
 ## Last Updated
-2026-09-17 13:50 EDT (America/Detroit)
+2026-09-17 14:30 EDT (America/Detroit)
 
-## Segment — Topic Intelligence V1: RUNTIME-PROVEN (local, $0)
+## Segment — Topic Intelligence V1: RUNTIME-PROVEN (local + Supabase)
 
 - **`normalization.py`** — platform-aware signal normalization (YouTube `views`; Reddit engagement honestly absent over RSS). Missing metrics recorded, never fabricated.
 - **`velocity.py`** — velocity ONLY from ≥2 valid time-separated observations; unavailable otherwise (honest reason).
 - **`topic_intelligence.py`** — 7-signal weighted score → opportunity class (strong/moderate/weak/stale/duplicate/incomplete) + confidence + data-completeness + reason codes + missing-data/low-confidence flags. No LLM, no paid service, deterministic.
 - **`content_format`** routing field added (default `hold_unassigned`).
-- **Assessment store:** SQLite built+tested; Supabase built (migration 022 pending).
+- **Assessment store:** SQLite built+tested; Supabase built + runtime-proven.
+- **Migrations 022/023 APPLIED** (Bryan, 2026-09-17).
 - **62 deterministic tests pass** (was 38).
-- **Real-data proof 28/28 PASS** (15 real YouTube candidates, local SQLite, $0).
+- **Real-data proofs: local SQLite 28/28 PASS; Supabase 13/13 PASS** (15 real YouTube candidates, $0).
+- Fixed Supabase `upsert_source` UPDATE-path parity (profile_id/body_excerpt/content_format refreshed on re-observation).
 - Proof profiles auto-excluded from `production_assessments()`. No candidate advanced beyond `manual_ingest_only`.
 
 Zero cost. Zero downstream side effects. No media download, no OpenShorts job,
@@ -86,8 +88,8 @@ infra/supabase/018_loom_source_briefs.sql      # APPLIED
 infra/supabase/019_loom_discovered_sources.sql # APPLIED
 infra/supabase/020_loom_discovered_sources_profile.sql # APPLIED (15 rows backfilled)
 infra/supabase/021_loom_discovered_sources_body_excerpt.sql # APPLIED
-infra/supabase/022_loom_topic_assessments.sql            # CREATED (pending Bryan DDL)
-infra/supabase/023_loom_discovered_sources_content_format.sql # CREATED (pending Bryan DDL)
+infra/supabase/022_loom_topic_assessments.sql            # APPLIED
+infra/supabase/023_loom_discovered_sources_content_format.sql # APPLIED
 ```
 
 ## Supabase acceptance proof (12/12 PASS, production Supabase)
@@ -116,6 +118,9 @@ evidence and is KEPT (not deleted).
 `python3 infra/discovery/prove_topic_intelligence.py` → **28/28 PASS** (local
 SQLite, 15 real YouTube candidates via first-party RSS, $0).
 
+`python3 infra/discovery/prove_topic_intelligence_supabase.py` → **13/13 PASS**
+(production Supabase, migrations 022/023 applied, $0).
+
 ## Git
 
 - LOOM-Factory `master` HEAD `94607d7`, clean, **pushed** to origin.
@@ -137,11 +142,10 @@ $0.00. No paid model calls, no new paid service. Reddit RSS is free.
 ## Manual actions required (Bryan)
 
 - (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` for YouTube keyword search.
-- Migrations 018–021 all applied; nothing blocking.
+- Migrations 018–023 all applied; nothing blocking.
 
 ## Next
 
-Apply migrations 022/023 (Supabase SQL editor), then optional Supabase-backed
-Topic Intelligence proof. Next segment: **Source Review Inbox** (Discord) →
-Acquisition Boundary. TikTok HELD until explicitly authorized. No automatic
-download/processing/publication at any point.
+Migrations 022/023 applied; Supabase proof runtime-proven. Next segment:
+**Source Review Inbox** (Discord) → Acquisition Boundary. TikTok HELD until
+explicitly authorized. No automatic download/processing/publication at any point.

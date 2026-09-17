@@ -26,9 +26,9 @@ that a source or topic is gaining traction — and labels every signal precisely
 | Deterministic scoring + reason codes | **BUILT + TESTED** |
 | Opportunity class + confidence + flags | **BUILT + TESTED** |
 | Assessment store (SQLite) | **BUILT + TESTED** |
-| Assessment store (Supabase) | **BUILT** (not yet runtime-proven — migration 022 not applied) |
+| Assessment store (Supabase) | **BUILT + RUNTIME-PROVEN** (13/13) |
 | Real-data scoring proof (local, $0) | **RUNTIME-PROVEN** (28/28) |
-| Supabase-backed acceptance proof | **DEFERRED** (needs migrations 022/023 applied by Bryan) |
+| Supabase-backed acceptance proof | **RUNTIME-PROVEN** (13/13, migrations 022/023 applied) |
 | vidIQ evidence adapter | **DEFERRED** (optional, not a dependency) |
 | Discord source review inbox | **DEFERRED** (next segment) |
 | Moment Mining / Clip Ranking | **DEFERRED** |
@@ -208,3 +208,14 @@ Real YouTube data (first-party RSS, no credential) → normalized → scored →
 replay idempotent → duplicate rejected → manual-ingest boundary only → proof
 profile excluded → no forbidden modules. Uses local SQLite (no production
 Supabase write, no DDL required).
+
+## Supabase-backed proof (production, $0)
+
+```sh
+python3 infra/discovery/prove_topic_intelligence_supabase.py
+```
+
+Same pipeline against production Supabase (migrations 022/023 applied):
+schema verification → real YouTube discovery → idempotent store + assessment
+replay → duplicate rejection → manual-ingest boundary → proof-profile
+exclusion → no forbidden modules.

@@ -135,6 +135,9 @@ class SupabaseStore:
                 "processing_eligibility": record.processing_eligibility,
                 "qualification_status": record.qualification_status,
                 "rejection_reason": record.rejection_reason,
+                "profile_id": record.profile_id,
+                "body_excerpt": record.body_excerpt,
+                "content_format": getattr(record, "content_format", "") or "hold_unassigned",
                 "updated_at": record.updated_at or record.created_at,
             }
             self._request(
