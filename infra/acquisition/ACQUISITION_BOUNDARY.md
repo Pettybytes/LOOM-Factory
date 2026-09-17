@@ -42,7 +42,7 @@ works is **not** automatically acquirable.
 | Reddit | `blocked_pending_adapter` | host-diverse media (v.redd.it / external); per-host resolver not yet implemented |
 | Twitch | `blocked_pending_adapter` | clip + bounded VOD adapter not yet implemented |
 | Kick | `blocked_pending_adapter` | clip + bounded VOD adapter not yet implemented |
-| Instagram | `blocked_pending_adapter` | Reels download requires undocumented/authenticated endpoints |
+| Instagram | `blocked_pending_adapter` | Anonymous Reel acquisition blocked — yt-dlp 2026.03.13 requires login/cookies to resolve media (no cookie/auth-bypass permitted) |
 | TikTok | `blocked_pending_adapter` | held pending explicit authorization; no first-party adapter |
 
 **Capability states:** `runtime_proven` · `implemented_not_proven` ·

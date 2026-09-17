@@ -55,7 +55,7 @@ _CAPABILITY: dict[str, dict[str, str]] = {
     },
     "instagram": {
         "state": CAP_BLOCKED_PENDING_ADAPTER,
-        "reason": "Reels download requires undocumented/authenticated endpoints; no first-party adapter.",
+        "reason": "Anonymous public Reel acquisition blocked: yt-dlp 2026.03.13 returns 'Requested content is not available, rate-limit reached or login required' — Instagram requires authentication/cookies to expose the media URL. No cookie/browser-session extraction or auth bypass is permitted.",
     },
     "tiktok": {
         "state": CAP_BLOCKED_PENDING_ADAPTER,
