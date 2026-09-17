@@ -53,6 +53,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 import source_review  # noqa: E402  (same-dir module; Source Review Inbox)
+import manual_intake  # noqa: E402  (same-dir module; Manual Source Intake)
 
 # ---------------------------------------------------------------------------
 # Config (from env)
@@ -1676,10 +1677,13 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_slash_command(self, interaction):
         data = interaction.get("data", {})
         name = data.get("name", "")
-        if name != source_review.COMMAND_NAME:
-            self._send_json(200, {"type": 4, "data": {"content": "Unknown command.", "flags": 64}})
+        if name == source_review.COMMAND_NAME:
+            self._handle_source_review_command(interaction)
             return
-        self._handle_source_review_command(interaction)
+        if name == manual_intake.COMMAND_NAME:
+            self._handle_submit_source_command(interaction)
+            return
+        self._send_json(200, {"type": 4, "data": {"content": "Unknown command.", "flags": 64}})
 
     def _handle_source_review_command(self, interaction):
         data = interaction.get("data", {})
@@ -1714,6 +1718,49 @@ class Handler(BaseHTTPRequestHandler):
                       DISCORD_BOT_TOKEN, body=payload, timeout=15)
         except Exception as e:
             print(f"[source-review] card post failed: {e}", flush=True)
+
+    def _handle_submit_source_command(self, interaction):
+        data = interaction.get("data", {})
+        opts: dict[str, Any] = {}
+        for o in data.get("options", []) or []:
+            if isinstance(o, dict) and o.get("name"):
+                opts[o["name"]] = o.get("value")
+
+        url = opts.get("url", "")
+        tenant = opts.get("tenant", "")
+        profile = opts.get("profile", "")
+        fmt = opts.get("format", "")
+        start = opts.get("start")
+        end = opts.get("end")
+        note = opts.get("note", "")
+        submitter = self._reviewer_name(interaction)
+
+        try:
+            payload = manual_intake.build_submission(
+                url=url, tenant_id=tenant, profile_id=profile,
+                content_format=fmt, submitter=submitter,
+                time_start_s=start, time_end_s=end, reviewer_note=note,
+            )
+            row, created = manual_intake.persist_submission(SUPABASE_URL, SUPABASE_KEY, payload)
+        except manual_intake.SubmissionError as e:
+            self._send_json(200, {"type": 4, "data": {"content": f"❌ {e.message}", "flags": 64}})
+            return
+        except Exception as e:
+            print(f"[submit-source] persist failed: {e}", flush=True)
+            self._send_json(200, {"type": 4, "data": {"content": "Failed to save submission.", "flags": 64}})
+            return
+
+        sub_id = row.get("id", "?")
+        if created:
+            label = ("accepted" if payload["status"] == manual_intake.STATUS_ACCEPTED
+                     else "accepted (platform support pending)")
+            msg = (f"✅ Submission {label}\n"
+                   f"ID: `{sub_id}`\n"
+                   f"Platform: `{payload['platform']}` · Format: `{payload['content_format']}`\n"
+                   f"URL: {payload['canonical_url']}")
+        else:
+            msg = f"ℹ️ Duplicate submission (already accepted). ID: `{sub_id}`"
+        self._send_json(200, {"type": 4, "data": {"content": msg, "flags": 64}})
 
     def _handle_source_button(self, interaction, src):
         fp = src["fingerprint"]

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Register (idempotently) the `/source-review` guild slash command.
+"""Register (idempotently) the LOOM guild slash commands.
 
-Uses the existing "LOOM Clip Review" bot. Guild-scoped to Clippy Factory.
-Loads LOOM_DISCORD_BOT_TOKEN + LOOM_DISCORD_APP_ID by name (never printed).
+Registers both `/source-review` and `/submit-source` for the existing
+"LOOM Clip Review" bot, guild-scoped to Clippy Factory. Loads
+LOOM_DISCORD_BOT_TOKEN + LOOM_DISCORD_APP_ID by name (never printed).
 
 Run from repo root:  python3 infra/discord-review/register_source_review_command.py
 """
@@ -32,6 +33,31 @@ COMMAND = {
         }
     ],
 }
+
+SUBMIT_SOURCE_COMMAND = {
+    "name": "submit-source",
+    "description": "Submit a source URL for manual intake (candidate only — not approval for acquisition)",
+    "options": [
+        {"name": "url", "description": "Source URL (YouTube, Reddit, TikTok, Instagram, Twitch, Kick)",
+         "type": 3, "required": True},
+        {"name": "tenant", "description": "Tenant id", "type": 3, "required": True},
+        {"name": "profile", "description": "Profile id", "type": 3, "required": True},
+        {"name": "format", "description": "Intended content format", "type": 3, "required": True,
+         "choices": [
+             {"name": "reaction_single", "value": "reaction_single"},
+             {"name": "reaction_compilation", "value": "reaction_compilation"},
+             {"name": "commentary_story", "value": "commentary_story"},
+             {"name": "ranking_top5", "value": "ranking_top5"},
+             {"name": "stream_highlight", "value": "stream_highlight"},
+             {"name": "hold_unassigned", "value": "hold_unassigned"},
+         ]},
+        {"name": "start", "description": "Optional start timestamp (seconds)", "type": 10, "required": False},
+        {"name": "end", "description": "Optional end timestamp (seconds)", "type": 10, "required": False},
+        {"name": "note", "description": "Optional reviewer note", "type": 3, "required": False},
+    ],
+}
+
+COMMANDS = [COMMAND, SUBMIT_SOURCE_COMMAND]
 
 
 def _load_env() -> dict[str, str]:
@@ -68,19 +94,21 @@ def main() -> int:
         return 2
 
     base = f"/applications/{app_id}/guilds/{GUILD_ID}/commands"
-
-    # Idempotent: update if an existing command shares the name.
     st, existing = _req("GET", base, token)
-    if isinstance(existing, list):
-        for cmd in existing:
-            if cmd.get("name") == COMMAND["name"]:
-                st2, updated = _req("PATCH", f"{base}/{cmd['id']}", token, COMMAND)
-                print(f"updated existing command {cmd['id']}: {st2}")
-                return 0 if st2 == 200 else 1
+    existing = existing if isinstance(existing, list) else []
+    by_name = {c.get("name"): c for c in existing if isinstance(c, dict)}
 
-    st, created = _req("POST", base, token, COMMAND)
-    print(f"registered command: {st} (id={created.get('id') if isinstance(created, dict) else '?'})")
-    return 0 if st in (200, 201) else 1
+    rc = 0
+    for cmd in COMMANDS:
+        if cmd["name"] in by_name:
+            st2, _ = _req("PATCH", f"{base}/{by_name[cmd['name']]['id']}", token, cmd)
+            print(f"updated {cmd['name']}: {st2}")
+            rc = rc or (0 if st2 == 200 else 1)
+        else:
+            st2, created = _req("POST", base, token, cmd)
+            print(f"registered {cmd['name']}: {st2} (id={created.get('id') if isinstance(created, dict) else '?'})")
+            rc = rc or (0 if st2 in (200, 201) else 1)
+    return rc
 
 
 if __name__ == "__main__":
