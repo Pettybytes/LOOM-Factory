@@ -9,7 +9,15 @@
 ---
 
 ## Last Updated
-2026-09-17 15:40 EDT (America/Detroit)
+2026-09-17 16:15 EDT (America/Detroit)
+
+## Segment — Manual Source Intake V1
+
+- **Migration 027 `loom_manual_submissions` APPLIED** (first-wins dedup).
+- **`/submit-source`** guild command registered (id `1550237873637425192`).
+- `manual_intake.py` — strict platform allowlist (YouTube/Reddit/TikTok/Instagram/Twitch/Kick); SSRF/credential/private-host/port/scheme rejection; deterministic canonicalization (no fetch/redirect); dedup; status mapping (youtube/reddit=accepted, others=accepted_pending_platform_support).
+- **160 deterministic tests** (62 + 55 + 43). **Runtime proof 12/12**.
+- **A manual submission is a CANDIDATE only — never approval for acquisition, never analyzed, never a fabricated score.**
 
 ## Segment — Source Review Inbox (Discord)
 

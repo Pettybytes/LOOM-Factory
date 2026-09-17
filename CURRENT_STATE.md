@@ -6,6 +6,21 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~16:15 EDT
+
+**Manual Source Intake V1: COMPLETE (built + tested + runtime-proven).**
+
+- Migration **027 `loom_manual_submissions` APPLIED** (first-wins dedup).
+- **`/submit-source`** guild command registered (id `1550237873637425192`).
+- `manual_intake.py` — strict platform allowlist (YouTube/Reddit/TikTok/Instagram/Twitch/Kick); SSRF/credential/private-host/port/scheme rejection; deterministic canonicalization (no fetch/redirect); dedup; status mapping.
+- **160 deterministic tests** (62 discovery + 55 content-intelligence + 43 discord-review).
+- **Runtime proof 12/12** (command registered; YouTube accepted + canonicalized + persisted; dedup first-wins; TikTok pending-platform; SSRF/credential/host/scheme rejections; proof profile excluded).
+- **A manual submission is a CANDIDATE only — never approval for acquisition, never analyzed, never a fabricated score.**
+
+Zero download. No OpenShorts/Acquisition/publishing. Proof profile auto-excluded.
+
+---
+
 ## STOP STATE — 2026-09-17 ~15:40 EDT
 
 **Source Review Inbox: COMPLETE (built + tested + runtime-proven).**
@@ -233,6 +248,7 @@ excluded from production queries automatically.
 | 024 | `loom_source_reviews` (Source Review Inbox) | **Applied** (Bryan, 2026-09-17) |
 | 025 | `loom_content_assessments` (Content Intelligence V1) | **Applied** (Bryan, 2026-09-17) |
 | 026 | `loom_source_selections` (Combined Selection V1) | **Applied** (Bryan, 2026-09-17) |
+| 027 | `loom_manual_submissions` (Manual Source Intake V1) | **Applied** (Bryan, 2026-09-17) |
 
 > Migrations 010–017 remain applied + live-verified (unchanged). 020 added
 > `profile_id`; the 15 YouTube acceptance rows were backfilled to
@@ -280,10 +296,10 @@ Desktop left running (existing containers up: `loom-tunnel-proxy`,
 
 ## Next action
 
-- Migrations 018–026 all **APPLIED**. Source Review Inbox **RUNTIME-PROVEN (8/8)**.
-- **Next segment: Acquisition Boundary** — for candidates Bryan approved-for-acquisition (still no download/publish without further authorization).
+- Migrations 018–027 all **APPLIED**. Manual Source Intake **RUNTIME-PROVEN (12/12)**.
+- **Next segment: Acquisition Boundary** — ingest candidates Bryan approved-for-acquisition (still no download/publish without further authorization); optionally wire accepted YouTube/Reddit manual submissions into the existing qualification pipeline.
 - **Pass 2 (bounded media)** — deferred; needs separate approval.
-- **TikTok** — HELD until explicitly authorized.
+- **TikTok/Instagram/Twitch/Kick** — submissions accepted as `accepted_pending_platform_support` (no scraping/activation).
 
 ---
 
@@ -405,11 +421,12 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 
 ## 7. Next segment
 
-**Acquisition Boundary** — the next segment. Source Review Inbox is complete: it
-surfaces BOTH halves (Topic Intelligence market + Content Intelligence content
-worthiness → Combined Source Selection) per candidate, and records
-approve-for-acquisition / hold / reject. Acquisition would ingest only
-approved-for-acquisition candidates — still requires explicit authorization
-before any download/publish. **Pass 2 (bounded media)** deferred (separate
-approval). **TikTok** remains HELD until explicitly authorized. No automatic
-download/processing/publication at any point.
+**Acquisition Boundary** — the next segment. Source Review Inbox + Manual Source
+Intake are complete: `/source-review` surfaces BOTH halves (market + content →
+Combined Selection) and records approve-for-acquisition / hold / reject;
+`/submit-source` accepts manual URLs (YouTube/Reddit → `accepted`; TikTok/
+Instagram/Twitch/Kick → `accepted_pending_platform_support`). Acquisition would
+ingest only approved-for-acquisition candidates (and optionally wire accepted
+YouTube/Reddit submissions into qualification) — still requires explicit
+authorization before any download/publish. **Pass 2 (bounded media)** deferred
+(separate approval). No automatic download/processing/publication at any point.
