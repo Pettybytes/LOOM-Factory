@@ -21,9 +21,10 @@ new job row; library + tmp dirs empty; no signed URL leaked. Instagram capabilit
 local code retained, not deleted, not further repaired.
 
 Apify paid-provider fallback — Phase 1 complete ($0, no call, token unused):
-- `infra/acquisition/APIFY_INSTAGRAM_ACTOR_EVALUATION.md` (primary
-  `agentx/instagram-reels-downloader`, Actor `59aU9vig8wglWOBe1`, $0.29/single
-  Reel with file; alt `thenetaji/instagram-video-downloader`).
+- `infra/acquisition/APIFY_INSTAGRAM_ACTOR_EVALUATION.md` — 3-way comparison:
+  `agentx/instagram-reels-downloader` (recommended, $0.29/Reel flat),
+  `thenetaji/instagram-video-downloader` (fallback), and
+  `crawlerbros/instagram-downloader-api` (DISQUALIFIED: expansion + carousel + duplicate-writes + shared sessions + pricing discrepancy).
 - `infra/acquisition/APIFY_PROVIDER_BOUNDARY.md` (15 shared contracts, 2 intake
   lanes, cost controls, secret handling, migrations 034/035, 14-case mock plan).
 - ⚠️ COST CONFLICT: $1 ceiling + max 10 acquisitions are incompatible

@@ -19,9 +19,13 @@
   NOT further repaired.
 
 ### Apify paid-provider fallback — Phase 1 (evaluation + design, $0)
-- Actor evaluation: `infra/acquisition/APIFY_INSTAGRAM_ACTOR_EVALUATION.md`
-  (primary `agentx/instagram-reels-downloader`, Actor ID `59aU9vig8wglWOBe1`,
-  $0.29/single-Reel-with-file free tier; alt `thenetaji/instagram-video-downloader`).
+- Actor evaluation (3-way): `infra/acquisition/APIFY_INSTAGRAM_ACTOR_EVALUATION.md`
+  — `agentx/instagram-reels-downloader` (Actor `59aU9vig8wglWOBe1`, $0.29/Reel
+  flat, no usage charge, 100% success, 9 users) = pilot recommendation;
+  `thenetaji/instagram-video-downloader` (per-MB fee, 87.8%) = fallback;
+  `crawlerbros/instagram-downloader-api` = **DISQUALIFIED** (array+`usernames`
+  expansion, carousel→N results, duplicate-writes issue, shared session pool,
+  pricing discrepancy + variable usage).
 - Provider-neutral boundary: `infra/acquisition/APIFY_PROVIDER_BOUNDARY.md`
   (15 shared contracts, 2 intake lanes, cost controls, secret handling,
   migrations 034/035 identified, 14-case mock-test plan).
