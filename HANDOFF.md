@@ -9,17 +9,16 @@
 ---
 
 ## Last Updated
-2026-09-17 18:05 EDT (America/Detroit) — NETWORK PROBE REPAIRED
+2026-09-17 18:20 EDT (America/Detroit) — LOCAL ACQUISITION HELPER + ACQUIRE FLOW BUILT
 
-## HANDOFF — network probe repaired; repeat human test
+## HANDOFF — local helper + Acquire-for-Reaction built (awaiting final auth)
 
-First network-probe test was inconclusive (zero candidates + raw null from popup
-close, while the video played). Repaired v0.3.0: session-storage persistence (no
-null), explicit phases + 12s countdown + attached status, an Inspect+reload-Reel
-option (attach first, then reload to force a fresh load), cached-response
-capture, and redacted rejection counts (classify_request/summarize_inspection,
-10 tests). Next: Bryan reloads the extension and repeats the human test with
-"Inspect + reload Reel".
+Browser-assisted resolution HUMAN-PROVEN (1 direct MP4). Built
+`infra/local-helper/` (validate/acquire/helper, 127.0.0.1:8787, token+origin auth,
+ceilings, atomic rename, redacted result) + extension v0.4.0 primary
+`Acquire for Reaction` flow. Migration 033 staged (adapter + is_non_production).
+Instagram acquisition = implemented_not_proven. Next: apply 033, start the helper,
+and get Bryan's final authorization for the single bounded MP4 download.
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).

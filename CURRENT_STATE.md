@@ -6,6 +6,30 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~18:20 EDT — LOCAL ACQUISITION HELPER + ACQUIRE FLOW BUILT (awaiting final auth)
+
+**Browser-assisted Instagram resolution is HUMAN-PROVEN** (1 direct MP4
+candidate: `scontent-det1-1.cdninstagram.com`, `video/mp4`, 0 rejections).
+
+**Built the local acquisition helper + extension "Acquire for Reaction" flow:**
+- `infra/local-helper/` — validate.py (https + approved host suffix + no creds/
+  port + suffix-confusion), acquire.py (validated-redirect download + byte
+  ceiling + atomic rename + ffprobe + sha256 + payload building), helper.py
+  (127.0.0.1:8787 POST /acquire, token + chrome-extension origin auth, strict
+  schema + 8 KB body limit, redacted result — never the signed URL).
+- `infra/chrome-extension/` v0.4.0 — primary `Acquire for Reaction` button +
+  phases (Inspecting → Media found → Sending → Downloading → Validating → Saved/
+  Failed). Full signed URL held in volatile memory only, POSTed to the helper.
+- Migration `033_loom_acquisition_adapter.sql` (adapter + is_non_production
+  columns) — **staged, NOT applied**.
+- Token: high-entropy, `infra/local-helper/.token` + `config.js` (gitignored).
+- Instagram capability: resolution browser-assisted HUMAN-PROVEN; acquisition
+  `implemented_not_proven`.
+
+**NOT done (gated):** migration 033 application; real MP4 download; helper start.
+
+---
+
 ## STOP STATE — 2026-09-17 ~18:05 EDT — NETWORK PROBE REPAIRED (inconclusive test diagnosed)
 
 **First network-probe human test was INCONCLUSIVE (not a failure):** zero

@@ -1,49 +1,43 @@
-# LOOM Source Capture — browser-assisted feasibility probe (MV3)
+# LOOM Source Capture — browser-assisted acquisition extension (MV3)
 
-Purpose: determine whether a playing Instagram Reel exposes a **direct** media
-URL, an HLS/DASH **manifest**, or **segmented** media — vs a `blob:`/MSE source
-that cannot be fetched outside the browser. Last rung of the Instagram
-acquisition ladder (yt-dlp ❌ login, Cobalt ⚠️ JPG-cover, gallery-dl ❌ login).
+Browser-assisted Instagram media acquisition for LOOM Acquire-for-Reaction.
+Resolution is **human-proven**: a playing Reel exposes one direct MP4 candidate
+(`video/mp4`, Meta CDN), captured via a bounded `chrome.debugger` Network probe.
 
-## Two stages (both user-initiated, no download)
+## Controls
 
-1. **Capture page media** — reads the active tab's `<video>` element, `buffered`
-   ranges, `<source>` elements, and `performance` resource entries. `activeTab`
-   + `scripting` only.
-2. **Inspect Playing Media** / **Inspect + reload Reel** — a bounded (12s)
-   `chrome.debugger` Network probe. The reload variant attaches *first*, clears
-   the probe's in-memory candidates, reloads the active Reel, and observes the
-   fresh load (fixes "Reel was already buffered → no new requests").
+- **Acquire for Reaction** (primary) — inspect the playing Reel, capture the
+  first direct-MP4 signed URL (volatile memory only), POST it to the
+  authenticated localhost LOOM helper, and show the acquisition phases.
+- **Capture page media** — read the active tab's `<video>` element + resource
+  timeline (`activeTab` + `scripting`).
+- **Inspect Playing Media** / **Inspect + reload Reel** — feasibility-only
+  bounded network probe.
+
+## Phases
+
+`Inspecting playing media → Media found → Sending to local LOOM → Downloading
+within limits → Validating → Saved to Reaction Library | Failed (reason)`.
 
 ## ⚠️ `debugger` permission warning
 
-Stage 2 needs the `debugger` permission; Chrome shows a warning that the
-extension can read/change data on the sites you visit. This extension scopes it:
-attach **only** on explicit click, **only** the active Instagram tab, **12s**
-then auto-detach, **metadata only** (never bodies/cookies/auth/passwords), and
-detach on timeout/navigation/close/cancel.
+The `debugger` permission makes Chrome warn that the extension can read/change
+data on the sites you visit. This extension scopes it to: explicit click → active
+Instagram tab only → bounded window → metadata only (never bodies/cookies/auth) →
+auto-detach. It never attaches in the background.
 
-## Explicit phases (never a raw `null`)
+## Config (gitignored)
 
-`Ready → Attaching → Inspection active (replay/reload now) → Collecting →
-Complete | No new media traffic observed | Failed (reason)`, with a live 12s
-countdown and attached/detached status. State is persisted in
-`chrome.storage.session`, so closing/reopening the popup shows the result, not
-`null`.
+`config.js` holds the helper URL + high-entropy token (mirrors
+`infra/local-helper/.token`). `config.js.example` documents the shape. The
+extension has `host_permissions` for `https://*.instagram.com/*` and
+`http://127.0.0.1:8787/*`.
 
-## Rejection diagnostics
+## Install / run
 
-The result reports redacted counts by reason (`hostname_rejected`,
-`scheme_rejected`, `resource_type_rejected`, `content_type_rejected`,
-`image_rejected`, `analytics_ad_rejected`, `accepted`). Signed CDN URLs are
-never persisted or displayed in full.
+1. Start the helper: `infra/local-helper/run.sh`.
+2. Chrome → `chrome://extensions` → Developer mode → Load unpacked →
+   `infra/chrome-extension/` (accept the `debugger` warning).
+3. Open a confirmed video Reel, let it play, click **Acquire for Reaction**.
 
-## Install (unpacked)
-1. Chrome → `chrome://extensions` → **Developer mode** → **Load unpacked** →
-   select this directory. Review + allow the `debugger` warning.
-
-## Test
-1. Open a confirmed video Reel, let it play.
-2. **Inspect + reload Reel** (recommended — forces a fresh load), or
-   **Inspect Playing Media** then replay the Reel when prompted.
-3. Wait for the countdown to finish and paste the JSON.
+The signed CDN URL is never persisted or displayed in full.

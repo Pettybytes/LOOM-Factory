@@ -108,7 +108,7 @@ class TestCapabilities(unittest.TestCase):
             self.assertTrue(entry["candidates"])
 
     def test_candidate_ladder(self):
-        self.assertEqual(caps.candidates("instagram"), ["cobalt", "gallery-dl", "chrome-extension"])
+        self.assertEqual(caps.candidates("instagram"), ["chrome-extension"])
         self.assertEqual(caps.candidates("youtube")[0], "yt-dlp")
 
 

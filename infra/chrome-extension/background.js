@@ -1,21 +1,31 @@
 // LOOM Source Capture — background service worker.
-// User-initiated bounded chrome.debugger Network probe. State is persisted in
-// chrome.storage.session so the popup never shows a raw `null` after close/reopen.
+// Two user-initiated modes:
+//   (a) feasibility probe: bounded 12s chrome.debugger Network inspection.
+//   (b) Acquire for Reaction: inspect, capture the first direct_video candidate's
+//       FULL signed URL in volatile memory only, POST it to the authenticated
+//       localhost LOOM helper, and report the acquisition phases + redacted result.
 //
-// Phases: ready -> attaching -> active (instruct replay/reload) -> collecting ->
-//          complete | no_traffic | failed
-//
-// Safety: attach only on explicit click; active tab only; bounded 12s window;
-// auto-detach on timeout/navigation/close; metadata only (never bodies/cookies/
-// auth headers); redacts signed tokens; counts rejections by reason.
+// Safety: attach only on explicit click; active tab only; metadata only (never
+// bodies/cookies/auth headers); auto-detach; redact signed tokens; the full signed
+// URL is held in `mem.fullCandidate` (volatile) and never persisted.
+
+importScripts('config.js');
 
 const KEY = 'inspection';
 const WINDOW_MS = 12000;
+const HELPER_URL = (self.LOOM_HELPER_URL || 'http://127.0.0.1:8787').replace(/\/+$/, '');
+const HELPER_TOKEN = self.LOOM_HELPER_TOKEN || '';
+const ACTOR = self.LOOM_ACTOR || 'bryan';
 
 let activeTabId = null;
 let timer = null;
 let selfReload = false;
-let mem = { candidates: [], counts: emptyCounts(), startedAt: null, deadline: null };
+let acquireMode = false;
+let acquireCanonical = '';
+let acquireSent = false;
+let phaseTimers = [];
+let mem = { candidates: [], counts: emptyCounts(), startedAt: null, deadline: null,
+            fullCandidate: null, result: null };
 
 const NON_MEDIA_RT = new Set(['Document', 'Stylesheet', 'Script', 'Font', 'Manifest',
   'TextTrack', 'EventSource', 'WebSocket', 'Ping', 'Preflight']);
@@ -76,8 +86,9 @@ function snapshot(phase, extra) {
     attached: activeTabId !== null,
     startedAt: mem.startedAt,
     deadline: mem.deadline,
-    candidates: mem.candidates,
+    candidates: mem.candidates,       // redacted only (never the signed URL)
     counts: mem.counts,
+    result: mem.result,               // redacted helper result
     error: (extra && extra.error !== undefined) ? extra.error : null,
   };
 }
@@ -86,14 +97,25 @@ async function persist(phase, extra) {
   await chrome.storage.session.set({ [KEY]: snapshot(phase, extra) });
 }
 
-async function finish(phase, error) {
-  if (timer) { clearTimeout(timer); timer = null; }
+function clearPhaseTimers() {
+  phaseTimers.forEach((t) => clearTimeout(t));
+  phaseTimers = [];
+}
+
+async function detach() {
   if (activeTabId !== null) {
     try { chrome.debugger.detach({ tabId: activeTabId }); } catch (e) {}
     activeTabId = null;
   }
+}
+
+async function finish(phase, error) {
+  if (timer) { clearTimeout(timer); timer = null; }
+  clearPhaseTimers();
+  await detach();
   mem.deadline = null;
   const finalPhase = phase || (mem.candidates.length === 0 ? 'no_traffic' : 'complete');
+  acquireMode = false;
   await persist(finalPhase, { error: error || null });
 }
 
@@ -123,13 +145,59 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       mem.candidates.push({ host: new URL(url).hostname, type: classifyMedia(url) || 'media',
         mimeType: mime || null, fromCache, redacted: key });
     }
+    // Acquire mode: capture the first direct_video FULL URL (volatile) + send once.
+    if (acquireMode && !acquireSent && classifyMedia(url) === 'direct_video') {
+      mem.fullCandidate = url;   // volatile only — never persisted
+      acquireSent = true;
+      sendToHelper(url);
+    }
   }
   persist('collecting', {});
 });
 
+async function sendToHelper(candidateUrl) {
+  await persist('sending', {});
+  phaseTimers.push(setTimeout(() => { if (acquireMode) persist('downloading', {}); }, 1500));
+  phaseTimers.push(setTimeout(() => { if (acquireMode) persist('validating', {}); }, 6000));
+  try {
+    const resp = await fetch(HELPER_URL + '/acquire', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + HELPER_TOKEN },
+      body: JSON.stringify({
+        canonical_url: acquireCanonical,
+        candidate_url: candidateUrl,
+        candidate_host: (() => { try { return new URL(candidateUrl).hostname; } catch { return ''; } })(),
+        mime_type: 'video/mp4',
+        media_type: 'direct_video',
+        actor: ACTOR,
+      }),
+    });
+    let data = null;
+    try { data = await resp.json(); } catch (e) { data = null; }
+    if (data && data.ok) {
+      mem.result = data;
+      await finish('saved', undefined);
+    } else {
+      const reason = (data && (data.message || data.error)) || ('helper HTTP ' + resp.status);
+      await finish('failed', reason);
+    }
+  } catch (e) {
+    await finish('failed', 'helper unreachable: ' + (e && e.message ? e.message : e));
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'startInspection') { startInspection(msg.tabId, false).then(sendResponse); return true; }
   if (msg.type === 'startAndReload') { startInspection(msg.tabId, true).then(sendResponse); return true; }
+  if (msg.type === 'acquireForReaction') {
+    acquireMode = true;
+    acquireCanonical = msg.canonicalUrl || '';
+    acquireSent = false;
+    mem.fullCandidate = null;
+    mem.result = null;
+    startInspection(msg.tabId, false).then(sendResponse);
+    return true;
+  }
   if (msg.type === 'stopInspection') { finish().then(() => sendResponse({ ok: true })); return true; }
   if (msg.type === 'getState') {
     chrome.storage.session.get(KEY).then((o) => sendResponse(o[KEY] || { phase: 'ready', attached: false, candidates: [], counts: emptyCounts(), error: null }));
@@ -141,7 +209,8 @@ async function startInspection(tabId, reload) {
   const cur = await chrome.storage.session.get(KEY);
   if (cur[KEY] && cur[KEY].attached) return { ok: false, error: 'inspection already active' };
   activeTabId = tabId;
-  mem = { candidates: [], counts: emptyCounts(), startedAt: Date.now(), deadline: null };
+  mem = { candidates: [], counts: emptyCounts(), startedAt: Date.now(), deadline: null,
+          fullCandidate: null, result: null };
   await persist('attaching', {});
   return await new Promise((resolve) => {
     chrome.debugger.attach({ tabId }, '1.3', () => {
@@ -160,7 +229,10 @@ async function startInspection(tabId, reload) {
           selfReload = true;
           try { chrome.tabs.reload(tabId); } catch (e) {}
         }
-        timer = setTimeout(() => finish(), WINDOW_MS);
+        timer = setTimeout(() => {
+          if (acquireMode && !acquireSent) finish('failed', 'no direct video media found');
+          else if (!acquireMode) finish();
+        }, WINDOW_MS);
         resolve({ ok: true });
       });
     });
@@ -173,6 +245,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (tabId !== activeTabId || changeInfo.status !== 'loading') return;
-  if (selfReload) { selfReload = false; return; }  // our own reload: keep observing
+  if (selfReload) { selfReload = false; return; }
   finish('failed', 'tab navigated');
 });

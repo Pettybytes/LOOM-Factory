@@ -1,0 +1,5 @@
+// EXAMPLE ONLY — the real config.js is gitignored and generated locally.
+// Copy to config.js and fill in the real token (see infra/local-helper/.token).
+self.LOOM_HELPER_URL = "http://127.0.0.1:8787";
+self.LOOM_HELPER_TOKEN = "REPLACE_WITH_HIGH_ENTROPY_TOKEN";
+self.LOOM_ACTOR = "bryan";
