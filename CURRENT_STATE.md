@@ -6,6 +6,60 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~16:35 EDT — SESSION HANDOFF (human acceptance FAILED)
+
+**Manual Source Intake V1.1: deterministic + runtime-proven, but NOT human-acceptance complete.**
+
+### Status matrix (explicit)
+| Layer | Status |
+|---|---|
+| Code built | ✅ |
+| Deterministic-tested | ✅ 175 tests (62 discovery + 55 content + 58 discord-review) |
+| Automated runtime-proven | ✅ routing 15/15; manual-intake 12/12 |
+| Human-acceptance | ❌ FAILED (2 defects) |
+| Chrome extension | ⛔ NOT started / not authorized |
+| Acquisition Boundary | ⛔ NOT started / not authorized |
+
+### Human acceptance test — FAILED
+Bryan invoked `/submit-source` in Discord with an Instagram Reel. Defects observed:
+1. **`destination` is free-form** — required Bryan to type `unassigned`; no controlled options/autocomplete. Intended UX: selectable `Unassigned / General` + active production tenants (from `loom_tenants`).
+2. **Bot replied ephemeral `Unsupported interaction.`** — the registered command reached the generic fallback, not the slash-command handler.
+
+### Root-cause hypothesis (NOT yet diagnosed — diagnose before editing)
+The COMMITTED `adapter.py` already has the type-2 slash handler
+(`itype == 2` → `_handle_slash_command` → `_handle_submit_source_command` at
+lines ~1657/1678/1726) and the `Unsupported interaction.` fallback at ~1670.
+This strongly implies the RUNNING supervised adapter process is STALE (started
+before the slash-command code) and must be restarted to pick up the current
+handler. Command registration (Discord API) and deployed handler versions likely
+differ. `destination` needs Discord choices or autocomplete sourced from active
+`loom_tenants` + Unassigned.
+
+### Instagram acceptance-test URL (recorded)
+`https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
+
+Intended successful result (both must show):
+- Routing: **Awaiting tenant assignment**
+- Platform support: **Pending Instagram support**
+- Plus: canonical URL with tracking params removed; submission ID; candidate-only
+  status; NO analysis, score, acquisition or download.
+
+### Next-session first authorized task
+`Manual Source Intake V1.1 Human Acceptance Repair` — diagnose BEFORE editing:
+1. Is the deployed/running adapter using the current command handler (check
+   `infra/discord-review/adapter.log` / `supervisor.log`; restart via `supervise.sh`).
+2. Why does the registered command hit `Unsupported interaction` (stale process).
+3. Do command registration vs deployed handler versions differ.
+4. Implement Discord choices/autocomplete for `destination` from active tenants + Unassigned.
+
+### Stop conditions
+- Do NOT begin the Chrome extension.
+- Do NOT begin Acquisition Boundary.
+- Do NOT re-run the acceptance test until the flow is fixed and Bryan confirms.
+- TikTok/Instagram/Twitch/Kick remain `accepted_pending_platform_support` (no scraping/activation).
+
+---
+
 ## STOP STATE — 2026-09-17 ~16:30 EDT
 
 **Manual Source Intake V1.1 — Unassigned Routing + Controlled Tenant Assignment: COMPLETE (built + tested + runtime-proven).**

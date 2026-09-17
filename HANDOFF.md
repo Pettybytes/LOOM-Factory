@@ -9,7 +9,18 @@
 ---
 
 ## Last Updated
-2026-09-17 16:30 EDT (America/Detroit)
+2026-09-17 16:35 EDT (America/Detroit) — SESSION HANDOFF
+
+## HANDOFF — Manual Source Intake V1.1 human acceptance FAILED
+
+Deterministic + runtime-proven, but NOT human-acceptance complete. Two defects:
+1. `/submit-source` `destination` is free-form (should be selectable Unassigned/General + active tenants).
+2. Bot replied ephemeral `Unsupported interaction.` — registered command reached the generic fallback (stale running adapter; committed adapter.py HAS the type-2 handler).
+
+Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
+Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).
+
+Next-session first task: `Manual Source Intake V1.1 Human Acceptance Repair` (diagnose before editing; restart stale adapter; add destination choices/autocomplete). Do NOT begin Chrome extension or Acquisition Boundary until acceptance passes.
 
 ## Segment — Manual Source Intake V1.1 (unassigned routing + tenant assignment)
 
