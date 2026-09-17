@@ -9,18 +9,21 @@
 ---
 
 ## Last Updated
-2026-09-17 16:35 EDT (America/Detroit) — SESSION HANDOFF
+2026-09-17 16:45 EDT (America/Detroit) — HUMAN ACCEPTANCE REPAIR COMPLETE
 
-## HANDOFF — Manual Source Intake V1.1 human acceptance FAILED
+## HANDOFF — Manual Source Intake V1.1 human acceptance repair (awaiting re-test)
 
-Deterministic + runtime-proven, but NOT human-acceptance complete. Two defects:
-1. `/submit-source` `destination` is free-form (should be selectable Unassigned/General + active tenants).
-2. Bot replied ephemeral `Unsupported interaction.` — registered command reached the generic fallback (stale running adapter; committed adapter.py HAS the type-2 handler).
+Repair DONE (commit `149a7b4`). Root cause of `Unsupported interaction.` was the
+STALE running adapter (started Sep 15 22:53, before the type-2 handler existed);
+restarted via `supervise.sh` (now `/health` 200). `/submit-source` `destination`
+is now Discord autocomplete (active `loom_tenants` + "Unassigned / General"), and
+the result message shows `Routing:` + `Platform support:` as separate lines.
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).
 
-Next-session first task: `Manual Source Intake V1.1 Human Acceptance Repair` (diagnose before editing; restart stale adapter; add destination choices/autocomplete). Do NOT begin Chrome extension or Acquisition Boundary until acceptance passes.
+Next: Bryan re-runs the Discord acceptance test and confirms. Do NOT begin Chrome
+extension or Acquisition Boundary until acceptance passes.
 
 ## Segment — Manual Source Intake V1.1 (unassigned routing + tenant assignment)
 

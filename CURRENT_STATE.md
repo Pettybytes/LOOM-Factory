@@ -6,6 +6,35 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~16:45 EDT — HUMAN ACCEPTANCE REPAIR COMPLETE (awaiting Bryan re-test)
+
+**Manual Source Intake V1.1 Human Acceptance Repair: DONE (commit `149a7b4`).**
+
+Diagnosis confirmed:
+1. **Stale adapter** — the running process (PID started Sep 15 22:53) predated the
+   type-2 slash handler (code modified Sep 17). `Unsupported interaction.` came
+   from the stale process, NOT the committed code. Restarted via `supervise.sh`;
+   `/health` 200; now running the current handler.
+2. **Free-form `destination`** — `/submit-source` `destination` is now a Discord
+   **autocomplete** option (sourced from active `loom_tenants` + "Unassigned /
+   General"). Added `itype == 4` APPLICATION_COMMAND_AUTOCOMPLETE handler.
+3. **Result message** now surfaces BOTH dimensions: `Routing: Awaiting tenant
+   assignment` / `Assigned to <tenant>` AND `Platform support: Supported` /
+   `Pending Instagram support` — plus canonical URL (tracking stripped),
+   submission ID, and candidate-only wording (no analysis / score / acquisition /
+   download).
+
+Commands re-registered (source-review / submit-source / assign-source: 200 OK).
+Tests: **178 pass** (62 discovery + 55 content + 61 discord-review; +3 new).
+
+**NOT re-run: acceptance test.** Per stop conditions, awaiting Bryan's Discord
+re-test of the Instagram Reel URL before proceeding.
+
+Stop conditions remain: no Chrome extension; no Acquisition Boundary;
+TikTok/Instagram/Twitch/Kick remain `accepted_pending_platform_support`.
+
+---
+
 ## STOP STATE — 2026-09-17 ~16:35 EDT — SESSION HANDOFF (human acceptance FAILED)
 
 **Manual Source Intake V1.1: deterministic + runtime-proven, but NOT human-acceptance complete.**
