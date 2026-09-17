@@ -73,10 +73,23 @@ Decision outcomes: `fast_track`, `hold_hype`, `emerging`, `reject`,
 | Combined selection + decision rules | **BUILT + TESTED** |
 | Bounded-media probe contract | **BUILT + TESTED** (mock fetch; real fetch deferred) |
 | SQLite persistence | **BUILT + TESTED** |
-| Supabase persistence (migrations 025/026) | **SCHEMA CREATED** (not applied; no real content assessment yet) |
-| Semantic scoring (hook/emotion/…) via real model | **DEFERRED** (paid/model gate) |
-| Real transcript / thumbnail / bounded-media inspection | **DEFERRED** (paid/media gate) |
+| Supabase persistence (migrations 025/026) | **APPLIED + RUNTIME-PROVEN** (Pass-1 rows written idempotently) |
+| Semantic scoring (hook/emotion/…) via real model | **RUNTIME-PROVEN** (Pass-1, Gemini Flash-Lite) |
+| Real transcript inspection | **RUNTIME-PROVEN** (Pass-1) |
+| Real thumbnail / bounded-media inspection | **DEFERRED** (Pass 2 — media gate) |
 | Source Review Inbox | **PAUSED** (resumes after this segment) |
+
+## Pass-1 real proof (transcript-only, Gemini Flash-Lite, < $0.05)
+
+```sh
+python3 infra/content_intelligence/prove_pass1.py
+```
+
+Real YouTube candidate (Linus Tech Tips) → English auto-captions via yt-dlp
+(skip-download, 0 video/audio bytes, no playlist, no cookies) → Gemini
+Flash-Lite scores the transcript (evidence level 1) → strict Content Assessment
+→ Combined Source Selection → idempotent Supabase persistence. 13/13 acceptance
+criteria; cost ≈ $0.002 (well under the $0.05 ceiling).
 
 ## Tests
 

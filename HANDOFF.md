@@ -9,7 +9,19 @@
 ---
 
 ## Last Updated
-2026-09-17 14:30 EDT (America/Detroit)
+2026-09-17 15:05 EDT (America/Detroit)
+
+## Segment — Content Intelligence Preflight V1 + Combined Source Selection V1
+
+- **`evidence.py`** — 5 evidence levels + per-dimension gating + confidence ceilings.
+- **`contract.py`** — strict Content Assessment schema + validation (rejects malformed / out-of-bounds / evidence-exceeding claims).
+- **`selection.py`** — combined 35/45/15/5 score + separate confidence + decision rules.
+- **`provider.py`** — evidence bundling, model-provider interface, deterministic MockProvider, orchestration.
+- **`probe.py`** — bounded media probe contract (temp lifecycle, hard limits, no full download).
+- **`store.py`** — SQLite persistence (idempotent; new evidence version → new row).
+- **Migrations 025/026 APPLIED** (Bryan, 2026-09-17).
+- **104 deterministic tests** (62 discovery + 42 content-intelligence).
+- **Pass-1 real proof 13/13** (Gemini Flash-Lite `gemini-flash-lite-latest`, transcript-only, ≈ $0.002 < $0.05): real YouTube candidate `qgLaCZyKv_8`, English auto-captions via yt-dlp (0 video/audio bytes), market=59 + content=68 → selection=60 / standard_review, evidence-gated, idempotent Supabase rows.
 
 ## Segment — Topic Intelligence V1: RUNTIME-PROVEN (local + Supabase)
 
@@ -90,6 +102,8 @@ infra/supabase/020_loom_discovered_sources_profile.sql # APPLIED (15 rows backfi
 infra/supabase/021_loom_discovered_sources_body_excerpt.sql # APPLIED
 infra/supabase/022_loom_topic_assessments.sql            # APPLIED
 infra/supabase/023_loom_discovered_sources_content_format.sql # APPLIED
+infra/supabase/025_loom_content_assessments.sql            # APPLIED
+infra/supabase/026_loom_source_selections.sql              # APPLIED
 ```
 
 ## Supabase acceptance proof (12/12 PASS, production Supabase)
@@ -142,10 +156,12 @@ $0.00. No paid model calls, no new paid service. Reddit RSS is free.
 ## Manual actions required (Bryan)
 
 - (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` for YouTube keyword search.
-- Migrations 018–023 all applied; nothing blocking.
+- Migrations 018–026 all applied (024 reserved for Source Review Inbox); nothing blocking.
 
 ## Next
 
-Migrations 022/023 applied; Supabase proof runtime-proven. Next segment:
-**Source Review Inbox** (Discord) → Acquisition Boundary. TikTok HELD until
-explicitly authorized. No automatic download/processing/publication at any point.
+Migrations 025/026 applied; Content Intelligence Pass-1 runtime-proven. Next
+segment: **Source Review Inbox** (Discord) — resume, now surfacing BOTH halves
+(market + content) per candidate → Acquisition Boundary. **Pass 2 (bounded
+media)** deferred. TikTok HELD until explicitly authorized. No automatic
+download/processing/publication at any point.

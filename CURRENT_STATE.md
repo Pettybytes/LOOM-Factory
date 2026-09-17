@@ -4,6 +4,29 @@
 
 ---
 
+---
+
+## STOP STATE — 2026-09-17 ~15:05 EDT
+
+**Content Intelligence Preflight V1 + Combined Source Selection V1: BUILT + TESTED + Pass-1 RUNTIME-PROVEN.**
+
+- Evidence-level contract (metadata/text/static-visual/bounded-media) + per-dimension gating + confidence ceilings.
+- Strict Content Assessment schema + validation (rejects malformed / out-of-bounds / evidence-exceeding claims).
+- Combined Source Selection (35% market + 45% content + 15% fit + 5% provenance) + separate confidence + decision rules.
+- Bounded-media probe contract (temp lifecycle, hard limits, no full download).
+- Migrations 025/026 **APPLIED** (Bryan, 2026-09-17).
+- **104 deterministic tests** (62 discovery + 42 content-intelligence).
+- **Pass-1 real proof 13/13 PASS** (Gemini Flash-Lite, transcript-only, cost ≈ $0.002 < $0.05 ceiling):
+  - real YouTube candidate (Linus Tech Tips `qgLaCZyKv_8`), English auto-captions via yt-dlp (skip-download, 0 video/audio bytes);
+  - market=59 (Topic Intelligence) + content_worthiness=68 (Gemini) → selection=60, outcome=standard_review;
+  - evidence-gated (level 1: no visual/audio claims; confidence capped 0.33);
+  - real transcript-derived timestamps + reasons; idempotent Supabase rows.
+
+Zero full-video download. No Acquisition asset, no OpenShorts job, no Discord
+card, no publishing/distribution. Proof profile auto-excluded from production.
+
+---
+
 ## STOP STATE — 2026-09-17 ~13:50 EDT
 
 **Topic Intelligence V1: SEGMENT COMPLETE (built + tested + runtime-proven — local AND Supabase).**
@@ -173,6 +196,10 @@ excluded from production queries automatically.
 | 021 | `loom_discovered_sources.body_excerpt` | **Applied** (Bryan, 2026-09-16) |
 | 022 | `loom_topic_assessments` (Topic Intelligence V1) | **Applied** (Bryan, 2026-09-17) |
 | 023 | `loom_discovered_sources.content_format` | **Applied** (Bryan, 2026-09-17) |
+| 025 | `loom_content_assessments` (Content Intelligence V1) | **Applied** (Bryan, 2026-09-17) |
+| 026 | `loom_source_selections` (Combined Selection V1) | **Applied** (Bryan, 2026-09-17) |
+
+> 024 is intentionally reserved (Source Review Inbox `loom_source_reviews` — paused).
 
 > Migrations 010–017 remain applied + live-verified (unchanged). 020 added
 > `profile_id`; the 15 YouTube acceptance rows were backfilled to
@@ -220,8 +247,9 @@ Desktop left running (existing containers up: `loom-tunnel-proxy`,
 
 ## Next action
 
-- Migrations 022 + 023 are **APPLIED**; Supabase-backed Topic Intelligence proof is **RUNTIME-PROVEN (13/13)**.
-- **Next segment: Source Review Inbox** (Discord) — surface scored candidates for Bryan review; Topic Intelligence scores are ready as the ranking input.
+- Migrations 025/026 **APPLIED**; Content Intelligence Pass-1 proof **RUNTIME-PROVEN (13/13)**.
+- **Next segment: Source Review Inbox** (Discord) — resume; now displays BOTH halves (Topic Intelligence market + Content Intelligence worthiness) per candidate.
+- **Pass 2 (bounded media)** — deferred; needs separate approval.
 - **TikTok** — HELD until explicitly authorized.
 
 ---
@@ -344,7 +372,9 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 
 ## 7. Next segment
 
-**Source Review Inbox** (Discord source review) — recommended next. Topic
-Intelligence V1 is the ranking input; the inbox presents scored candidates for
-Bryan's review (then **Acquisition Boundary**). **TikTok** remains HELD until
-explicitly authorized. No automatic download/processing/publication at any point.
+**Source Review Inbox** (Discord source review) — resume next. It now surfaces
+BOTH halves per candidate: Topic Intelligence (market) + Content Intelligence
+(content worthiness) → Combined Source Selection score. Then **Acquisition
+Boundary**. **Pass 2 (bounded media)** deferred (separate approval). **TikTok**
+remains HELD until explicitly authorized. No automatic
+download/processing/publication at any point.
