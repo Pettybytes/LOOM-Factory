@@ -68,8 +68,7 @@ def _discord(method: str, path: str, token: str, body=None):
         return e.code, e.read().decode()[:300]
 
 
-def _resolve_channel(token: str, name: str) -> str | None:
-    st, guilds = _discord("GET", "/users/@me/guilds", token)
+def _resolve_channel(guilds, token: str, name: str) -> str | None:
     if not isinstance(guilds, list):
         return None
     for g in guilds:
@@ -123,7 +122,7 @@ def main() -> int:
     print("[1] Discord connectivity:")
     st, guilds = _discord("GET", "/users/@me/guilds", token)
     check("list guilds 200", st == 200)
-    chan_id = _resolve_channel(token, "source-review")
+    chan_id = _resolve_channel(guilds, token, "source-review")
     check("source-review channel resolved", chan_id is not None, str(chan_id))
     if not chan_id:
         return 2

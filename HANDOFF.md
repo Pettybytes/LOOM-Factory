@@ -9,7 +9,15 @@
 ---
 
 ## Last Updated
-2026-09-17 15:30 EDT (America/Detroit)
+2026-09-17 15:40 EDT (America/Detroit)
+
+## Segment — Source Review Inbox (Discord)
+
+- **Migration 024 `loom_source_reviews` APPLIED** (first-decision-wins).
+- **`/source-review`** guild command registered (id `1550229456462028881`).
+- `source_review.py` (combined cards: market + content + selection; Approve-for-Acquisition / Hold / Reject) + `register_source_review_command.py` + adapter type-2 slash command.
+- **128 deterministic tests** (62 + 55 + 11). **Safe runtime proof 8/8** (card post+delete, idempotent decision, production exclusion).
+- **APPROVE FOR ACQUISITION records authorization only — triggers nothing.**
 
 ## Segment — Content Intelligence Operationalization V1.1 (recurring pipeline)
 
@@ -111,6 +119,7 @@ infra/supabase/020_loom_discovered_sources_profile.sql # APPLIED (15 rows backfi
 infra/supabase/021_loom_discovered_sources_body_excerpt.sql # APPLIED
 infra/supabase/022_loom_topic_assessments.sql            # APPLIED
 infra/supabase/023_loom_discovered_sources_content_format.sql # APPLIED
+infra/supabase/024_loom_source_reviews.sql                  # APPLIED
 infra/supabase/025_loom_content_assessments.sql            # APPLIED
 infra/supabase/026_loom_source_selections.sql              # APPLIED
 ```
@@ -165,12 +174,12 @@ $0.00. No paid model calls, no new paid service. Reddit RSS is free.
 ## Manual actions required (Bryan)
 
 - (Optional) Provide `YOUTUBE_DATA_API_V3_KEY` for YouTube keyword search.
-- Migrations 018–026 all applied (024 reserved for Source Review Inbox); nothing blocking.
+- Migrations 018–026 all applied; nothing blocking.
 
 ## Next
 
-Migrations 025/026 applied; Content Intelligence Pass-1 runtime-proven. Next
-segment: **Source Review Inbox** (Discord) — resume, now surfacing BOTH halves
-(market + content) per candidate → Acquisition Boundary. **Pass 2 (bounded
-media)** deferred. TikTok HELD until explicitly authorized. No automatic
-download/processing/publication at any point.
+Migrations 018–026 applied; Source Review Inbox runtime-proven (8/8). Next
+segment: **Acquisition Boundary** — ingest only approve-for-acquisition
+candidates (still requires explicit authorization before download/publish).
+**Pass 2 (bounded media)** deferred. TikTok HELD until explicitly authorized.
+No automatic download/processing/publication at any point.

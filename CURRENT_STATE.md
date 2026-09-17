@@ -6,6 +6,22 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~15:40 EDT
+
+**Source Review Inbox: COMPLETE (built + tested + runtime-proven).**
+
+- Migration **024 `loom_source_reviews` APPLIED** (first-decision-wins per `duplicate_fingerprint`).
+- **`/source-review`** guild slash command registered (Clippy Factory, id `1550229456462028881`).
+- `source_review.py` — combined candidate cards (market + content + selection, honest content-confidence), Approve-for-Acquisition / Hold / Reject.
+- `adapter.py` — type-2 slash command + source-button routing.
+- **128 deterministic tests** (62 discovery + 55 content-intelligence + 11 source-review).
+- **Safe runtime proof 8/8** (Discord card post+delete; decision persistence idempotent; production-queue exclusion).
+- **APPROVE FOR ACQUISITION records authorization only — triggers nothing** (no download/OpenShorts/publish).
+
+Zero download. No OpenShorts/Acquisition/publishing. Proof profile auto-excluded.
+
+---
+
 ## STOP STATE — 2026-09-17 ~15:30 EDT
 
 **Content Intelligence Operationalization V1.1: COMPLETE (recurring pipeline runtime-proven).**
@@ -212,10 +228,9 @@ excluded from production queries automatically.
 | 021 | `loom_discovered_sources.body_excerpt` | **Applied** (Bryan, 2026-09-16) |
 | 022 | `loom_topic_assessments` (Topic Intelligence V1) | **Applied** (Bryan, 2026-09-17) |
 | 023 | `loom_discovered_sources.content_format` | **Applied** (Bryan, 2026-09-17) |
+| 024 | `loom_source_reviews` (Source Review Inbox) | **Applied** (Bryan, 2026-09-17) |
 | 025 | `loom_content_assessments` (Content Intelligence V1) | **Applied** (Bryan, 2026-09-17) |
 | 026 | `loom_source_selections` (Combined Selection V1) | **Applied** (Bryan, 2026-09-17) |
-
-> 024 is intentionally reserved (Source Review Inbox `loom_source_reviews` — paused).
 
 > Migrations 010–017 remain applied + live-verified (unchanged). 020 added
 > `profile_id`; the 15 YouTube acceptance rows were backfilled to
@@ -263,8 +278,8 @@ Desktop left running (existing containers up: `loom-tunnel-proxy`,
 
 ## Next action
 
-- Migrations 025/026 **APPLIED**; Content Intelligence Pass-1 proof **RUNTIME-PROVEN (13/13)**.
-- **Next segment: Source Review Inbox** (Discord) — resume; now displays BOTH halves (Topic Intelligence market + Content Intelligence worthiness) per candidate.
+- Migrations 018–026 all **APPLIED**. Source Review Inbox **RUNTIME-PROVEN (8/8)**.
+- **Next segment: Acquisition Boundary** — for candidates Bryan approved-for-acquisition (still no download/publish without further authorization).
 - **Pass 2 (bounded media)** — deferred; needs separate approval.
 - **TikTok** — HELD until explicitly authorized.
 
@@ -388,9 +403,11 @@ Caddy `:8081` routes (unchanged): `/edit /edit/*` (CSP frame-ancestors Discord) 
 
 ## 7. Next segment
 
-**Source Review Inbox** (Discord source review) — resume next. It now surfaces
-BOTH halves per candidate: Topic Intelligence (market) + Content Intelligence
-(content worthiness) → Combined Source Selection score. Then **Acquisition
-Boundary**. **Pass 2 (bounded media)** deferred (separate approval). **TikTok**
-remains HELD until explicitly authorized. No automatic
+**Acquisition Boundary** — the next segment. Source Review Inbox is complete: it
+surfaces BOTH halves (Topic Intelligence market + Content Intelligence content
+worthiness → Combined Source Selection) per candidate, and records
+approve-for-acquisition / hold / reject. Acquisition would ingest only
+approved-for-acquisition candidates — still requires explicit authorization
+before any download/publish. **Pass 2 (bounded media)** deferred (separate
+approval). **TikTok** remains HELD until explicitly authorized. No automatic
 download/processing/publication at any point.
