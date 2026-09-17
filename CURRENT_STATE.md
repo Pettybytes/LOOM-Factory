@@ -6,6 +6,25 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~18:35 EDT — ACQUIRE NAVIGATION ABORT FIXED (awaiting re-test)
+
+**Human test FAILED ("Failed: tab navigated") then diagnosed.** Root cause: the
+Acquire-flow auto-reload ("replay if idle") triggered a tab navigation that the
+onUpdated handler aborted on, before handing a candidate to the helper. "Inspect
+Playing Media" (no reload) proved detection works (2 direct_video candidates, 0
+rejections).
+
+**Fix (`infra/acquisition/browser_flow.py` + background.js):**
+- Removed the auto-reload — Acquire now attaches + observes (same path as Inspect).
+- Navigation classified by content id: same-content reload tolerated + re-inspected
+  (onDetach -> reattach + Network.enable); different content id fails closed.
+- Deterministic selection (media-type priority + most-recent) + exactly-once handoff.
+- 12 deterministic tests (browser_flow). 293 total.
+
+Authorized proof unchanged: reel `DdZS1QRhrXE`. No download during repair.
+
+---
+
 ## STOP STATE — 2026-09-17 ~18:20 EDT — LOCAL ACQUISITION HELPER + ACQUIRE FLOW BUILT (awaiting final auth)
 
 **Browser-assisted Instagram resolution is HUMAN-PROVEN** (1 direct MP4

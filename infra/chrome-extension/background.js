@@ -1,33 +1,31 @@
 // LOOM Source Capture — background service worker.
 // Two user-initiated modes:
 //   (a) feasibility probe: bounded chrome.debugger Network inspection.
-//   (b) Acquire for Reaction: inspect, capture the first unambiguous direct-MP4's
-//       FULL signed URL (volatile only), detach IMMEDIATELY, POST to the
-//       authenticated localhost LOOM helper, and report phases + redacted result.
+//   (b) Acquire for Reaction: attach + observe (NO auto-reload — the Reel is
+//       already playing), capture the first unambiguous direct-MP4's FULL signed
+//       URL (volatile only), detach immediately, POST to the localhost helper.
 //
-// Latency: 12s is a fail-closed MAXIMUM, not a wait. The fast path stops and
-// detaches as soon as one unambiguous direct MP4 passes all host/media filters
-// (~1–3s with autoplay). It waits only when no candidate appears or candidates
-// need disambiguation, then applies deterministic selection.
+// Navigation safety (mirrors infra/acquisition/browser_flow.py):
+//   - an expected SAME-content reload is tolerated and re-inspected
+//   - a DIFFERENT content id fails closed (never acquire an adjacent/other post)
 //
-// Safety: attach only on explicit click; active tab only; metadata only (never
-// bodies/cookies/auth headers); auto-detach; redact signed tokens; the full signed
-// URL is held in `mem.accepted[].fullUrl` / `mem.fullCandidate` (volatile) only.
+// The full signed URL lives only in `mem.accepted[].fullUrl` / `mem.fullCandidate`
+// (volatile); it is never persisted.
 
 importScripts('config.js');
 
 const KEY = 'inspection';
-const WINDOW_MS = 12000;        // fail-closed maximum
-const REPLAY_AFTER_MS = 4000;   // replay the Reel if no candidate arrives within ~4s
+const WINDOW_MS = 12000;   // fail-closed maximum (not a wait)
 const HELPER_URL = (self.LOOM_HELPER_URL || 'http://127.0.0.1:8787').replace(/\/+$/, '');
 const HELPER_TOKEN = self.LOOM_HELPER_TOKEN || '';
 const ACTOR = self.LOOM_ACTOR || 'bryan';
 
 let activeTabId = null;
 let timer = null;
-let selfReload = false;
+let selfReload = false;      // feasibility "Inspect + reload" only
 let acquireMode = false;
 let acquireCanonical = '';
+let expectedContentId = '';
 let acquireSent = false;
 let phaseTimers = [];
 let mem = { candidates: [], counts: emptyCounts(), startedAt: null, deadline: null,
@@ -38,7 +36,7 @@ const NON_MEDIA_RT = new Set(['Document', 'Stylesheet', 'Script', 'Font', 'Manif
 const IMAGE_EXT_RE = /\.(jpg|jpeg|png|webp|gif|avif|heic|bmp)(\?|$)/i;
 const AD_HOST_RE = /(analytics|telemetry|tracking|ads\.|doubleclick)/i;
 const AD_PATH_RE = /(\/analytics|\/telemetry|\/tracking|\/ads|\/tr)/i;
-
+const IG_ID_RE = /instagram\.com\/(?:reel|p|tv|stories)\/([A-Za-z0-9_-]+)/;
 const TYPE_PRIORITY = { direct_video: 0, manifest: 1, segment: 2, audio: 3 };
 
 function emptyCounts() {
@@ -84,19 +82,25 @@ function classifyRequest(url, mimeType, resourceType) {
   return 'content_type_rejected';
 }
 
-function isUnambiguousVideo(url, mime) {
-  return classifyMedia(url) === 'direct_video' && (mime || '').toLowerCase().startsWith('video/');
+function instagramContentId(url) {
+  const m = (url || '').match(IG_ID_RE);
+  return m ? m[1] : '';
+}
+
+function classifyNavigation(newUrl, expectedId) {
+  const newId = instagramContentId(newUrl);
+  if (!newId || !expectedId) return 'unknown';
+  return newId === expectedId ? 'same_content' : 'different_content';
 }
 
 function selectBestCandidate(accepted) {
   if (!accepted || !accepted.length) return null;
-  const ranked = [...accepted].sort((a, b) => {
+  return [...accepted].sort((a, b) => {
     const pa = (TYPE_PRIORITY[a.type] !== undefined) ? TYPE_PRIORITY[a.type] : 9;
     const pb = (TYPE_PRIORITY[b.type] !== undefined) ? TYPE_PRIORITY[b.type] : 9;
     if (pa !== pb) return pa - pb;
-    return b.order - a.order;  // most recent request first
-  });
-  return ranked[0];
+    return b.order - a.order;
+  })[0];
 }
 
 function redact(url) {
@@ -109,7 +113,7 @@ function snapshot(phase, extra) {
     attached: activeTabId !== null,
     startedAt: mem.startedAt,
     deadline: mem.deadline,
-    candidates: mem.candidates,       // redacted only (never the signed URL)
+    candidates: mem.candidates,       // redacted only
     counts: mem.counts,
     result: mem.result,               // redacted helper result
     error: (extra && extra.error !== undefined) ? extra.error : null,
@@ -165,20 +169,30 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     else mem.accepted.push({ fullUrl: url, host: new URL(url).hostname, type: classifyMedia(url) || 'media',
       mimeType: mime || null, fromCache, redacted: key, order: mem.accepted.length });
 
-    // Fast path: stop + detach immediately on the first unambiguous direct MP4.
-    if (acquireMode && !acquireSent && isUnambiguousVideo(url, mime)) {
-      acquireSent = true;
-      mem.fullCandidate = url;
-      onUnambiguousVideo(url);
-    }
+    if (acquireMode) maybeHandoff(false);
   }
   if (acquireMode) persist('collecting', {});
 });
 
-async function onUnambiguousVideo(candidateUrl) {
+function maybeHandoff(timedOut) {
+  if (acquireSent) return;                       // exactly once
+  if (!mem.accepted.length) {
+    if (timedOut) finishAcquire('failed', 'no media candidate captured — replay the Reel and retry Acquire for Reaction');
+    return;
+  }
+  const best = selectBestCandidate(mem.accepted);
+  if (best.type === 'direct_video' || timedOut) {
+    acquireSent = true;
+    mem.fullCandidate = best.fullUrl;
+    onHandoff(best.fullUrl);
+  }
+  // else: a manifest/segment is present but not an unambiguous MP4 — wait.
+}
+
+async function onHandoff(candidateUrl) {
   stopTimer();
   clearPhaseTimers();
-  await detach();               // detach immediately — no more observation
+  await detach();
   mem.deadline = null;
   await persist('sending', {});
   phaseTimers.push(setTimeout(() => { if (acquireMode) persist('downloading', {}); }, 1500));
@@ -219,6 +233,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'acquireForReaction') {
     acquireMode = true;
     acquireCanonical = msg.canonicalUrl || '';
+    expectedContentId = instagramContentId(acquireCanonical);
     acquireSent = false;
     mem.fullCandidate = null;
     mem.result = null;
@@ -254,32 +269,10 @@ async function startInspection(tabId, reload) {
         persist(reload ? 'collecting' : 'active', {});
         if (reload) { selfReload = true; try { chrome.tabs.reload(tabId); } catch (e) {} }
 
-        // fail-closed maximum (not a wait)
         timer = setTimeout(() => {
-          if (acquireMode && !acquireSent) {
-            const best = selectBestCandidate(mem.accepted);
-            if (best && best.type === 'direct_video') {
-              acquireSent = true; mem.fullCandidate = best.fullUrl; onUnambiguousVideo(best.fullUrl);
-            } else if (best) {
-              finishAcquire('failed', 'no direct MP4 captured (best candidate type: ' + best.type + ') — review rejection counts or retry');
-            } else {
-              finishAcquire('failed', 'no media candidate captured — replay the Reel and retry Acquire for Reaction');
-            }
-          } else if (!acquireMode) {
-            finish();
-          }
+          if (acquireMode && !acquireSent) maybeHandoff(true);
+          else if (!acquireMode) finish();
         }, WINDOW_MS);
-
-        // Replay the Reel if no candidate arrived within ~4s (only in acquire mode).
-        if (!reload && acquireMode) {
-          phaseTimers.push(setTimeout(() => {
-            if (acquireMode && !acquireSent && mem.accepted.length === 0) {
-              selfReload = true;
-              try { chrome.tabs.reload(tabId); } catch (e) {}
-            }
-          }, REPLAY_AFTER_MS));
-        }
-
         resolve({ ok: true });
       });
     });
@@ -292,6 +285,41 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (tabId !== activeTabId || changeInfo.status !== 'loading') return;
+
+  if (acquireMode && !acquireSent) {
+    const cls = changeInfo.url ? classifyNavigation(changeInfo.url, expectedContentId) : 'unknown';
+    if (cls === 'different_content') {
+      finishAcquire('failed', 'navigated away from the selected Reel (different content)');
+    }
+    // 'same_content' / 'unknown': tolerate + re-inspect (via onDetach reattach)
+    return;
+  }
+
+  // feasibility mode: preserve the "Inspect + reload" self-reload path
   if (selfReload) { selfReload = false; return; }
   finish('failed', 'tab navigated');
 });
+
+chrome.debugger.onDetach.addListener((source, reason) => {
+  if (source.tabId !== activeTabId) return;
+  const tabId = source.tabId;
+  activeTabId = null;
+  if (acquireMode && !acquireSent) {
+    setTimeout(() => {
+      if (acquireMode && !acquireSent) reattach(tabId);
+    }, 800);
+  }
+});
+
+function reattach(tabId) {
+  chrome.debugger.attach({ tabId }, '1.3', () => {
+    if (chrome.runtime.lastError) {
+      finishAcquire('failed', 're-attach failed: ' + chrome.runtime.lastError.message);
+      return;
+    }
+    activeTabId = tabId;
+    chrome.debugger.sendCommand({ tabId }, 'Network.enable', {}, () => {
+      if (acquireMode && !acquireSent) persist('collecting', {});
+    });
+  });
+}

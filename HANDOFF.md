@@ -9,16 +9,16 @@
 ---
 
 ## Last Updated
-2026-09-17 18:20 EDT (America/Detroit) — LOCAL ACQUISITION HELPER + ACQUIRE FLOW BUILT
+2026-09-17 18:35 EDT (America/Detroit) — ACQUIRE NAVIGATION ABORT FIXED
 
-## HANDOFF — local helper + Acquire-for-Reaction built (awaiting final auth)
+## HANDOFF — acquire navigation abort fixed (awaiting re-test)
 
-Browser-assisted resolution HUMAN-PROVEN (1 direct MP4). Built
-`infra/local-helper/` (validate/acquire/helper, 127.0.0.1:8787, token+origin auth,
-ceilings, atomic rename, redacted result) + extension v0.4.0 primary
-`Acquire for Reaction` flow. Migration 033 staged (adapter + is_non_production).
-Instagram acquisition = implemented_not_proven. Next: apply 033, start the helper,
-and get Bryan's final authorization for the single bounded MP4 download. Latency:
+Human test failed "tab navigated": the auto-reload triggered navigation the
+onUpdated handler aborted on. Removed auto-reload; Acquire now = attach+observe
+(same as Inspect). Navigation classified by content id (same-content tolerated +
+reattached; different content fails closed). Deterministic selection + exactly-
+once handoff. 12 browser_flow tests; 293 total. Authorized proof unchanged
+(reel DdZS1QRhrXE). Next: Bryan reloads the extension and repeats the test. Latency:
 12s is a fail-closed max; Acquire stops+detaches on the first direct MP4.
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
