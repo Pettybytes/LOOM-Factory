@@ -54,8 +54,34 @@ PENDING_PLATFORMS: frozenset[str] = frozenset({"tiktok", "instagram", "twitch", 
 
 STATUS_ACCEPTED = "accepted"
 STATUS_PENDING_PLATFORM = "accepted_pending_platform_support"
+STATUS_AWAITING_TENANT = "awaiting_tenant_assignment"
 
 COMMAND_NAME = "submit-source"
+
+# Unassigned routing state: tenant_id == '' (NOT a tenant).
+DESTINATION_UNASSIGNED = ""
+
+_NON_PRODUCTION_MARKERS = (
+    "acceptance", "test", "proof", "example", "fixture",
+    "demo", "sample", "sandbox", "staging", "dev",
+)
+
+
+def is_non_production_tenant(tenant_id: str) -> bool:
+    return any(m in (tenant_id or "").lower() for m in _NON_PRODUCTION_MARKERS)
+
+
+def validate_destination(destination: str, active_tenants: set[str]) -> str:
+    """Validate a destination: '' (Unassigned) or an active, non-proof tenant.
+    Returns the normalized destination. Raises SubmissionError otherwise."""
+    dest = (destination or "").strip()
+    if dest == DESTINATION_UNASSIGNED:
+        return DESTINATION_UNASSIGNED
+    if dest not in active_tenants:
+        raise SubmissionError("INVALID_DESTINATION", f"{dest!r} is not an active tenant")
+    if is_non_production_tenant(dest):
+        raise SubmissionError("INVALID_DESTINATION", f"{dest!r} is a non-production tenant")
+    return dest
 
 CONTENT_FORMATS: frozenset[str] = frozenset({
     "reaction_single", "reaction_compilation", "commentary_story",
@@ -225,21 +251,23 @@ def submission_fingerprint(platform: str, canonical_url: str) -> str:
 def build_submission(
     *,
     url: str,
-    tenant_id: str,
-    profile_id: str,
+    destination: str,
     content_format: str,
     submitter: str,
     time_start_s: float | None = None,
     time_end_s: float | None = None,
     reviewer_note: str = "",
+    active_tenants: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Validate + build a full submission payload (raises SubmissionError)."""
+    """Validate + build a full submission payload (raises SubmissionError).
+
+    ``destination`` is a tenant id, or '' for Unassigned/General. ``profile_id``
+    is derived server-side later (not asked from the human)."""
     if content_format not in CONTENT_FORMATS:
         raise SubmissionError("BAD_FORMAT", f"unknown content_format {content_format!r}")
-    if not tenant_id or not tenant_id.strip():
-        raise SubmissionError("BAD_TENANT", "tenant is required")
-    if not profile_id or not profile_id.strip():
-        raise SubmissionError("BAD_PROFILE", "profile is required")
+    dest = (destination or "").strip()
+    if active_tenants is not None:
+        dest = validate_destination(dest, active_tenants)
     if time_start_s is not None and time_start_s < 0:
         raise SubmissionError("BAD_TIME", "start timestamp must be >= 0")
     if time_end_s is not None and time_end_s < 0:
@@ -248,9 +276,16 @@ def build_submission(
         raise SubmissionError("BAD_TIME", "end timestamp must be >= start timestamp")
 
     v = validate_and_canonicalize(url)
+    if dest == DESTINATION_UNASSIGNED:
+        status = STATUS_AWAITING_TENANT
+    elif v["platform"] in SUPPORTED_PLATFORMS:
+        status = STATUS_ACCEPTED
+    else:
+        status = STATUS_PENDING_PLATFORM
+
     return {
-        "tenant_id": tenant_id.strip(),
-        "profile_id": profile_id.strip(),
+        "tenant_id": dest,
+        "profile_id": "",  # derived server-side later
         "platform": v["platform"],
         "source_url": v["canonical_url"],
         "original_url": url.strip(),
@@ -260,7 +295,8 @@ def build_submission(
         "time_end_s": time_end_s,
         "reviewer_note": (reviewer_note or "").strip(),
         "submitter": submitter,
-        "status": v["status"],
+        "status": status,
+        "qualification_required": True,
         "duplicate_fingerprint": submission_fingerprint(v["platform"], v["canonical_url"]),
     }
 

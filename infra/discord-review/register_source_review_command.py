@@ -40,8 +40,8 @@ SUBMIT_SOURCE_COMMAND = {
     "options": [
         {"name": "url", "description": "Source URL (YouTube, Reddit, TikTok, Instagram, Twitch, Kick)",
          "type": 3, "required": True},
-        {"name": "tenant", "description": "Tenant id", "type": 3, "required": True},
-        {"name": "profile", "description": "Profile id", "type": 3, "required": True},
+        {"name": "destination", "description": "Destination: 'unassigned' or an active tenant id (e.g. 'dreemzy')",
+         "type": 3, "required": True},
         {"name": "format", "description": "Intended content format", "type": 3, "required": True,
          "choices": [
              {"name": "reaction_single", "value": "reaction_single"},

@@ -17,8 +17,11 @@ from manual_intake import (  # noqa: E402
     submission_fingerprint,
     status_for_platform,
     build_submission,
+    validate_destination,
     STATUS_ACCEPTED,
     STATUS_PENDING_PLATFORM,
+    STATUS_AWAITING_TENANT,
+    DESTINATION_UNASSIGNED,
     CONTENT_FORMATS,
 )
 
@@ -122,10 +125,12 @@ class TestDedupAndStatus(unittest.TestCase):
 
 
 class TestBuildSubmission(unittest.TestCase):
+    ACTIVE = {"dreemzy", "client-a"}
+
     def _build(self, **kw):
-        base = dict(url="https://www.youtube.com/watch?v=abc", tenant_id="dreemzy",
-                    profile_id="bryan-face-reaction", content_format="commentary_story",
-                    submitter="bryan#1")
+        base = dict(url="https://www.youtube.com/watch?v=abc", destination="dreemzy",
+                    content_format="commentary_story", submitter="bryan#1",
+                    active_tenants=self.ACTIVE)
         base.update(kw)
         return build_submission(**base)
 
@@ -134,8 +139,26 @@ class TestBuildSubmission(unittest.TestCase):
         self.assertEqual(p["platform"], "youtube")
         self.assertEqual(p["status"], STATUS_ACCEPTED)
         self.assertEqual(p["content_format"], "commentary_story")
-        self.assertEqual(p["duplicate_fingerprint"].__class__.__name__, "str")
+        self.assertEqual(p["qualification_required"], True)
+        self.assertEqual(p["profile_id"], "")  # derived server-side, not asked
         self.assertEqual(len(p["duplicate_fingerprint"]), 64)
+
+    def test_unassigned_submission(self):
+        p = self._build(destination=DESTINATION_UNASSIGNED)
+        self.assertEqual(p["tenant_id"], "")
+        self.assertEqual(p["status"], STATUS_AWAITING_TENANT)
+
+    def test_invalid_destination_rejected(self):
+        with self.assertRaises(SubmissionError) as cm:
+            self._build(destination="unknown-tenant")
+        self.assertEqual(cm.exception.code, "INVALID_DESTINATION")
+
+    def test_proof_destination_rejected(self):
+        with self.assertRaises(SubmissionError) as cm:
+            build_submission(url="https://www.youtube.com/watch?v=abc",
+                             destination="proof-tenant", content_format="commentary_story",
+                             submitter="b", active_tenants={"proof-tenant"})
+        self.assertEqual(cm.exception.code, "INVALID_DESTINATION")
 
     def test_bad_format(self):
         with self.assertRaises(SubmissionError) as cm:
@@ -147,14 +170,19 @@ class TestBuildSubmission(unittest.TestCase):
             self._build(time_start_s=50, time_end_s=10)
         self.assertEqual(cm.exception.code, "BAD_TIME")
 
-    def test_missing_tenant(self):
-        with self.assertRaises(SubmissionError):
-            self._build(tenant_id="")
-
     def test_all_formats_allowed(self):
         for f in CONTENT_FORMATS:
             p = self._build(content_format=f)
             self.assertEqual(p["content_format"], f)
+
+    def test_validate_destination_unassigned(self):
+        self.assertEqual(validate_destination("", self.ACTIVE), "")
+        self.assertEqual(validate_destination("dreemzy", self.ACTIVE), "dreemzy")
+
+    def test_validate_destination_inactive(self):
+        with self.assertRaises(SubmissionError) as cm:
+            validate_destination("inactive-tenant", self.ACTIVE)
+        self.assertEqual(cm.exception.code, "INVALID_DESTINATION")
 
 
 if __name__ == "__main__":

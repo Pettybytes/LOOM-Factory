@@ -54,6 +54,7 @@ from urllib.error import HTTPError, URLError
 
 import source_review  # noqa: E402  (same-dir module; Source Review Inbox)
 import manual_intake  # noqa: E402  (same-dir module; Manual Source Intake)
+import tenant_routing  # noqa: E402  (same-dir module; tenant assignment/reassignment)
 
 # ---------------------------------------------------------------------------
 # Config (from env)
@@ -1727,8 +1728,7 @@ class Handler(BaseHTTPRequestHandler):
                 opts[o["name"]] = o.get("value")
 
         url = opts.get("url", "")
-        tenant = opts.get("tenant", "")
-        profile = opts.get("profile", "")
+        destination = opts.get("destination", "")
         fmt = opts.get("format", "")
         start = opts.get("start")
         end = opts.get("end")
@@ -1736,10 +1736,12 @@ class Handler(BaseHTTPRequestHandler):
         submitter = self._reviewer_name(interaction)
 
         try:
+            active = tenant_routing.list_active_tenants(SUPABASE_URL, SUPABASE_KEY)
             payload = manual_intake.build_submission(
-                url=url, tenant_id=tenant, profile_id=profile,
+                url=url, destination=destination,
                 content_format=fmt, submitter=submitter,
                 time_start_s=start, time_end_s=end, reviewer_note=note,
+                active_tenants=active,
             )
             row, created = manual_intake.persist_submission(SUPABASE_URL, SUPABASE_KEY, payload)
         except manual_intake.SubmissionError as e:
@@ -1751,13 +1753,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         sub_id = row.get("id", "?")
+        dest = payload["tenant_id"] or "Unassigned"
         if created:
-            label = ("accepted" if payload["status"] == manual_intake.STATUS_ACCEPTED
-                     else "accepted (platform support pending)")
+            if payload["status"] == manual_intake.STATUS_AWAITING_TENANT:
+                label = "accepted · Destination: Unassigned"
+            elif payload["status"] == manual_intake.STATUS_ACCEPTED:
+                label = f"accepted · Destination: {dest}"
+            else:
+                label = f"accepted (platform support pending) · Destination: {dest}"
             msg = (f"✅ Submission {label}\n"
                    f"ID: `{sub_id}`\n"
                    f"Platform: `{payload['platform']}` · Format: `{payload['content_format']}`\n"
-                   f"URL: {payload['canonical_url']}")
+                   f"URL: {payload['source_url']}")
         else:
             msg = f"ℹ️ Duplicate submission (already accepted). ID: `{sub_id}`"
         self._send_json(200, {"type": 4, "data": {"content": msg, "flags": 64}})
