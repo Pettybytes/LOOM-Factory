@@ -25,6 +25,9 @@ candidate: `scontent-det1-1.cdninstagram.com`, `video/mp4`, 0 rejections).
 - Token: high-entropy, `infra/local-helper/.token` + `config.js` (gitignored).
 - Instagram capability: resolution browser-assisted HUMAN-PROVEN; acquisition
   `implemented_not_proven`.
+- Latency: 12s is a fail-closed MAX, not a wait — `Acquire for Reaction` stops +
+  detaches on the first unambiguous direct MP4 (~1–3s autoplay), deterministic
+  selection for multi-candidate, replay-if-idle, actionable retry.
 
 **NOT done (gated):** migration 033 application; real MP4 download; helper start.
 

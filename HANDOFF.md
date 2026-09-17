@@ -18,7 +18,8 @@ Browser-assisted resolution HUMAN-PROVEN (1 direct MP4). Built
 ceilings, atomic rename, redacted result) + extension v0.4.0 primary
 `Acquire for Reaction` flow. Migration 033 staged (adapter + is_non_production).
 Instagram acquisition = implemented_not_proven. Next: apply 033, start the helper,
-and get Bryan's final authorization for the single bounded MP4 download.
+and get Bryan's final authorization for the single bounded MP4 download. Latency:
+12s is a fail-closed max; Acquire stops+detaches on the first direct MP4.
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).
