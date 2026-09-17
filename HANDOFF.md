@@ -9,22 +9,20 @@
 ---
 
 ## Last Updated
-2026-09-17 16:50 EDT (America/Detroit) — CARD-BASED INTAKE WIZARD DEPLOYED
+2026-09-17 17:10 EDT (America/Detroit) — ACQUISITION BOUNDARY V1 CONTRACTS BUILT
 
-## HANDOFF — Manual Source Intake card-based wizard (awaiting Bryan test)
+## HANDOFF — Acquisition Boundary V1 deterministic contracts (awaiting proof authorization)
 
-`/submit-source` is now a compact ephemeral card wizard (commit `10430c8`):
-url-only slash command → ephemeral intake card → destination/format selects +
-Add Details modal → Submit (green, disabled until format chosen) / Cancel →
-final confirmation card. Persistence happens only on Submit; in-memory expiring
-sessions; atomic consume prevents double-submit. Also fixed: stale adapter
-(`Unsupported interaction.`), Instagram `stkn` tracking-param stripping.
+Product-semantics correction: `Acquire for Reaction` is PRIMARY; `Save Link Only`
+secondary; `Cancel` third. Built `infra/acquisition/` (platform_capabilities,
+acquisition, reaction_library) + migrations 031/032 (staged, NOT applied) + 22
+tests + `ACQUISITION_BOUNDARY.md` plan/matrix. 217 total tests pass. No real media
+download performed.
 
-Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
-Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).
-
-Next: Bryan runs the real Discord Instagram test and confirms. Do NOT begin Chrome
-extension or Acquisition Boundary until acceptance passes.
+Next: Bryan reviews storage destination (GHL Media Storage files + Supabase
+ledger), adapter limits, and proof target; then authorizes ONE bounded,
+non-production acquisition proof. Publishing/distribution + Chrome extension
+remain NOT started.
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).

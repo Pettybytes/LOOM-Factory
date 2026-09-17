@@ -6,6 +6,41 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~17:10 EDT — ACQUISITION BOUNDARY V1 CONTRACTS BUILT (awaiting proof authorization)
+
+**Acquisition Boundary V1 — deterministic contracts: DONE (no download).**
+
+Product-semantics correction applied: `Acquire for Reaction` is PRIMARY (records
+authorization + creates an idempotent job immediately; allows Unassigned; routes
+to Personal Reaction Library; never authorizes publishing). `Save Link Only` is
+secondary. `Cancel` is third. No ambiguous `Submit Source` label.
+
+Built (all deterministic, zero download):
+- `infra/acquisition/platform_capabilities.py` — capability states + honest
+  acquisition-readiness matrix (NO platform runtime-proven yet; YouTube =
+  implemented_not_proven; others blocked_pending_adapter).
+- `infra/acquisition/acquisition.py` — durable idempotent acquisition-job
+  contract (`plan_acquisition_job`, `dedup_key`, status machine, collection
+  rejection, bounded-range validation, `persist_job`).
+- `infra/acquisition/reaction_library.py` — Personal Reaction Library contract
+  (sha256 dedup, deterministic filename, bounded retention, immutable provenance).
+- Migrations `031_loom_acquisition_jobs.sql` + `032_loom_reaction_library.sql`
+  (SQL files staged; **NOT applied — Bryan applies**).
+- Plan/capability matrix + storage proposal in `infra/acquisition/ACQUISITION_BOUNDARY.md`.
+- 22 new deterministic tests.
+
+Tests: **217 pass** (62 discovery + 55 content + 78 discord-review + 22 acquisition).
+
+**STOP GATE — not crossed:** no real media download. Awaiting Bryan review of
+storage destination (proposed: GHL Media Storage files + Supabase ledger) + the
+adapter limits + proof target, and explicit authorization for ONE bounded,
+non-production acquisition proof.
+
+Stop conditions remain: no publishing/distribution; no Chrome extension; TikTok
+held; Instagram/Twitch/Kick `blocked_pending_adapter`.
+
+---
+
 ## STOP STATE — 2026-09-17 ~16:50 EDT — CARD-BASED INTAKE WIZARD DEPLOYED (awaiting Bryan test)
 
 **Manual Source Intake — card-based ephemeral wizard: DONE (commit `10430c8`).**
