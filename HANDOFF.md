@@ -9,15 +9,15 @@
 ---
 
 ## Last Updated
-2026-09-17 17:45 EDT (America/Detroit) — INSTAGRAM VIDEO: TOOL PATHS FAIL; CHROME-EXT BUILT
+2026-09-17 17:55 EDT (America/Detroit) — CHROME blob/MSE; NETWORK PROBE BUILT
 
-## HANDOFF — Instagram video acquisition blocked on all tool paths; chrome-ext built
+## HANDOFF — Chrome blob/MSE confirmed; network probe built
 
-Ladder result: yt-dlp ❌ login · Cobalt ⚠️ .jpg cover misclassification (two reels)
-· gallery-dl ❌ login redirect · Chrome extension BUILT (`infra/chrome-extension/`)
-but feasibility unproven. Instagram VIDEO = `blocked_pending_adapter`. Cobalt
-sidecar kept running. Next: Bryan installs the extension, opens a playing Reel,
-and reports the capture result (direct URL vs blob/MSE).
+Stage-1 `<video>.src` = blob/MSE (not feasible). Built stage-2 user-initiated
+`chrome.debugger` Network probe (bounded 12s, active-tab only, metadata only,
+auto-detach) + `media_filter.py` filtering contract (15 tests). Next: Bryan
+reloads the extension, opens a playing Reel, clicks "Inspect Playing Media",
+reports the redacted candidates (direct MP4 vs MPD/M3U8 vs segments).
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).

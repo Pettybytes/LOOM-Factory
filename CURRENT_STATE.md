@@ -6,6 +6,27 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~17:55 EDT — CHROME blob/MSE CONFIRMED; NETWORK PROBE BUILT
+
+**Chrome stage-1 result:** `isBlobOrMse: true`, `isDirectUrl: false` — the simple
+`<video>.src` path is NOT feasible. Wording updated to "Blob/MSE detected —
+direct source unavailable; network inspection required" (not a generic failure).
+
+**Built the second-stage network probe** (`infra/chrome-extension/` v0.2.0):
+- Stage 1 (activeTab+scripting): video element + `buffered` + `<source>` +
+  `performance` resource entries (media-like URLs).
+- Stage 2 (`debugger`): user-initiated bounded 12s CDP Network probe — attach only
+  on explicit click, active tab only, metadata only (never bodies/cookies/auth),
+  auto-detach on timeout/navigation/close, redacts signed tokens.
+- Filtering contract `infra/acquisition/media_filter.py` (https + approved
+  Meta/IG CDN host suffix + video/audio/manifest signature; rejects JPG/HTML/ads)
+  + 15 deterministic tests. JS mirrors it.
+
+Instagram VIDEO still `blocked_pending_adapter`. No download, no cookies, no
+Apify/OpenShorts/OBS/GHL/publish.
+
+---
+
 ## STOP STATE — 2026-09-17 ~17:45 EDT — INSTAGRAM VIDEO: ALL TOOL PATHS FAIL; CHROME-EXT BUILT
 
 **Ladder result (anonymous, no cookies):**

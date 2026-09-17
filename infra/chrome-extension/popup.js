@@ -1,46 +1,122 @@
 // LOOM Source Capture — popup logic.
-// Injects a read-only capture function into the ACTIVE tab (Instagram only)
-// and reports whether the playing Reel exposes a DIRECT media URL or a blob:/MSE
-// source. No cookies, history, or passwords are ever read. Nothing is downloaded.
+// Stage 1: read the active tab's <video> element + resource timeline (activeTab+scripting).
+// Stage 2: user-initiated chrome.debugger network probe (bounded, auto-detach).
 
-function capture() {
-  const pageUrl = location.href;
+const out = document.getElementById('out');
+const statusEl = document.getElementById('status');
+
+function redact(u) {
+  try { const x = new URL(u); return x.protocol + '//' + x.host + x.pathname; }
+  catch { return '(unparseable)'; }
+}
+
+function captureStage1() {
   const v = document.querySelector('video');
-  if (!v) {
-    return { found: false, reason: 'no <video> element found', pageUrl };
+  const pageUrl = location.href;
+  const src = v ? (v.currentSrc || v.src || '') : '';
+  const isBlob = src.startsWith('blob:');
+  const mediaResourceEntries = (performance.getEntriesByType('resource') || [])
+    .map((e) => e.name)
+    .filter((n) => /^https:\/\//.test(n))
+    .filter((n) => /\.(mp4|m4v|webm|m3u8|mpd|m4s|fmp4|ts|m4a|aac|mp3)(\?|$)/i.test(n.split('?')[0]))
+    .map(redact)
+    .slice(0, 60);
+  const buffered = [];
+  if (v && v.buffered) {
+    for (let i = 0; i < v.buffered.length; i++) {
+      buffered.push([v.buffered.start(i), v.buffered.end(i)]);
+    }
   }
-  const src = v.currentSrc || v.src || '';
-  const isDirect = /^https?:\/\//.test(src);
-  const sources = Array.from(v.querySelectorAll('source'))
-    .map((s) => s.src || '')
-    .filter(Boolean);
+  const sources = v ? Array.from(v.querySelectorAll('source')).map((s) => s.src).filter(Boolean).map(redact) : [];
   return {
-    found: true,
+    found: !!v,
     pageUrl,
-    videoSrc: src || '(empty)',
-    isDirectUrl: isDirect,
-    isBlobOrMse: src.startsWith('blob:') || src === '',
-    poster: v.poster || '',
-    sources,
+    videoSrc: src ? (isBlob ? 'blob:…(MSE)' : src) : '(empty)',
+    isDirectUrl: /^https?:\/\//.test(src),
+    isBlobOrMse: isBlob || src === '',
+    bufferedRanges: buffered,
+    sourceElements: sources,
+    mediaResourceEntries,
+    note: isBlob
+      ? 'Blob/MSE detected — direct source unavailable; network inspection required'
+      : (src ? '' : 'No video element / no source yet'),
   };
 }
 
-document.getElementById('capture').addEventListener('click', async () => {
-  const out = document.getElementById('out');
+async function getActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) throw new Error('Could not resolve the active tab');
+  return tab;
+}
+
+document.getElementById('stage1').addEventListener('click', async () => {
   out.textContent = 'Capturing…';
+  statusEl.textContent = '';
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !tab.id) {
-      out.textContent = 'Could not resolve the active tab.';
-      return;
-    }
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: capture,
-    });
-    const r = results && results[0] && results[0].result;
-    out.textContent = JSON.stringify(r, null, 2);
+    const tab = await getActiveTab();
+    const results = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: captureStage1 });
+    out.textContent = JSON.stringify(results[0].result, null, 2);
   } catch (e) {
     out.textContent = 'Error: ' + (e && e.message ? e.message : e);
   }
 });
+
+document.getElementById('stage2').addEventListener('click', async () => {
+  statusEl.textContent = '';
+  statusEl.className = '';
+  try {
+    const tab = await getActiveTab();
+    out.textContent = 'Starting bounded network inspection (12s)… keep the Reel playing.';
+    chrome.runtime.sendMessage({ type: 'startInspection', tabId: tab.id }, (resp) => {
+      if (resp && resp.ok === false) {
+        statusEl.textContent = 'Inspection failed: ' + resp.error;
+        out.textContent = JSON.stringify(resp, null, 2);
+        return;
+      }
+      poll();
+    });
+  } catch (e) {
+    out.textContent = 'Error: ' + (e && e.message ? e.message : e);
+  }
+});
+
+function poll() {
+  chrome.runtime.sendMessage({ type: 'getStatus' }, (resp) => {
+    if (!resp) { statusEl.textContent = 'Inspection ended (no response).'; return; }
+    if (resp.active) {
+      statusEl.textContent = 'Inspection active… (' + (resp.candidates || []).length + ' candidate(s))';
+      statusEl.className = 'active';
+      setTimeout(poll, 750);
+    } else {
+      statusEl.textContent = '';
+      statusEl.className = '';
+      renderResults(resp.candidates || []);
+    }
+  });
+}
+
+function renderResults(candidates) {
+  if (!candidates.length) {
+    out.textContent = JSON.stringify({ result: 'no media candidates', candidates: [] }, null, 2);
+    return;
+  }
+  const hosts = [...new Set(candidates.map((c) => c.host))];
+  const types = [...new Set(candidates.map((c) => c.type))];
+  const hasMuxedMp4 = types.includes('direct_video');
+  const hasManifest = types.includes('manifest');
+  const hasSegments = types.includes('segment');
+  const hasAudio = types.includes('audio');
+  out.textContent = JSON.stringify({
+    candidateCount: candidates.length,
+    candidateHostnames: hosts,
+    inferredMediaTypes: types,
+    summary: {
+      directMp4: hasMuxedMp4,
+      manifestMpdM3u8: hasManifest,
+      segmented: hasSegments,
+      separateAudioVideo: hasSegments && hasAudio,
+    },
+    ffmpegMuxRequired: hasSegments || hasManifest || hasAudio,
+    candidates: candidates, // redacted already (no signed query strings)
+  }, null, 2);
+}

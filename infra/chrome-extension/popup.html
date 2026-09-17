@@ -3,17 +3,24 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { font-family: system-ui, sans-serif; width: 380px; padding: 14px; margin: 0; }
+    body { font-family: system-ui, sans-serif; width: 400px; padding: 14px; margin: 0; }
     h3 { margin: 0 0 10px; }
-    button { width: 100%; padding: 9px; font-weight: 600; cursor: pointer; }
+    .row { display: flex; gap: 8px; margin-bottom: 8px; }
+    button { flex: 1; padding: 9px; font-weight: 600; cursor: pointer; }
+    #status { font-weight: 600; margin: 6px 0; min-height: 18px; }
+    #status.active { color: #b45309; }
     pre { white-space: pre-wrap; word-break: break-all; background: #f4f4f5; padding: 10px;
-          border-radius: 6px; font-size: 11px; line-height: 1.4; max-height: 320px; overflow: auto; }
+          border-radius: 6px; font-size: 11px; line-height: 1.4; max-height: 340px; overflow: auto; }
   </style>
 </head>
 <body>
   <h3>LOOM Source Capture</h3>
-  <button id="capture">Capture active media</button>
-  <pre id="out">Open an Instagram Reel so it plays, then click "Capture active media".</pre>
+  <div class="row">
+    <button id="stage1">Capture page media</button>
+    <button id="stage2">Inspect Playing Media</button>
+  </div>
+  <div id="status"></div>
+  <pre id="out">Open a playing Instagram Reel, then click a button.</pre>
   <script src="popup.js"></script>
 </body>
 </html>
