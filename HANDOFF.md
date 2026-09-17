@@ -9,7 +9,14 @@
 ---
 
 ## Last Updated
-2026-09-17 16:15 EDT (America/Detroit)
+2026-09-17 16:30 EDT (America/Detroit)
+
+## Segment — Manual Source Intake V1.1 (unassigned routing + tenant assignment)
+
+- **Migrations 028/029/030 APPLIED**: `loom_tenants` (seeded `dreemzy`), `loom_routing_events` (immutable audit), per-tenant dedup + `qualification_required`.
+- **tenant vs profile**: `tenant_id` = owning business; `profile_id` = content niche (derived server-side). `/submit-source` takes `destination`; `/assign-source` (id `1550241802446180463`) does assign/reassign/copy.
+- `tenant_routing.py` — pure `plan_routing` + `route_submission` (downstream lock, collision, requalification).
+- **175 deterministic tests** (62 + 55 + 58). **Routing runtime proof 15/15**.
 
 ## Segment — Manual Source Intake V1
 

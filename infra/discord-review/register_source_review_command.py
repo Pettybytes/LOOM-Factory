@@ -57,7 +57,25 @@ SUBMIT_SOURCE_COMMAND = {
     ],
 }
 
-COMMANDS = [COMMAND, SUBMIT_SOURCE_COMMAND]
+ASSIGN_SOURCE_COMMAND = {
+    "name": "assign-source",
+    "description": "Assign / reassign / copy a manually submitted source to an active tenant",
+    "options": [
+        {"name": "source", "description": "duplicate_fingerprint (64 hex) of the submission",
+         "type": 3, "required": True},
+        {"name": "destination", "description": "Active tenant id (e.g. 'dreemzy')",
+         "type": 3, "required": True},
+        {"name": "operation", "description": "Routing operation (default: auto)",
+         "type": 3, "required": False,
+         "choices": [
+             {"name": "assign", "value": "assign"},
+             {"name": "reassign", "value": "reassign"},
+             {"name": "copy", "value": "copy"},
+         ]},
+    ],
+}
+
+COMMANDS = [COMMAND, SUBMIT_SOURCE_COMMAND, ASSIGN_SOURCE_COMMAND]
 
 
 def _load_env() -> dict[str, str]:

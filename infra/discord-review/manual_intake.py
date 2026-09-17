@@ -309,10 +309,11 @@ def _headers(key: str, body: bool = False) -> dict[str, str]:
     return h
 
 
-def is_duplicate(url: str, key: str, fingerprint: str) -> bool:
-    q = urllib.parse.quote(fingerprint)
+def is_duplicate(url: str, key: str, fingerprint: str, tenant_id: str = "") -> bool:
+    q_fp = urllib.parse.quote(fingerprint)
+    q_t = urllib.parse.quote(tenant_id)
     req = urllib.request.Request(
-        f"{url}/rest/v1/loom_manual_submissions?duplicate_fingerprint=eq.{q}&select=id&limit=1",
+        f"{url}/rest/v1/loom_manual_submissions?duplicate_fingerprint=eq.{q_fp}&tenant_id=eq.{q_t}&select=id&limit=1",
         headers=_headers(key),
     )
     try:
@@ -324,9 +325,9 @@ def is_duplicate(url: str, key: str, fingerprint: str) -> bool:
 
 
 def persist_submission(url: str, key: str, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Persist a submission (first-wins dedup). Returns (row, created)."""
+    """Persist a submission (per-tenant first-wins dedup). Returns (row, created)."""
     req = urllib.request.Request(
-        f"{url}/rest/v1/loom_manual_submissions?on_conflict=duplicate_fingerprint",
+        f"{url}/rest/v1/loom_manual_submissions?on_conflict=duplicate_fingerprint,tenant_id",
         data=json.dumps(payload).encode(),
         headers=_headers(key, body=True),
         method="POST",
@@ -339,10 +340,11 @@ def persist_submission(url: str, key: str, payload: dict[str, Any]) -> tuple[dic
     inserted = isinstance(rows, list) and len(rows) > 0
     if inserted:
         return rows[0], True
-    # Already submitted — return existing row.
-    q = urllib.parse.quote(payload["duplicate_fingerprint"])
+    # Already submitted — return existing row (same fingerprint + tenant).
+    q_fp = urllib.parse.quote(payload["duplicate_fingerprint"])
+    q_t = urllib.parse.quote(payload.get("tenant_id", ""))
     req2 = urllib.request.Request(
-        f"{url}/rest/v1/loom_manual_submissions?duplicate_fingerprint=eq.{q}&select=*&limit=1",
+        f"{url}/rest/v1/loom_manual_submissions?duplicate_fingerprint=eq.{q_fp}&tenant_id=eq.{q_t}&select=*&limit=1",
         headers=_headers(key),
     )
     with urllib.request.urlopen(req2, timeout=30) as r:

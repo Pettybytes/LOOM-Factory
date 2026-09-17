@@ -45,6 +45,8 @@ OP_REASSIGN = "reassign"
 OP_COPY = "copy"
 OPERATIONS = frozenset({OP_ASSIGN, OP_REASSIGN, OP_COPY})
 
+ASSIGN_COMMAND_NAME = "assign-source"
+
 
 class RoutingError(ValueError):
     def __init__(self, code: str, message: str) -> None:
@@ -159,6 +161,14 @@ def fetch_submission(url: str, key: str, fingerprint: str, tenant_id: str) -> di
     q_t = urllib.parse.quote(tenant_id)
     rows = _get(url, key,
                 f"loom_manual_submissions?duplicate_fingerprint=eq.{q_fp}&tenant_id=eq.{q_t}&select=*&limit=1")
+    return rows[0] if isinstance(rows, list) and rows else None
+
+
+def find_submission_by_fingerprint(url: str, key: str, fingerprint: str) -> dict[str, Any] | None:
+    """Return the first submission for a fingerprint (any tenant)."""
+    q = urllib.parse.quote(fingerprint)
+    rows = _get(url, key,
+                f"loom_manual_submissions?duplicate_fingerprint=eq.{q}&select=*&limit=1")
     return rows[0] if isinstance(rows, list) and rows else None
 
 

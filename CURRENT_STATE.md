@@ -6,6 +6,22 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~16:30 EDT
+
+**Manual Source Intake V1.1 — Unassigned Routing + Controlled Tenant Assignment: COMPLETE (built + tested + runtime-proven).**
+
+- Migrations **028/029/030 APPLIED**: `loom_tenants` registry (seeded `dreemzy`), `loom_routing_events` audit, per-tenant dedup (`unique(duplicate_fingerprint, tenant_id)`) + `qualification_required`.
+- **tenant vs profile resolved**: `tenant_id` = owning business/account; `profile_id` = content niche (derived server-side, never asked from Bryan). `/submit-source` now takes a single `destination` (`unassigned` or active tenant).
+- **`/assign-source`** command registered (id `1550241802446180463`) — assign / reassign / copy.
+- `tenant_routing.py` — pure `plan_routing` (assign/reassign/copy/collision/blocked/noop) + `route_submission` (downstream lock, collision, requalification).
+- **175 deterministic tests** (62 + 55 + 58).
+- **Routing runtime proof 15/15** (unassigned → assign → reassign → copy → collision → downstream block → immutable audit).
+- **Routing changes set `qualification_required=true`; scores are never copied or fabricated across tenants.**
+
+Zero download. No OpenShorts/Acquisition/publishing. Proof profile auto-excluded.
+
+---
+
 ## STOP STATE — 2026-09-17 ~16:15 EDT
 
 **Manual Source Intake V1: COMPLETE (built + tested + runtime-proven).**
@@ -249,6 +265,9 @@ excluded from production queries automatically.
 | 025 | `loom_content_assessments` (Content Intelligence V1) | **Applied** (Bryan, 2026-09-17) |
 | 026 | `loom_source_selections` (Combined Selection V1) | **Applied** (Bryan, 2026-09-17) |
 | 027 | `loom_manual_submissions` (Manual Source Intake V1) | **Applied** (Bryan, 2026-09-17) |
+| 028 | `loom_tenants` (controlled destination registry) | **Applied** (Bryan, 2026-09-17) |
+| 029 | `loom_routing_events` (assignment/reassignment audit) | **Applied** (Bryan, 2026-09-17) |
+| 030 | `loom_manual_submissions` per-tenant dedup + `qualification_required` | **Applied** (Bryan, 2026-09-17) |
 
 > Migrations 010–017 remain applied + live-verified (unchanged). 020 added
 > `profile_id`; the 15 YouTube acceptance rows were backfilled to
@@ -296,7 +315,7 @@ Desktop left running (existing containers up: `loom-tunnel-proxy`,
 
 ## Next action
 
-- Migrations 018–027 all **APPLIED**. Manual Source Intake **RUNTIME-PROVEN (12/12)**.
+- Migrations 018–030 all **APPLIED**. Manual Intake V1.1 routing **RUNTIME-PROVEN (15/15)**.
 - **Next segment: Acquisition Boundary** — ingest candidates Bryan approved-for-acquisition (still no download/publish without further authorization); optionally wire accepted YouTube/Reddit manual submissions into the existing qualification pipeline.
 - **Pass 2 (bounded media)** — deferred; needs separate approval.
 - **TikTok/Instagram/Twitch/Kick** — submissions accepted as `accepted_pending_platform_support` (no scraping/activation).

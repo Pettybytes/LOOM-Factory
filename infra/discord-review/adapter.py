@@ -1684,6 +1684,9 @@ class Handler(BaseHTTPRequestHandler):
         if name == manual_intake.COMMAND_NAME:
             self._handle_submit_source_command(interaction)
             return
+        if name == tenant_routing.ASSIGN_COMMAND_NAME:
+            self._handle_assign_source_command(interaction)
+            return
         self._send_json(200, {"type": 4, "data": {"content": "Unknown command.", "flags": 64}})
 
     def _handle_source_review_command(self, interaction):
@@ -1767,6 +1770,42 @@ class Handler(BaseHTTPRequestHandler):
                    f"URL: {payload['source_url']}")
         else:
             msg = f"ℹ️ Duplicate submission (already accepted). ID: `{sub_id}`"
+        self._send_json(200, {"type": 4, "data": {"content": msg, "flags": 64}})
+
+    def _handle_assign_source_command(self, interaction):
+        data = interaction.get("data", {})
+        opts: dict[str, Any] = {}
+        for o in data.get("options", []) or []:
+            if isinstance(o, dict) and o.get("name"):
+                opts[o["name"]] = o.get("value")
+        source = opts.get("source", "").strip()
+        destination = opts.get("destination", "").strip()
+        operation = opts.get("operation") or None
+        actor = self._reviewer_name(interaction)
+
+        try:
+            sub = tenant_routing.find_submission_by_fingerprint(SUPABASE_URL, SUPABASE_KEY, source)
+            if not sub:
+                self._send_json(200, {"type": 4, "data": {"content": "❌ Source not found.", "flags": 64}})
+                return
+            old_dest = sub.get("tenant_id", "")
+            op = operation or tenant_routing.decide_operation(old_dest)
+            result = tenant_routing.route_submission(
+                SUPABASE_URL, SUPABASE_KEY, source, old_dest, destination, op, actor)
+        except Exception as e:
+            self._send_json(200, {"type": 4, "data": {"content": f"❌ {e}", "flags": 64}})
+            return
+
+        action = result.get("action")
+        dest = result.get("destination") or "Unassigned"
+        if action == "collision":
+            msg = f"⚠️ Collision: already assigned to `{dest}` (id={result.get('collision_id')})"
+        elif action == "blocked":
+            msg = f"⛔ Reassign blocked: {result.get('reason')}"
+        elif action == "noop":
+            msg = f"ℹ️ No change: {result.get('reason')}"
+        else:
+            msg = f"✅ {action} → `{dest}`"
         self._send_json(200, {"type": 4, "data": {"content": msg, "flags": 64}})
 
     def _handle_source_button(self, interaction, src):
