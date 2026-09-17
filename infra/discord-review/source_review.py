@@ -102,86 +102,117 @@ def _compact_timestamps(ts: list[dict[str, Any]] | None) -> str | None:
     return " · ".join(parts) if parts else None
 
 
-def format_source_embed(candidate: dict[str, Any]) -> dict[str, Any]:
-    """Build the Discord embed for one combined candidate (both halves)."""
+def _thumbnail_url(platform: str, platform_content_id: str) -> str | None:
+    """Safely-available source thumbnail (public CDN). None when unavailable."""
+    if (platform or "").lower() == "youtube" and platform_content_id:
+        return f"https://i.ytimg.com/vi/{platform_content_id}/hqdefault.jpg"
+    return None
+
+
+def format_source_embed(candidate: dict[str, Any], *, fixture: bool = False) -> dict[str, Any]:
+    """Build the Discord embed for one combined candidate (mirrors #clip-review)."""
     title = (candidate.get("title") or "(untitled)").strip()
     url = candidate.get("canonical_url") or ""
+    platform = candidate.get("platform") or ""
+    content_id = candidate.get("platform_content_id") or ""
+    creator = candidate.get("creator_channel_identity") or ""
+    published = candidate.get("publication_timestamp") or ""
     market = candidate.get("market_opportunity_score")
     content = candidate.get("content_worthiness_score")
     selection = candidate.get("source_selection_score")
-    sel_conf = candidate.get("source_selection_confidence")
-    market_conf = candidate.get("market_confidence")
     content_conf = candidate.get("content_confidence")
     outcome = candidate.get("outcome") or ""
     fmt = candidate.get("recommended_format") or "hold_unassigned"
     angle = candidate.get("recommended_angle") or ""
 
-    fields = []
+    header = "🔎 SOURCE REVIEW · " + fmt.replace("_", " ").upper()
 
-    score_parts = []
-    if market is not None:
-        score_parts.append(f"market **{market}**")
-    if content is not None:
-        score_parts.append(f"content **{content}**")
+    fields: list[dict[str, Any]] = []
+
+    # 2. Source identity (platform · creator · freshness).
+    meta = [platform] if platform else []
+    if creator:
+        meta.append(creator)
+    if published:
+        try:
+            import datetime as _dt
+            dt = _dt.datetime.fromisoformat(published.replace("Z", "+00:00"))
+            meta.append(dt.strftime("%Y-%m-%d"))
+        except (ValueError, AttributeError):
+            meta.append(published[:10])
+    if meta:
+        fields.append({"name": "Source", "value": " · ".join(meta), "inline": True})
+
+    # 4-6. Combined + sub-scores (important first).
+    score_bits = []
     if selection is not None:
-        score_parts.append(f"selection **{selection}**")
-    if score_parts:
-        fields.append({"name": "Score", "value": " · ".join(score_parts), "inline": True})
+        score_bits.append(f"Selection **{selection}**")
+    if market is not None:
+        score_bits.append(f"Market **{market}**")
+    if content is not None:
+        score_bits.append(f"Content **{content}**")
+    if score_bits:
+        fields.append({"name": "Scores", "value": " · ".join(score_bits), "inline": True})
 
-    if sel_conf is not None:
-        conf_parts = [f"selection {float(sel_conf):.2f}"]
-        if market_conf is not None:
-            conf_parts.append(f"market {float(market_conf):.2f}")
-        if content_conf is not None:
-            conf_parts.append(f"content {float(content_conf):.2f}")
-        fields.append({"name": "Confidence", "value": " · ".join(conf_parts), "inline": True})
+    # 7. Confidence (honest: transcript-only stays low).
+    if content_conf is not None:
+        pct = int(round(float(content_conf) * 100))
+        fields.append({"name": "Confidence", "value": f"**{pct}%** · Transcript only", "inline": True})
 
-    if outcome:
-        fields.append({"name": "Outcome", "value": f"`{outcome}`", "inline": True})
-    if fmt:
-        fields.append({"name": "Format", "value": f"`{fmt}`", "inline": True})
-    if angle:
-        fields.append({"name": "Angle", "value": angle[:280], "inline": False})
-
+    # 8. Why selected (outcome + top reasons).
     reasons = candidate.get("top_reasons") or []
+    why = f"`{outcome}`" if outcome else ""
     if reasons:
-        lines = [f"• {r}" for r in reasons[:5]]
-        fields.append({"name": "Top signals", "value": "\n".join(lines)[:900], "inline": False})
+        why += ("\n" if why else "") + "\n".join(f"• {r}" for r in reasons[:3])
+    if why:
+        fields.append({"name": "Why selected", "value": why[:600], "inline": False})
 
+    # 9. Suggested timestamps.
     ts_line = _compact_timestamps(candidate.get("suggested_timestamps"))
     if ts_line:
-        fields.append({"name": "Timestamps", "value": ts_line, "inline": False})
+        fields.append({"name": "Suggested timestamps", "value": ts_line, "inline": False})
 
-    footer = []
-    if candidate.get("tenant_id"):
-        footer.append(str(candidate["tenant_id"]))
-    if candidate.get("profile_id"):
-        footer.append(str(candidate["profile_id"]))
-    if candidate.get("platform"):
-        footer.append(str(candidate["platform"]))
+    # 10. Recommended angle.
+    if angle:
+        fields.append({"name": "Recommended angle", "value": angle[:280], "inline": False})
 
     embed = {
-        "title": "🎬 SOURCE REVIEW · CANDIDATE",
+        "title": header,
         "description": title[:256],
         "color": class_color(outcome),
         "fields": fields,
     }
     if url:
         embed["url"] = url
+    thumb = _thumbnail_url(platform, content_id)
+    if thumb:
+        embed["thumbnail"] = {"url": thumb}
+
+    footer = []
+    if fixture:
+        footer.append("🧪 TEST FIXTURE · downstream locked")
+    if candidate.get("tenant_id"):
+        footer.append(str(candidate["tenant_id"]))
+    if candidate.get("profile_id"):
+        footer.append(str(candidate["profile_id"]))
     if footer:
         embed["footer"] = {"text": " · ".join(footer)[:2048]}
     return embed
 
 
-def format_source_buttons(fingerprint: str) -> list[dict[str, Any]]:
+def format_source_buttons(fingerprint: str, *, disabled: bool = False,
+                          source_url: str = "") -> list[dict[str, Any]]:
+    """Buttons in order: Approve (green), Reject (red), Hold (gray), Open Source (link)."""
     buttons = [
         {"type": 2, "style": 3, "label": DECISION_LABELS[DECISION_APPROVE],
-         "custom_id": make_source_custom_id(DECISION_APPROVE, fingerprint)},
-        {"type": 2, "style": 2, "label": DECISION_LABELS[DECISION_HOLD],
-         "custom_id": make_source_custom_id(DECISION_HOLD, fingerprint)},
+         "custom_id": make_source_custom_id(DECISION_APPROVE, fingerprint), "disabled": disabled},
         {"type": 2, "style": 4, "label": DECISION_LABELS[DECISION_REJECT],
-         "custom_id": make_source_custom_id(DECISION_REJECT, fingerprint)},
+         "custom_id": make_source_custom_id(DECISION_REJECT, fingerprint), "disabled": disabled},
+        {"type": 2, "style": 2, "label": DECISION_LABELS[DECISION_HOLD],
+         "custom_id": make_source_custom_id(DECISION_HOLD, fingerprint), "disabled": disabled},
     ]
+    if source_url:
+        buttons.append({"type": 2, "style": 5, "label": "Open Source", "url": source_url})
     return [{"type": 1, "components": buttons}]
 
 
@@ -268,7 +299,7 @@ def fetch_pending_candidates(url: str, key: str, limit: int = DEFAULT_LIMIT) -> 
     """Return top pending (completed-selection, production-excluded, not-decided)
     candidates ordered by source_selection_score desc."""
     sel_rows = _get(url, key, "loom_source_selections?select=*&order=source_selection_score.desc")
-    src_rows = _get(url, key, "loom_discovered_sources?select=duplicate_fingerprint,title,canonical_url,platform_content_id")
+    src_rows = _get(url, key, "loom_discovered_sources?select=duplicate_fingerprint,title,canonical_url,platform_content_id,creator_channel_identity,publication_timestamp")
     ca_rows = _get(url, key, "loom_content_assessments?select=duplicate_fingerprint,reasons,content_confidence,evidence_level")
     decided = decided_fingerprints(url, key)
 
@@ -295,6 +326,8 @@ def fetch_pending_candidates(url: str, key: str, limit: int = DEFAULT_LIMIT) -> 
             "platform_content_id": src.get("platform_content_id", s.get("platform_content_id", "")),
             "title": src.get("title", ""),
             "canonical_url": src.get("canonical_url", ""),
+            "creator_channel_identity": src.get("creator_channel_identity", ""),
+            "publication_timestamp": src.get("publication_timestamp", ""),
             "market_opportunity_score": s.get("market_opportunity_score"),
             "market_confidence": s.get("market_confidence"),
             "content_worthiness_score": s.get("content_worthiness_score"),
@@ -316,7 +349,7 @@ def fetch_candidate_by_fingerprint(url: str, key: str, fp: str) -> dict[str, Any
     """Look up one combined candidate by duplicate_fingerprint (for button clicks)."""
     q = urllib.parse.quote(fp)
     sel = _get(url, key, f"loom_source_selections?duplicate_fingerprint=eq.{q}&select=*&limit=1")
-    src = _get(url, key, f"loom_discovered_sources?duplicate_fingerprint=eq.{q}&select=title,canonical_url,platform_content_id&limit=1")
+    src = _get(url, key, f"loom_discovered_sources?duplicate_fingerprint=eq.{q}&select=title,canonical_url,platform_content_id,creator_channel_identity,publication_timestamp&limit=1")
     ca = _get(url, key, f"loom_content_assessments?duplicate_fingerprint=eq.{q}&select=reasons,content_confidence,evidence_level&limit=1")
     s = (sel or [{}])[0] if isinstance(sel, list) else {}
     if not isinstance(s, dict) or not s.get("duplicate_fingerprint"):
@@ -332,6 +365,8 @@ def fetch_candidate_by_fingerprint(url: str, key: str, fp: str) -> dict[str, Any
         "platform_content_id": src_r.get("platform_content_id", ""),
         "title": src_r.get("title", ""),
         "canonical_url": src_r.get("canonical_url", ""),
+        "creator_channel_identity": src_r.get("creator_channel_identity", ""),
+        "publication_timestamp": src_r.get("publication_timestamp", ""),
         "market_opportunity_score": s.get("market_opportunity_score"),
         "market_confidence": s.get("market_confidence"),
         "content_worthiness_score": s.get("content_worthiness_score"),

@@ -75,22 +75,51 @@ class TestFormatting(unittest.TestCase):
     def test_embed_shows_both_halves(self):
         e = format_source_embed(_candidate())
         text = json_fields_text(e)
-        self.assertIn("market", text)
-        self.assertIn("content", text)
-        self.assertIn("selection", text)
+        self.assertIn("Selection", text)
+        self.assertIn("Market", text)
+        self.assertIn("Content", text)
 
     def test_embed_keeps_transcript_only_confidence_honest(self):
         e = format_source_embed(_candidate(content_confidence=0.33))
         text = json_fields_text(e)
-        self.assertIn("content 0.33", text)  # never inflated to high confidence
+        self.assertIn("33%", text)  # never inflated to high confidence
+        self.assertIn("Transcript only", text)
+
+    def test_embed_has_stage_header(self):
+        e = format_source_embed(_candidate())
+        self.assertTrue(e["title"].startswith("🔎 SOURCE REVIEW ·"))
+
+    def test_embed_thumbnail_for_youtube(self):
+        e = format_source_embed(_candidate(platform="youtube", platform_content_id="aaaaaaaaaaa"))
+        self.assertIsNotNone(e.get("thumbnail"))
+        self.assertIn("i.ytimg.com/vi/aaaaaaaaaaa", e["thumbnail"]["url"])
+
+    def test_embed_fixture_footer(self):
+        e = format_source_embed(_candidate(), fixture=True)
+        self.assertIn("TEST FIXTURE", e["footer"]["text"])
 
     def test_buttons_three(self):
         comps = format_source_buttons("a" * 64)
         self.assertEqual(len(comps), 1)
         buttons = comps[0]["components"]
         self.assertEqual(len(buttons), 3)
-        labels = {b["label"] for b in buttons}
-        self.assertEqual(labels, {"Approve for Acquisition", "Hold", "Reject"})
+        labels = [b["label"] for b in buttons]
+        # Order: Approve (green), Reject (red), Hold (gray).
+        self.assertEqual(labels, ["Approve for Acquisition", "Reject", "Hold"])
+        self.assertEqual([b["style"] for b in buttons], [3, 4, 2])
+
+    def test_buttons_disabled_for_fixture(self):
+        comps = format_source_buttons("a" * 64, disabled=True)
+        buttons = comps[0]["components"]
+        self.assertTrue(all(b.get("disabled") for b in buttons))
+
+    def test_open_source_link_button(self):
+        comps = format_source_buttons("a" * 64, source_url="https://example.com/v")
+        buttons = comps[0]["components"]
+        self.assertEqual(len(buttons), 4)
+        self.assertEqual(buttons[-1]["label"], "Open Source")
+        self.assertEqual(buttons[-1]["style"], 5)
+        self.assertEqual(buttons[-1]["url"], "https://example.com/v")
 
     def test_class_color(self):
         self.assertIsInstance(class_color("fast_track"), int)
