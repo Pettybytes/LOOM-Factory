@@ -216,9 +216,12 @@ async function postToHelper(candidateUrl) {
     });
     let data = null;
     try { data = await resp.json(); } catch (e) { data = null; }
-    if (data && data.ok) {
+    if (data && data.ok && data.status === 'acquired') {
       mem.result = data;
       await finishAcquire('saved', undefined);
+    } else if (data && data.ok && data.status === 'duplicate') {
+      mem.result = data;
+      await finishAcquire('duplicate', 'already submitted — no new download');
     } else {
       await finishAcquire('failed', (data && (data.message || data.error)) || ('helper HTTP ' + resp.status));
     }

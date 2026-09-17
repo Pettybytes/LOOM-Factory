@@ -196,6 +196,9 @@ class TestSignature(_TempDir):
     def test_moof(self):
         self.assertEqual(acq.read_signature(self._write(b"\x00\x00\x02\xbcmoof\x00\x00\x00\x10mfhd")), "moof")
 
+    def test_styp(self):
+        self.assertEqual(acq.read_signature(self._write(b"\x00\x00\x00\x18stypmsdh")), "styp")
+
     def test_html(self):
         self.assertEqual(acq.read_signature(self._write(b"<!DOCTYPE html><html></html>")), "html")
 

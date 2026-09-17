@@ -20,6 +20,7 @@ const PHASE_LABEL = {
   complete: 'Complete',
   no_traffic: 'No new media traffic observed',
   saved: 'Saved to Reaction Library',
+  duplicate: 'Already submitted (duplicate)',
   failed: 'Failed',
 };
 
@@ -44,6 +45,8 @@ function render(state) {
 
   if (state.phase === 'saved') {
     renderSaved(state.result);
+  } else if (state.phase === 'duplicate') {
+    out.textContent = JSON.stringify({ status: 'duplicate', submissionId: (state.result && state.result.submission_id) || null, note: 'already submitted — no new download' }, null, 2);
   } else if (state.phase === 'complete' || state.phase === 'no_traffic') {
     renderResult(state);
   } else if (ACTIVE_PHASES.includes(state.phase)) {

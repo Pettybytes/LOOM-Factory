@@ -209,6 +209,10 @@ def read_signature(path: str) -> str:
         return "empty"
     if len(head) >= 8 and head[4:8] == b"ftyp":
         return "ftyp"
+    if len(head) >= 8 and head[4:8] == b"styp":
+        return "styp"
+    if len(head) >= 8 and head[4:8] == b"sidx":
+        return "sidx"
     if len(head) >= 8 and head[4:8] == b"moof":
         return "moof"
     lower = head.lower()
@@ -235,8 +239,8 @@ def classify_downloaded_file(path: str, *, http_status, content_type, size_bytes
     sig = read_signature(path)
     if sig == "ftyp":
         return "ok"
-    if sig == "moof":
-        raise DownloadError("FRAGMENTED_MP4", "fragmented MP4 fragment (moof) — not a standalone MP4")
+    if sig in ("moof", "styp", "sidx"):
+        raise DownloadError("FRAGMENTED_MP4", f"fragmented MP4 segment ({sig}) — not a standalone MP4")
     if sig == "html":
         raise DownloadError("HTML_RESPONSE", "downloaded an HTML error body (not media)")
     if sig == "empty":

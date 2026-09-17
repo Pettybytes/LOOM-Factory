@@ -237,6 +237,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if supabase_url and key:
                     reason = getattr(e, "code", None) or type(e).__name__
+                    msg = getattr(e, "message", "")
+                    if msg:
+                        reason = f"{reason}: {msg}"
                     update_job_status(supabase_url, key, job["dedup_key"],
                                       acquisition.STATUS_FAILED, reason)
             except Exception:
