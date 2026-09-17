@@ -1,145 +1,135 @@
-# Apify Instagram Actor — 3-way side-by-side evaluation
+# Apify Instagram Acquisition — broadened provider search (v2)
 
-> Phase 1 artifact (updated). **$0 spent, no Actor call, no token used.**
-> Read-only comparison. STOP for Bryan's provider + budget decision.
+> Phase 1 artifact (v2). **$0 spent, no token used, no API call, no migration, no adapter.**
+> Read-only. STOP for Bryan's provider decision.
 
-## Executive summary
+## Decision (2026-09-17)
 
-- **`crawlerbros/instagram-downloader-api` is DISQUALIFIED** for the LOOM pilot
-  on multiple mandatory criteria (see "Disqualifying evidence" below). Its
-  "much cheaper" price is **not trustworthy** for a cost-ceilinged pilot: the
-  advertised price is disputed, it is pay-per-event **plus variable usage
-  charges**, one post can expand to multiple results (carousel) and to duplicate
-  results (open bug), and it embeds a shared Instagram session pool.
-- **`agentx/instagram-reels-downloader` remains the pilot recommendation** —
-  the only candidate that meets *all* criteria with a **flat, deterministic
-  price** ($0.29/Reel, no usage charge).
-- **`thenetaji/instagram-video-downloader`** is a viable alternative with higher
-  adoption but a **non-deterministic per-MB transfer fee** and the lowest
-  reliability (87.8% success, 3.40★).
+**HOLD `agentx` / `thenetaji` / `crawlerbros`.** The scalable path is the
+**official Apify-maintained Actors**, which return a *direct video CDN URL in the
+base metadata result* — no premium "stored file" event, no usage charge — at
+**$0.0026–0.0027 per Reel**. That is ~4× under the ≤$0.01 preferred target and
+~110× cheaper than `agentx` ($0.29).
 
 ---
 
-## Side-by-side (18 criteria)
+## The key finding (category 6 + 1)
 
-| # | Criterion | `agentx/instagram-reels-downloader` | `thenetaji/instagram-video-downloader` | `crawlerbros/instagram-downloader-api` |
+LOOM does **not** need an Actor that stores a file (the "$0.20 stored file"
+premium). The official Apify Actors return the **original signed video URL** as
+metadata. LOOM fetches that URL **locally, immediately** (before its ~34 h expiry),
+validates (ffprobe + SHA-256), and finalizes to the Reaction Library — the same
+local validation pipeline already built. No remote copy to delete.
+
+| Official Actor | Result price (Free) | Usage charge | Video URL in result | Adoption / rating |
 |---|---|---|---|---|
-| 1 | Actor ID / owner | ID `59aU9vig8wglWOBe1` · **AgentX** (community) | name-resolved · **The Netaji** (community) | name-resolved · **Crawler Bros** (community) |
-| 2 | Build/update | verified 2026-08-09; exact build via versions tab | not captured; verify versions tab | listing pub ~2025-12-14; active issues; verify versions tab |
-| 3 | Pricing model | pay-per-event, **no usage charge** | pay-per-event **+ usage** (per-MB) | pay-per-event **+ usage** (compute/proxy/storage) |
-| 4 | Cost, 1 Reel + file | **$0.29** flat (Start .01 + Meta .08 + Download .20) | $0.001 result + **unpublished per-MB** | "from $1/1,000" + usage; price **disputed** |
-| 5 | Compute/proxy/storage/transfer | **none** ("not charged for platform usage") | per-MB bandwidth (rate unpublished) | yes — variable usage charges |
-| 6 | Failed/empty runs charged | file that fails → "not billed"; Start $0.01 likely still charged | failed/skipped inputs "never charged" | not documented; likely usage still billed |
-| 7 | Startup/minimum/run charge | Actor Start $0.01 | none stated | none stated (usage floor) |
-| 8 | One direct URL strictly limited to one result | **yes by design** (`video_url` string) | `codes` array (bulk-capable; boundary forces single) | **no** — `postUrls` array + `usernames` |
-| 9 | Single Reel → one or many billable events | one row = one result | one result + per-MB | one record per media file; carousel → N |
-| 10 | Carousel-expansion controls | n/a (Reel/post focus; carousel unverified) | not explicit | **expands** — "every image … separate files" |
-| 11 | Media file URL / expiration | KV store URL; default retention | stored file (saveMedia) or 34h directUrl | KV store URL; "temporary", default retention |
-| 12 | Remote-file deletion | KV store record deletable via API | KV store record deletable via API | KV store record deletable via API |
-| 13 | Audio/video quality | `low/medium/high` (480/720/2160p cap) | `480/720/1080/best` | resolution captured; no quality selector documented |
-| 14 | Instagram credentials/cookies | **none** ("No Instagram key") | **none** ("No login required") | ⚠️ **shared session pool** used internally |
-| 15 | Usage / reviews / reliability | 9 users · 5 monthly · **100%** success · 4.00★ | 386 users · 39 monthly · **87.8%** · 3.40★ | 236 users · 37 monthly · 99.9% · 5.00★ |
-| 16 | Input schema | `video_url`, `video_quality`, `max_comments` | `codes[]`, `saveMedia`, `quality` | `postUrls[]`, `usernames[]`, `maxPosts_per_username` |
-| 17 | Output schema | 43 typed fields, one row | pk/code/media_type/counts/savedFile/directUrl | one record/file (filename, type, media_meta_data…) |
-| 18 | Supports LOOM URL form (`/reel/<id>`) | ✅ | ✅ (shortcode/ID/URL) | ✅ (`/p/`, `/reel/`, `/tv/`) |
-| 19 | Supply-chain/security | ⚠️ 9 users = low adoption | ⚠️ community dev; per-MB opaque | ⚠️ shared sessions; duplicate-writes + pricing issues |
+| `apify/instagram-reel-scraper` | **$0.0026** ($2.60/1,000) | **none** | ✅ "video URL + downloaded video URL" + transcript + duration | 145,555 users · 13,702 mo · 100% success · 4.39★ |
+| `apify/instagram-scraper` | **$0.0027** ($2.70/1,000) | **none** | ✅ "image and video URLs" (`videoUrl`) | 396,415 users · 43,140 mo · 100% success · 4.70★ |
+
+Both are **Apify-owned** (not community), pay-per-event, "not charged for
+platform usage", and accept a **direct Reel/post URL** with a per-URL **results
+limit** (→ `maxResults=1` is enforceable).
 
 ---
 
-## Recommendation standard — compliance matrix
+## Top 3 ranked (contract compliance → unit cost → reliability → complexity)
 
-> Choose the **cheapest** Actor that meets **all** of:
+### 1. `apify/instagram-reel-scraper` (official) — **recommended**
+- **Provider/owner:** Apify (first-party). Reel-specialized.
+- **Direct single-Reel URL:** ✅ accepts reel URLs individually.
+- **Video-with-audio:** returns "original video URL" + "downloaded video URL" (+ transcript, duration, music, dimensions). ⚠️ verify in Phase 3 that the original URL is a muxed mp4 with audio.
+- **Credentials/cookies:** none (public page only).
+- **All-in success cost:** **$0.0026/Reel** (metadata result) + **$0** local fetch.
+- **Failure cost:** ~$0 (pay-per-result; 0 results → 0 result events). Verify no minimum-run fee.
+- **Min commitment:** none (pay-per-use; Free tier ~2,000 reels with $5 credit).
+- **Expansion controls:** LOOM hard-codes direct-URL mode + single URL + results limit 1; profile/username inputs omitted. Reel is a single video (no carousel expansion).
+- **Reliability/adoption:** 145,555 users, 13,702 monthly, 100.0% success, 4.39★.
+- **Output contract:** 128 typed fields (caption, transcript, duration, likes/shares/views, music, video URLs, creator).
+- **Deletion/retention:** n/a for the direct-URL path (LOOM fetches from IG CDN; no Apify file retained). If the "downloaded video" feature is used, its KV record is deletable via API.
+- **Security/supply-chain:** first-party Apify (highest trust tier). Signed URL is volatile (~34 h) — never persisted.
+- **Complexity:** low — one Actor call + local fetch (pipeline already exists).
 
-| Requirement | agentx | thenetaji | crawlerbros |
-|---|---|---|---|
-| accepts exactly one canonical Reel URL | ✅ | ⚠️ (array, but no profile input) | ❌ array + `usernames` |
-| returns exactly one video with audio | ✅ | ⚠️ | ❌ carousel → N; duplicate-writes bug |
-| requires no IG credentials/cookies | ✅ | ✅ | ⚠️ shared session pool |
-| prevents profile/search/pagination/related expansion | ✅ | ✅ (no search input) | ❌ `usernames` + `maxPosts_per_username` |
-| stable output contract | ✅ 43 fields | ✅ | ⚠️ duplicate-writes issue |
-| sufficiently maintained + reliable | ⚠️ 9 users / 100% | ⚠️ 386 users / 87.8% | ⚠️ 236 users / 99.9% + open issues |
-| local retrieval + remote cleanup | ✅ | ✅ | ✅ |
-| **deterministic, pre-calculable cost** | ✅ flat $0.29 | ❌ per-MB unpublished | ❌ usage + price discrepancy |
+### 2. `apify/instagram-scraper` (official) — **fallback**
+- **Provider/owner:** Apify (flagship Instagram Actor).
+- **Direct single-Reel URL:** ✅ URL mode ("Post URL or Reel URL → details"), `Results limit` per URL.
+- **Video-with-audio:** returns `videoUrl` (CDN mp4) + `videoDuration`/`videoPlayCount`. ⚠️ verify audio in Phase 3.
+- **Credentials/cookies:** none.
+- **All-in success cost:** **$0.0027/Reel** (Free); Starter $2.30/1,000, Scale $1.90, Business $1.50.
+- **Failure cost:** ~$0 (per-result).
+- **Min commitment:** none.
+- **Expansion controls:** URL mode + results limit 1; search mode omitted.
+- **Reliability/adoption:** 396,415 users, 43,140 monthly, 100.0% success, 4.70★ (highest of all).
+- **Output contract:** post/reel schema incl. `videoUrl`, engagement, owner, carousel children.
+- **Deletion/retention:** n/a (direct URL path).
+- **Security/supply-chain:** first-party Apify.
+- **Complexity:** low.
 
-**Result:** `crawlerbros` fails 4 mandatory requirements. `thenetaji` passes the
-functional requirements but has a non-deterministic per-MB fee and the lowest
-reliability. `agentx` is the only candidate passing all requirements with a
-deterministic price.
-
----
-
-## Why `agentx` over the "much cheaper" Crawler Bros Actor
-
-The comparison is not "cheaper vs pricier." It is "**compliant + deterministic**
-vs **non-compliant + non-deterministic**." Specific reasons:
-
-1. **Not actually single-URL.** `crawlerbros` takes `postUrls[]` *and*
-   `usernames[]` with `maxPosts_per_username` (1–100) — i.e., profile scraping
-   and pagination are built into the Actor surface. LOOM's boundary would have to
-   *fight* the Actor to keep it to one URL, rather than the Actor *guaranteeing*
-   one URL by design (as `agentx`'s single `video_url` string does).
-
-2. **"Cheaper" is not established.** The document cited `$5/1,000 ≈ $0.005`; the
-   current listing shows **"from $1.00/1,000"**, and the Actor has an **open
-   "Pricing discrepancy" issue**. The real per-result price is unresolved.
-
-3. **One post ≠ one billable event.** A carousel "downloads every image … as
-   separate files" (N records for one URL), and there is an open **"duplicate
-   dataset writes per post"** issue — so a single Reel can be billed more than
-   once. The $0.005/result figure does not map to $0.005/Reel.
-
-4. **Variable usage charges.** `crawlerbros` is pay-per-event **and usage**
-   (compute + proxy + storage). An 8 MB video proxy transfer adds unbounded,
-   non-deterministic cost on top of the result fee. `agentx` explicitly has **no
-   usage charge** — $0.29 is the whole price.
-
-5. **Shared Instagram session pool.** `crawlerbros` relies on "a managed pool of
-   shared Instagram sessions." That is a ban/rate-limit risk and a ToS gray area
-   that `agentx` (no IG key, public page only) and `thenetaji` (no login) avoid.
-
-None of this equates price with reliability. `agentx` is chosen for
-**single-URL-by-design + no-expansion + no-cookies + deterministic flat cost +
-100% observed success** — not for its price. Its real weakness is **low adoption
-(9 users)**, which is flagged and mitigated (pin Actor ID + build, keep
-`thenetaji` as fallback).
-
-> ⚠️ Scale note (honest): at 100–1,000 Reels, `agentx` is 60–300× the advertised
-> `crawlerbros` result rate. For the **pilot** (≤3 acquisitions under a $1
-> ceiling) the difference is immaterial ($0.87 vs ≈$0.03). **Before any scale-up,
-> re-evaluate** `crawlerbros` (if its single-URL/carousel/duplicate/pricing issues
-> are fixed) or another single-URL-only competitor.
+### 3. Browser-extension manual download — **zero-cost emergency route (already built)**
+- **Provider/owner:** LOOM (`infra/chrome-extension`).
+- **Direct single-Reel URL:** ✅ (user is on the exact Reel tab).
+- **Video-with-audio:** depends on browser capture; the automated fMP4 auto-assembly failed (`INSUFFICIENT_FMP4_SET`), but a *human manual save* remains a fallback.
+- **Credentials/cookies:** uses the user's own logged-in session (no export).
+- **All-in success cost:** **$0**.
+- **Failure cost:** $0.
+- **Min commitment:** none.
+- **Expansion controls:** single active tab, content-id locked.
+- **Reliability:** manual (human-dependent); automated path closed out as `blocked_local_fmp4_incomplete`.
+- **Output contract:** local file only (no structured metadata).
+- **Deletion/retention:** local only.
+- **Security/supply-chain:** first-party.
+- **Complexity:** low, but **manual — keep clearly separated from automated tenant sourcing** (per policy).
 
 ---
 
-## Cost — expected vs worst-case (single Reel with file, FREE tier)
+## Economics at scale (all-in, metadata-result + local fetch)
 
-| Actor | 1 Reel | 10 | 100 | 1,000 | Deterministic? |
+| Candidate | /Reel | 100/mo | 500/mo | 900/mo | 1,000/mo |
 |---|---|---|---|---|---|
-| `agentx` (flat $0.29) | $0.29 | $2.90 | $29.00 | $290.00 | ✅ exact |
-| `thenetaji` ($0.001 + per-MB) | ~$0.01–0.05¹ | ~$0.10–0.50¹ | ~$1–5¹ | ~$10–50¹ | ❌ per-MB unpublished |
-| `crawlerbros` ("from $1/1k" + usage) | ~$0.001 + usage² | ~$0.01 + usage² | ~$0.10 + usage² | ~$1 + usage² | ❌ usage + price dispute |
+| `instagram-reel-scraper` | $0.0026 | **$0.26** | **$1.30** | **$2.34** | **$2.60** |
+| `instagram-scraper` (Free) | $0.0027 | $0.27 | $1.35 | $2.43 | $2.70 |
+| `instagram-scraper` (Business) | $0.0015 | $0.15 | $0.75 | $1.35 | $1.50 |
+| ~~`agentx`~~ (HOLD) | $0.29 | $29 | $145 | $261 | $290 |
+| Browser-extension manual | $0 | $0 | $0 | $0 | $0 (human time only) |
 
-¹ per-MB bandwidth rate is **not published** — estimate only, cannot bound.
-² plus unbounded compute/proxy/storage usage and possible duplicate-writes
-(2×) and carousel expansion (N×). Cannot be bounded in advance.
+Target met: **≤$0.01/Reel by ~4×** on the Free plan; failed/empty-run exposure ~$0.
 
-**Worst-case for the pilot ($1 ceiling):** only `agentx` gives a hard, bounded
-number (3 × $0.29 = $0.87 < $1). The other two cannot be hard-bounded, which
-violates the pilot's "reserve worst-case before running" rule.
+---
+
+## The 6 categories — coverage
+
+1. **Official Apify Actors** → ✅ **chosen** (above). They return a usable video URL for one exact post/Reel *without* separately storing the file.
+2. **Other Apify Actors with strict direct-URL + maxResults=1** → official Actors already support URL mode + results limit; no community Actor beats $0.0026 with comparable trust.
+3. **Private LOOM Apify Actor** → feasible but **not needed now**: a private Actor still pays compute + proxy + session infra to resolve Instagram, which won't beat $0.0026/result at LOOM's volume. Revisit only if volume or contract requirements change.
+4. **Other reputable API providers** → no transparent pay-per-success provider found that matches Apify's first-party trust + $0.0026 + zero usage charge. Not pursued.
+5. **Browser-extension manual** → ✅ retained as the $0 emergency route (ranked #3), separated from automated sourcing.
+6. **Metadata returning a complete downloadable URL (avoiding stored-file premium)** → ✅ **this is the answer** — official Actors return the original signed video URL in the base result.
+
+---
+
+## Prior candidates — HOLD (from v1)
+
+- **`agentx/instagram-reels-downloader`** — HOLD. $0.29/Reel fails production economics (100 = $29 … 1,000 = $290). Retained only as a documented emergency/manual fallback for rare high-value sources.
+- **`thenetaji/instagram-video-downloader`** — HOLD. Unpublished per-MB fee; non-deterministic cost.
+- **`crawlerbros/instagram-downloader-api`** — HOLD (disqualified). Expansion (`usernames`), carousel→N results, duplicate-writes issue, shared session pool, pricing discrepancy + variable usage.
 
 ---
 
 ## Recommendation
 
-- **Pilot (this decision): `agentx/instagram-reels-downloader`** — meets all
-  criteria, deterministic $0.29, no usage charge, 100% success. Keep
-  `thenetaji/instagram-video-downloader` as the documented fallback.
-- **Not `crawlerbros` now** — disqualified on single-URL enforcement, expansion,
-  carousel/duplicate-writes, shared-session, and cost-determinism grounds.
-  Re-evaluate only for scale, and only after its open issues are resolved.
-- **Budget unchanged:** keep the **$1 hard ceiling** + **max 3** pilot
-  acquisitions (3 × $0.29 = $0.87), pending Bryan's final decision.
+Adopt **`apify/instagram-reel-scraper`** as LOOM's default Instagram acquisition
+provider (official, $0.0026/Reel, Reel-specialized with transcript), with
+**`apify/instagram-scraper`** as the documented fallback and the **browser
+extension** as the $0 emergency route. `agentx` demoted to emergency/manual-only.
 
-**Verification gaps (Phase 2/3, before any call):** exact numeric Actor IDs for
-`thenetaji` and `crawlerbros` (resolve via API tab); exact build tags for all
-three; `thenetaji`'s per-MB rate; confirm `agentx` failed-run Start billing.
+**Verification gaps (Phase 3, before any real call — still $0 until then):**
+1. Confirm the base result's video URL field is a **muxed mp4 with audio** (not
+   video-only), and that the "downloaded video URL" is a *separate optional* event
+   (not required to get a fetchable URL).
+2. Confirm exact output field name (e.g. `videoUrl`) and signed-URL expiry (~34 h).
+3. Confirm a 0-result (private/deleted) run bills **$0** (no minimum-run fee).
+4. Confirm `maxResults=1` + single URL yields exactly one result (no carousel drift).
+
+**Budget:** keep the **$1 hard ceiling** for the pilot — at $0.0026/Reel it now
+covers ~380 Reels, so the prior "max 3" constraint is obsolete. Propose: **$1
+ceiling, no fixed acquisition cap** (still one URL + one result per run, no
+automatic retries, circuit breaker on ceiling).

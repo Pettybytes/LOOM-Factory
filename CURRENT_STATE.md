@@ -18,20 +18,20 @@
   ladder → `["chrome-extension", "apify"]`. Local code retained, NOT deleted,
   NOT further repaired.
 
-### Apify paid-provider fallback — Phase 1 (evaluation + design, $0)
-- Actor evaluation (3-way): `infra/acquisition/APIFY_INSTAGRAM_ACTOR_EVALUATION.md`
-  — `agentx/instagram-reels-downloader` (Actor `59aU9vig8wglWOBe1`, $0.29/Reel
-  flat, no usage charge, 100% success, 9 users) = pilot recommendation;
-  `thenetaji/instagram-video-downloader` (per-MB fee, 87.8%) = fallback;
-  `crawlerbros/instagram-downloader-api` = **DISQUALIFIED** (array+`usernames`
-  expansion, carousel→N results, duplicate-writes issue, shared session pool,
-  pricing discrepancy + variable usage).
+### Apify paid-provider fallback — Phase 1 (broadened provider search, $0)
+- DECISION (2026-09-17): **HOLD** `agentx` / `thenetaji` / `crawlerbros`.
+- Scalable path found: **official Apify Actors** return a direct video CDN URL in
+  the base metadata result (no "stored file" premium, no usage charge) at
+  **$0.0026–0.0027/Reel** — ~4× under the ≤$0.01 target, ~110× cheaper than
+  `agentx`. See `infra/acquisition/APIFY_INSTAGRAM_ACTOR_EVALUATION.md`.
+- Top 3: (1) `apify/instagram-reel-scraper` (official, $0.0026, 145K users) =
+  recommended; (2) `apify/instagram-scraper` (official, $0.0027, 396K users) =
+  fallback; (3) browser-extension manual = $0 emergency route.
 - Provider-neutral boundary: `infra/acquisition/APIFY_PROVIDER_BOUNDARY.md`
   (15 shared contracts, 2 intake lanes, cost controls, secret handling,
   migrations 034/035 identified, 14-case mock-test plan).
-- ⚠️ COST CONFLICT: "$1 ceiling" + "max 10 acquisitions" are incompatible
-  ($0.29×10=$2.90). Recommendation: $1 hard ceiling + **max 3** successful
-  pilot acquisitions (3×$0.29=$0.87).
+- Budget: keep $1 hard ceiling — at $0.0026/Reel it covers ~380 Reels; prior
+  "max 3" constraint obsolete. One URL + one result per run, no auto-retry.
 - $0 spent. No Apify call. Token present-but-unused (presence verified only).
 
 ### STOP — awaiting Bryan's approval before Phase 2

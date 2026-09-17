@@ -20,15 +20,15 @@ new job row; library + tmp dirs empty; no signed URL leaked. Instagram capabilit
 → `blocked_local_fmp4_incomplete` (candidates `["chrome-extension", "apify"]`);
 local code retained, not deleted, not further repaired.
 
-Apify paid-provider fallback — Phase 1 complete ($0, no call, token unused):
-- `infra/acquisition/APIFY_INSTAGRAM_ACTOR_EVALUATION.md` — 3-way comparison:
-  `agentx/instagram-reels-downloader` (recommended, $0.29/Reel flat),
-  `thenetaji/instagram-video-downloader` (fallback), and
-  `crawlerbros/instagram-downloader-api` (DISQUALIFIED: expansion + carousel + duplicate-writes + shared sessions + pricing discrepancy).
-- `infra/acquisition/APIFY_PROVIDER_BOUNDARY.md` (15 shared contracts, 2 intake
-  lanes, cost controls, secret handling, migrations 034/035, 14-case mock plan).
-- ⚠️ COST CONFLICT: $1 ceiling + max 10 acquisitions are incompatible
-  ($0.29×10=$2.90). Recommend $1 ceiling + max 3 (3×$0.29=$0.87).
+Apify paid-provider fallback — Phase 1 broadened search ($0, no call, token unused):
+- DECISION: **HOLD** `agentx` / `thenetaji` / `crawlerbros`.
+- Scalable path: **official Apify Actors** return a direct video CDN URL in the
+  base metadata result at **$0.0026–0.0027/Reel** (no stored-file premium, no
+  usage charge). Top 3: (1) `apify/instagram-reel-scraper` (recommended),
+  (2) `apify/instagram-scraper` (fallback), (3) browser-extension manual ($0).
+- `infra/acquisition/APIFY_INSTAGRAM_ACTOR_EVALUATION.md` (v2, full ranking +
+  economics) + `APIFY_PROVIDER_BOUNDARY.md` (contracts, migrations 034/035).
+- Budget: keep $1 ceiling (~380 Reels at $0.0026); "max 3" obsolete.
 
 Next: STOP for Bryan's approval before Phase 2 (token + adapter + mocks + tests).
 
