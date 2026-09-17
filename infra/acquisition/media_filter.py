@@ -87,3 +87,80 @@ def redact_url(url: str) -> str:
         return parts.scheme + "://" + parts.netloc + (parts.path or "")
     except Exception:
         return "(unparseable)"
+
+
+# ---------------------------------------------------------------------------
+# Request classification + inspection summary (diagnostic, never null)
+# ---------------------------------------------------------------------------
+REJECTION_SCHEME = "scheme_rejected"
+REJECTION_HOSTNAME = "hostname_rejected"
+REJECTION_RESOURCE_TYPE = "resource_type_rejected"
+REJECTION_CONTENT_TYPE = "content_type_rejected"
+REJECTION_IMAGE = "image_rejected"
+REJECTION_AD = "analytics_ad_rejected"
+ACCEPTED = "accepted"
+
+_NON_MEDIA_RESOURCE_TYPES = frozenset({
+    "Document", "Stylesheet", "Script", "Font", "Manifest", "TextTrack",
+    "EventSource", "WebSocket", "Ping", "Preflight",
+})
+
+_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".heic", ".bmp"}
+
+_AD_HOST_MARKERS = ("analytics", "telemetry", "tracking", "ads.", "doubleclick")
+_AD_PATH_MARKERS = ("/analytics", "/telemetry", "/tracking", "/ads", "/tr")
+
+
+def is_analytics_or_ad(hostname: str, path: str) -> bool:
+    h = (hostname or "").lower()
+    p = (path or "").lower()
+    if any(m in h for m in _AD_HOST_MARKERS):
+        return True
+    return any(m in p for m in _AD_PATH_MARKERS)
+
+
+def _is_image_url(url: str, mime_type: str) -> bool:
+    mt = (mime_type or "").lower()
+    if mt.startswith("image/"):
+        return True
+    try:
+        ext = os.path.splitext(urlsplit(url).path or "")[1].lower()
+    except Exception:
+        return False
+    return ext in _IMAGE_EXT
+
+
+def classify_request(url: str, mime_type: str = "", resource_type: str = "") -> str:
+    """Classify a captured network request: a rejection reason or 'accepted'."""
+    if not (url or "").startswith("https://"):
+        return REJECTION_SCHEME
+    rt = resource_type or ""
+    if rt == "Image":
+        return REJECTION_IMAGE
+    if rt in _NON_MEDIA_RESOURCE_TYPES:
+        return REJECTION_RESOURCE_TYPE
+    try:
+        parts = urlsplit(url)
+    except Exception:
+        return REJECTION_CONTENT_TYPE
+    hostname = parts.hostname or ""
+    if is_analytics_or_ad(hostname, parts.path or ""):
+        return REJECTION_AD
+    if not is_approved_media_host(hostname):
+        return REJECTION_HOSTNAME
+    if _is_image_url(url, mime_type):
+        return REJECTION_IMAGE
+    if is_media_candidate(url, mime_type):
+        return ACCEPTED
+    return REJECTION_CONTENT_TYPE
+
+
+def summarize_inspection(candidates: list, counts: dict) -> dict:
+    """Explicit result dict — NEVER null. Zero candidates -> explicit reason."""
+    n = len(candidates)
+    return {
+        "result": "no_media_traffic_observed" if n == 0 else "complete",
+        "candidateCount": n,
+        "candidates": list(candidates),
+        "rejectionCounts": dict(counts or {}),
+    }

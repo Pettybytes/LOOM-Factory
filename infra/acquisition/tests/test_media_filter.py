@@ -13,6 +13,9 @@ sys.path.insert(0, str(_REPO_ROOT / "infra" / "acquisition"))
 from media_filter import (  # noqa: E402
     DIRECT_VIDEO, MANIFEST, SEGMENT, AUDIO,
     is_approved_media_host, classify_media_url, is_media_candidate, redact_url,
+    classify_request, summarize_inspection,
+    REJECTION_SCHEME, REJECTION_HOSTNAME, REJECTION_RESOURCE_TYPE,
+    REJECTION_CONTENT_TYPE, REJECTION_IMAGE, REJECTION_AD, ACCEPTED,
 )
 
 
@@ -78,6 +81,55 @@ class TestRedact(unittest.TestCase):
     def test_strips_query_and_fragment(self):
         u = "https://x.cdninstagram.com/v/a.mp4?sig=SECRET&exp=123#frag"
         self.assertEqual(redact_url(u), "https://x.cdninstagram.com/v/a.mp4")
+
+
+class TestClassifyRequest(unittest.TestCase):
+    def test_scheme_rejected(self):
+        self.assertEqual(classify_request("http://x.cdninstagram.com/v/a.mp4"), REJECTION_SCHEME)
+
+    def test_hostname_rejected(self):
+        self.assertEqual(classify_request("https://evil.com/a.mp4"), REJECTION_HOSTNAME)
+        self.assertEqual(classify_request("https://instagram.com.evil.com/a.mp4"), REJECTION_HOSTNAME)
+
+    def test_resource_type_rejected(self):
+        self.assertEqual(classify_request("https://x.cdninstagram.com/a", resource_type="Document"), REJECTION_RESOURCE_TYPE)
+        self.assertEqual(classify_request("https://x.cdninstagram.com/a", resource_type="Script"), REJECTION_RESOURCE_TYPE)
+
+    def test_image_rejected(self):
+        self.assertEqual(classify_request("https://x.cdninstagram.com/v/cover.jpg"), REJECTION_IMAGE)
+        self.assertEqual(classify_request("https://x.cdninstagram.com/v/a", mime_type="image/jpeg"), REJECTION_IMAGE)
+
+    def test_analytics_ad_rejected(self):
+        self.assertEqual(classify_request("https://analytics.instagram.com/x"), REJECTION_AD)
+        self.assertEqual(classify_request("https://www.instagram.com/tr"), REJECTION_AD)
+
+    def test_accepted_media(self):
+        self.assertEqual(classify_request("https://x.cdninstagram.com/v/a.mp4"), ACCEPTED)
+        self.assertEqual(classify_request("https://x.fbcdn.net/v/a.m3u8"), ACCEPTED)
+        self.assertEqual(classify_request("https://x.cdninstagram.com/v/a.m4s", resource_type="Media"), ACCEPTED)
+        self.assertEqual(classify_request("https://x.cdninstagram.com/v/a", mime_type="video/mp4"), ACCEPTED)
+
+    def test_content_type_rejected(self):
+        self.assertEqual(classify_request("https://x.cdninstagram.com/v/a", resource_type="XHR"), REJECTION_CONTENT_TYPE)
+
+
+class TestSummarize(unittest.TestCase):
+    def test_never_null_with_candidates(self):
+        r = summarize_inspection([{"host": "x.cdninstagram.com"}], {"accepted": 1})
+        self.assertEqual(r["result"], "complete")
+        self.assertEqual(r["candidateCount"], 1)
+
+    def test_zero_candidates_explicit_reason(self):
+        r = summarize_inspection([], {"content_type_rejected": 5})
+        self.assertEqual(r["result"], "no_media_traffic_observed")
+        self.assertEqual(r["candidateCount"], 0)
+        self.assertEqual(r["rejectionCounts"]["content_type_rejected"], 5)
+
+    def test_always_returns_dict(self):
+        # even with None counts, never None
+        r = summarize_inspection([], None)
+        self.assertIsInstance(r, dict)
+        self.assertIn("result", r)
 
 
 if __name__ == "__main__":

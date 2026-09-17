@@ -6,6 +6,31 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~18:05 EDT — NETWORK PROBE REPAIRED (inconclusive test diagnosed)
+
+**First network-probe human test was INCONCLUSIVE (not a failure):** zero
+candidates + a raw `null` (popup-close state loss) while the video was playing.
+NOT classified as blocked.
+
+**Repaired the test flow** (`infra/chrome-extension/` v0.3.0):
+- State persisted in `chrome.storage.session` → reopening the popup never shows
+  raw `null`.
+- Explicit phases: Ready → Attaching → Inspection active (replay/reload now) →
+  Collecting → Complete | No new media traffic observed | Failed(reason), with a
+  live 12s countdown + attached/detached status.
+- **Inspect + reload Reel** option (attach first → clear in-memory candidates →
+  reload active tab → observe fresh load) — fixes the likely "already buffered"
+  cause.
+- Cached responses captured (`fromDiskCache`/`fromMemoryCache`).
+- Redacted rejection counts by reason (hostname/scheme/resource-type/content-type/
+  image/analytics-ad/accepted) — `media_filter.py` `classify_request` +
+  `summarize_inspection` (never null) + 10 new tests.
+
+Instagram VIDEO still NOT classified blocked. No download, no cookies, no Apify/
+OpenShorts/OBS/GHL/publish.
+
+---
+
 ## STOP STATE — 2026-09-17 ~17:55 EDT — CHROME blob/MSE CONFIRMED; NETWORK PROBE BUILT
 
 **Chrome stage-1 result:** `isBlobOrMse: true`, `isDirectUrl: false` — the simple

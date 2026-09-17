@@ -9,15 +9,17 @@
 ---
 
 ## Last Updated
-2026-09-17 17:55 EDT (America/Detroit) — CHROME blob/MSE; NETWORK PROBE BUILT
+2026-09-17 18:05 EDT (America/Detroit) — NETWORK PROBE REPAIRED
 
-## HANDOFF — Chrome blob/MSE confirmed; network probe built
+## HANDOFF — network probe repaired; repeat human test
 
-Stage-1 `<video>.src` = blob/MSE (not feasible). Built stage-2 user-initiated
-`chrome.debugger` Network probe (bounded 12s, active-tab only, metadata only,
-auto-detach) + `media_filter.py` filtering contract (15 tests). Next: Bryan
-reloads the extension, opens a playing Reel, clicks "Inspect Playing Media",
-reports the redacted candidates (direct MP4 vs MPD/M3U8 vs segments).
+First network-probe test was inconclusive (zero candidates + raw null from popup
+close, while the video played). Repaired v0.3.0: session-storage persistence (no
+null), explicit phases + 12s countdown + attached status, an Inspect+reload-Reel
+option (attach first, then reload to force a fresh load), cached-response
+capture, and redacted rejection counts (classify_request/summarize_inspection,
+10 tests). Next: Bryan reloads the extension and repeats the human test with
+"Inspect + reload Reel".
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).
