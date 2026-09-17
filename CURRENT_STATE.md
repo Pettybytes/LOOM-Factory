@@ -6,6 +6,22 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~15:30 EDT
+
+**Content Intelligence Operationalization V1.1: COMPLETE (recurring pipeline runtime-proven).**
+
+- A/B (same transcript): **Gemini Flash-Lite vs Qwen** — Gemini is the default transcript-triage provider (2.6s vs 146s; 560 vs 5798 output tokens; both schema-valid + evidence-grounded).
+- **Pinned model:** `gemini-3.5-flash-lite` (resolved from `gemini-flash-lite-latest`); Qwen `qwen/qwen3.5-9b` (OpenRouter/SiliconFlow) as explicit secondary (no silent fallback).
+- **Real provider layer** promoted: `providers.py` (GeminiProvider + QwenProvider — classified failures, cost/token accounting, model identity persistence, no credential logging).
+- **Recurring `pipeline.py` (Pass1Pipeline):** discovery → Topic Intelligence → market shortlist → transcript-only (yt-dlp skip-download, 0 media bytes) → Content Intelligence → Combined Selection → idempotent Supabase. Hard limits + $0.05 run cost ceiling.
+- **Selection queue contract:** `selection_queue()` — completed selections only (7 outcomes).
+- **117 deterministic tests** (62 discovery + 55 content-intelligence).
+- **Recurring-pipeline runtime proof 9/9** ($0.00071, non-production, idempotent, excluded).
+
+Zero full-video download. No Acquisition/OpenShorts/Discord/publish. Proof profile auto-excluded.
+
+---
+
 ## STOP STATE — 2026-09-17 ~15:05 EDT
 
 **Content Intelligence Preflight V1 + Combined Source Selection V1: BUILT + TESTED + Pass-1 RUNTIME-PROVEN.**

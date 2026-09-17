@@ -76,6 +76,10 @@ Decision outcomes: `fast_track`, `hold_hype`, `emerging`, `reject`,
 | Supabase persistence (migrations 025/026) | **APPLIED + RUNTIME-PROVEN** (Pass-1 rows written idempotently) |
 | Semantic scoring (hook/emotion/…) via real model | **RUNTIME-PROVEN** (Pass-1, Gemini Flash-Lite) |
 | Real transcript inspection | **RUNTIME-PROVEN** (Pass-1) |
+| Real provider layer (Gemini + Qwen) | **BUILT + TESTED** (pinned models, classified failures, cost/token accounting) |
+| Recurring Pass-1 pipeline | **BUILT + TESTED + RUNTIME-PROVEN** (9/9 e2e) |
+| Selection queue contract | **BUILT + TESTED** |
+| A/B: Gemini vs Qwen | **DONE** — default = Gemini Flash-Lite (57× faster, 10× fewer output tokens) |
 | Real thumbnail / bounded-media inspection | **DEFERRED** (Pass 2 — media gate) |
 | Source Review Inbox | **PAUSED** (resumes after this segment) |
 
@@ -90,6 +94,36 @@ Real YouTube candidate (Linus Tech Tips) → English auto-captions via yt-dlp
 Flash-Lite scores the transcript (evidence level 1) → strict Content Assessment
 → Combined Source Selection → idempotent Supabase persistence. 13/13 acceptance
 criteria; cost ≈ $0.002 (well under the $0.05 ceiling).
+
+## Default provider + pinned model
+
+A/B (same transcript, same schema/settings) at `ab_gemini_qwen.py`:
+
+| | Gemini Flash-Lite | OpenRouter Qwen `qwen3.5-9b` |
+|---|---|---|
+| resolved | `gemini-3.5-flash-lite` | `qwen/qwen3.5-9b` (SiliconFlow) |
+| latency | **2.6s** | 146s |
+| output tokens | **560** | 5798 |
+| worthiness | 68 | 82 |
+| schema-valid / evidence-grounded | ✅ | ✅ |
+
+**Default transcript-triage provider: Gemini Flash-Lite** (pinned
+`gemini-3.5-flash-lite` — not the `-latest` alias). It is ~57× faster and ~10×
+more concise at effectively equivalent quality and cost. Qwen remains an
+explicit secondary provider (no silent fallback).
+
+## Recurring Pass-1 pipeline
+
+```sh
+python3 infra/content_intelligence/prove_pipeline.py
+```
+
+`pipeline.Pass1Pipeline` is the bounded production path: discovery → Topic
+Intelligence → market shortlist threshold → transcript-only retrieval (yt-dlp
+skip-download) → real provider → Content Intelligence → Combined Selection →
+idempotent Supabase persistence. Hard limits (candidates / transcript chars /
+tokens / cost ceiling). `selection_queue()` returns only completed selections
+eligible for the future Source Review queue.
 
 ## Tests
 

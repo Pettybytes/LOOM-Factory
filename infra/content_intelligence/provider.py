@@ -287,8 +287,12 @@ def assess_content(
     competition_count: int = 0,
     seen_titles: set[str] | None = None,
     has_differentiated_angle: bool = False,
+    raw: dict[str, Any] | None = None,
 ) -> ContentAssessment:
-    """Compose a validated ContentAssessment from structural + provider signals."""
+    """Compose a validated ContentAssessment from structural + provider signals.
+
+    ``raw`` may be supplied to avoid a second provider call when the caller has
+    already invoked ``provider.assess`` (e.g. to capture usage/identity)."""
     level = evidence_bundle.level()
 
     # Structural (deterministic) signals.
@@ -307,7 +311,8 @@ def assess_content(
     }
 
     # Provider (semantic) signals — gated by evidence level inside the provider.
-    raw = provider.assess(evidence_bundle, brief)
+    if raw is None:
+        raw = provider.assess(evidence_bundle, brief)
     model_scores = dict(raw.get("scores") or {})
     # Provider must not claim dimensions its evidence can't support; drop them.
     allowed = evidence.allowed_dimensions(level)

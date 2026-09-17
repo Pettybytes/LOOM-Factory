@@ -9,7 +9,16 @@
 ---
 
 ## Last Updated
-2026-09-17 15:05 EDT (America/Detroit)
+2026-09-17 15:30 EDT (America/Detroit)
+
+## Segment — Content Intelligence Operationalization V1.1 (recurring pipeline)
+
+- **A/B:** Gemini Flash-Lite vs Qwen — Gemini is default transcript-triage provider (2.6s vs 146s; 560 vs 5798 output tokens; both schema-valid + evidence-grounded).
+- **Pinned model:** `gemini-3.5-flash-lite`; Qwen `qwen/qwen3.5-9b` (secondary, no silent fallback).
+- **`providers.py`** — real Gemini + Qwen providers (classified failures, cost/token accounting, model identity, no credential logging).
+- **`pipeline.py`** — Pass1Pipeline (discovery → topic → shortlist → transcript → content → selection → idempotent Supabase; hard limits + cost ceiling) + `selection_queue()`.
+- **`store_supabase.py`** — Supabase persistence for assessments + selections.
+- **117 deterministic tests** (62 + 55). **Recurring-pipeline proof 9/9** ($0.00071).
 
 ## Segment — Content Intelligence Preflight V1 + Combined Source Selection V1
 

@@ -15,6 +15,7 @@ Pure stdlib; no model call, no media download, no I/O in the contract layer.
 """
 
 from . import evidence, contract, selection, provider, probe  # noqa: F401
+from . import providers, pipeline, store_supabase  # noqa: F401
 
 __version__ = "1.0.0"
 
@@ -24,5 +25,8 @@ __all__ = [
     "selection",
     "provider",
     "probe",
+    "providers",
+    "pipeline",
+    "store_supabase",
     "__version__",
 ]
