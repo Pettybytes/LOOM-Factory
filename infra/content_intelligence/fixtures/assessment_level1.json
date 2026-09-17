@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0.0",
+  "duplicate_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "tenant_id": "example-pets",
+  "profile_id": "pets-ranking-commentary",
+  "platform": "youtube",
+  "content_assessment_version": "1.0.0",
+  "evidence_level": 1,
+  "evidence_types": ["metadata", "text_content"],
+  "evidence_completeness": 0.3333,
+  "scores": {
+    "hook": 82,
+    "emotion": 78,
+    "conflict_tension": 64,
+    "surprise": 55,
+    "humor": 30,
+    "relatability": 74,
+    "stakes": 70,
+    "story_progression": 80,
+    "payoff": 88,
+    "narrative_completeness": 84,
+    "context_independence": 76,
+    "originality_novelty": 60,
+    "reaction_potential": 72,
+    "commentary_value": 68,
+    "tenant_fit": 90,
+    "format_fit": 75,
+    "saturation_differentiation": 55
+  },
+  "content_worthiness_score": 71,
+  "content_confidence": 0.33,
+  "reasons": [
+    {"code": "FIXTURE", "signal": "fixture", "message": "representative text-level assessment fixture (no model call)"}
+  ],
+  "flags": [],
+  "idempotency_key": "fixture-level1-0000000000000000000000000000000000000000000000000000000000000000",
+  "transcript_availability": "creator_provided",
+  "transcript_quality": "clean",
+  "candidate_timestamps": [
+    {"start_s": 0, "end_s": 30, "basis": "transcript-derived"}
+  ],
+  "recommended_content_format": "commentary_story",
+  "recommended_angle": "the everyday hero who stopped traffic to save a puppy",
+  "model_provider": "mock",
+  "model_version": "1.0.0",
+  "prompt_version": "1.0.0",
+  "risk_flags": [],
+  "raw_model_reference": ""
+}
