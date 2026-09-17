@@ -9,20 +9,16 @@
 ---
 
 ## Last Updated
-2026-09-17 17:10 EDT (America/Detroit) — ACQUISITION BOUNDARY V1 CONTRACTS BUILT
+2026-09-17 17:25 EDT (America/Detroit) — ADAPTER EVALUATION COMPLETE
 
-## HANDOFF — Acquisition Boundary V1 deterministic contracts (awaiting proof authorization)
+## HANDOFF — Acquisition adapter evaluation (awaiting install/proof approval)
 
-Product-semantics correction: `Acquire for Reaction` is PRIMARY; `Save Link Only`
-secondary; `Cancel` third. Built `infra/acquisition/` (platform_capabilities,
-acquisition, reaction_library) + migrations 031/032 (staged, NOT applied) + 22
-tests + `ACQUISITION_BOUNDARY.md` plan/matrix. 217 total tests pass. No real media
-download performed.
-
-Next: Bryan reviews storage destination (GHL Media Storage files + Supabase
-ledger), adapter limits, and proof target; then authorizes ONE bounded,
-non-production acquisition proof. Publishing/distribution + Chrome extension
-remain NOT started.
+Full adapter-ladder evaluation done (commit `a4884e1`); see
+`infra/acquisition/ADAPTER_EVALUATION.md`. 218 tests pass. Instagram anonymous
+yt-dlp = "login required" → `blocked_pending_adapter` (candidates: cobalt /
+gallery-dl / chrome-extension, unproven). Cobalt = AGPL-3.0 sidecar (pin, local
+bind, API-key). Nothing installed/downloaded yet — awaiting Bryan approval for
+migrations 031/032 + installs + the single bounded Instagram proof.
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).

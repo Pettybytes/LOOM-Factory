@@ -6,6 +6,30 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~17:25 EDT — ADAPTER EVALUATION COMPLETE (awaiting install/proof approval)
+
+**Acquisition adapter ladder evaluated; first output produced (commit `a4884e1`).**
+
+- Adapter ladder: yt-dlp → streamlink → self-hosted Cobalt sidecar → gallery-dl →
+  Chrome extension + local helper → (external provider, last resort).
+- Tool inventory: yt-dlp 2026.03.13 + ffmpeg 8.0.1 + Docker 28.4.0 + Node 22 +
+  supabase CLI present; streamlink + gallery-dl NOT installed.
+- Capability matrix updated: yt-dlp-extractor platforms → `implemented_not_proven`;
+  Instagram stays `blocked_pending_adapter` (anonymous yt-dlp = "login required").
+- Cobalt: AGPL-3.0; run as separate contained sidecar (no source copied into LOOM),
+  pin version, 127.0.0.1 bind, API-key protected; needs `cookies.json` only for
+  auth-required content (we will not provide cookies).
+- Full assessment in `infra/acquisition/ADAPTER_EVALUATION.md` (architecture, 14-dim
+  platform matrix, Cobalt deployment, Chrome-extension design, Instagram proof
+  plan, $0 cost, install/security decisions).
+- Tests: **218 pass** (62 discovery + 55 content + 78 discord-review + 23 acquisition).
+
+**NOT performed (awaiting approval):** media download, service install (Cobalt/
+gallery-dl/streamlink), Chrome extension build, migrations 031/032 application,
+Apify, cookie extraction.
+
+---
+
 ## STOP STATE — 2026-09-17 ~17:10 EDT — ACQUISITION BOUNDARY V1 CONTRACTS BUILT (awaiting proof authorization)
 
 **Acquisition Boundary V1 — deterministic contracts: DONE (no download).**
