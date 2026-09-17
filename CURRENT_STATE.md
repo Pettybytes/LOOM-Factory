@@ -6,6 +6,71 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~19:10 EDT — SESSION HANDOFF (fMP4 built; proof authorized, NOT run)
+
+### Git
+- `master` @ `1d6a53b` "feat(acquisition): fMP4 assembly path", pushed to origin/master, clean tree (HEAD == origin).
+
+### Migrations 018–033 — ALL APPLIED + verified
+- 018–030 applied (briefs/discovery/topic/reviews/manual-submissions/tenants/routing).
+- 031 `loom_acquisition_jobs` + 032 `loom_reaction_library` applied + verified (HTTP 200).
+- 033 `adapter` + `is_non_production` columns applied + verified (HTTP 200 on both).
+
+### Completed + runtime-proven (unchanged)
+- Manual Source Intake (card wizard) + tenant routing (`/assign-source`) + Source
+  Review Inbox (`/source-review`) — human-accepted.
+
+### Acquisition Boundary + Reaction Library contracts (built + tested)
+- `infra/acquisition/`: acquisition.py, reaction_library.py, platform_capabilities.py,
+  media_filter.py, browser_flow.py.
+
+### Chrome extension + localhost helper (architecture + security)
+- extension (MV3): `Acquire for Reaction` flow; activeTab+scripting+debugger+storage;
+  instagram + `127.0.0.1:8787` host perms only; no cookies/history; signed URLs volatile.
+- helper `127.0.0.1:8787`: token + `chrome-extension://` origin auth; https + approved
+  Meta/IG CDN suffix; validated redirects; reject creds/ports/private/suffix-confusion;
+  one-item / ≤100 MiB / ≤5 min; atomic finalize; classified reasons.
+
+### Instagram tool findings
+- yt-dlp: anonymous "login required". gallery-dl: "redirect to login".
+- Cobalt (sidecar): anonymous resolves but returns JPG cover (misclassification) — not video-capable.
+
+### Instagram human-proof history (failures → repairs)
+- browser probe found Instagram CDN video traffic (human-proven).
+- `/reel/` → `/reels/` redirect → content-id normalization repair (supports /reel/, /reels/, /p/).
+- unexpected-navigation abort repair (content-id lock + reattach).
+- direct `.mp4` candidates were fMP4 fragments (moof/styp/sidx), NOT standalone MP4.
+- ffprobe failure + leftover `.part` forensic (3.4 MB moof fragment) → cleanup + signature-classification repairs.
+- duplicate failed-job false-success UX repair (distinguish duplicate vs saved).
+- **NO valid Reaction Library asset produced yet (0 library rows).**
+
+### fMP4 assembly implementation (commit 1d6a53b)
+- `manifest.py`: MPD/M3U8 parse → init + ordered segments + audio detection.
+- `assemble.py`: plan_assembly + concatenate + fixed ffmpeg args + failed-job retry.
+- `fmp4.py`: download manifest/segments → concatenate → ffmpeg remux/mux.
+- helper: dispatch manifest/segments/direct; retry; aggregate ceilings; cleanup on all failures.
+- extension: prefer manifest, fallback init+ordered fragments; Capturing/Assembling phases.
+- signed-URL non-persistence; atomic finalization; failed-job retry.
+
+### Tests
+- **325 passing** (62 discovery + 55 content + 78 discord-review + 61 acquisition + 69 local-helper).
+
+### Helper status + safe restart (token NOT recorded)
+- Running PID 66821 on `127.0.0.1:8787` (token configured).
+- Restart: `cd infra/local-helper && pkill -f helper.py; sleep 1; rm -f helper.pid helper.log; chmod +x run.sh; nohup ./run.sh > helper.log 2>&1 & echo $! > helper.pid`.
+
+### Authorized proof (freshly authorized, NOT yet run)
+- `https://www.instagram.com/reel/DdZS1QRhrXE/` — one item, ≤100 MiB aggregate, ≤5 min, Personal Reaction Library, non-production. **NOT run after fMP4 assembly.**
+
+### Pivot boundary
+- Allow THIS proof + at most ONE additional controlled Reel proof.
+- If reliable local assembly cannot be achieved → evaluate Apify as an Instagram-only fallback under a **$1 initial hard ceiling**.
+
+### Deferred
+- TikTok/Reddit/X/YouTube/Twitch/Kick adapters; OpenShorts; OBS automation; GHL; publishing/distribution.
+
+---
+
 ## STOP STATE — 2026-09-17 ~18:35 EDT — ACQUIRE NAVIGATION ABORT FIXED (awaiting re-test)
 
 **Human test FAILED ("Failed: tab navigated") then diagnosed.** Root cause: the

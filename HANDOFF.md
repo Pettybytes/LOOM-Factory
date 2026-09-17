@@ -9,16 +9,18 @@
 ---
 
 ## Last Updated
-2026-09-17 18:35 EDT (America/Detroit) — ACQUIRE NAVIGATION ABORT FIXED
+2026-09-17 19:10 EDT (America/Detroit) — SESSION HANDOFF (fMP4 built; proof authorized, NOT run)
 
-## HANDOFF — acquire navigation abort fixed (awaiting re-test)
+## HANDOFF — fMP4 assembly built; authorized proof NOT yet run
 
-Human test failed "tab navigated": the auto-reload triggered navigation the
-onUpdated handler aborted on. Removed auto-reload; Acquire now = attach+observe
-(same as Inspect). Navigation classified by content id (same-content tolerated +
-reattached; different content fails closed). Deterministic selection + exactly-
-once handoff. 12 browser_flow tests; 293 total. Authorized proof unchanged
-(reel DdZS1QRhrXE). Next: Bryan reloads the extension and repeats the test. Latency:
+`master` @ `1d6a53b`, pushed, clean. Migrations 018–033 applied + verified (033
+adapter + is_non_production confirmed HTTP 200). fMP4 assembly path built
+(manifest.py MPD/M3U8 + assemble.py + fmp4.py + helper dispatch/retry + extension
+manifest-preferring capture). 325 tests pass. Helper running on 127.0.0.1:8787.
+Authorized proof = `https://www.instagram.com/reel/DdZS1QRhrXE/` (one item, ≤100 MiB,
+≤5 min, Personal Reaction Library, non-production) — NOT yet run after fMP4 build.
+Pivot: this + at most one more Reel proof; else Apify (Instagram-only) under $1
+ceiling. No valid Reaction Library asset produced yet. Latency:
 12s is a fail-closed max; Acquire stops+detaches on the first direct MP4.
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
