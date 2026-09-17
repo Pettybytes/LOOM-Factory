@@ -225,7 +225,7 @@ def _extract_content_id(platform: str, parts: urllib.parse.SplitResult) -> str:
         m = re.search(r"/(?:video|v)/(\d+)", path)
         return m.group(1) if m else ""
     if platform == "instagram":
-        m = re.search(r"/(?:p|reel|tv)/([A-Za-z0-9_-]+)", path)
+        m = re.search(r"/(?:p|reels?|tv)/([A-Za-z0-9_-]+)", path)
         return m.group(1) if m else ""
     if platform == "twitch":
         m = re.search(r"/(?:clips|videos)/([A-Za-z0-9_-]+)", path)

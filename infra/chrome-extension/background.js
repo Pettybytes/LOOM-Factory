@@ -36,7 +36,7 @@ const NON_MEDIA_RT = new Set(['Document', 'Stylesheet', 'Script', 'Font', 'Manif
 const IMAGE_EXT_RE = /\.(jpg|jpeg|png|webp|gif|avif|heic|bmp)(\?|$)/i;
 const AD_HOST_RE = /(analytics|telemetry|tracking|ads\.|doubleclick)/i;
 const AD_PATH_RE = /(\/analytics|\/telemetry|\/tracking|\/ads|\/tr)/i;
-const IG_ID_RE = /instagram\.com\/(?:reel|p|tv|stories)\/([A-Za-z0-9_-]+)/;
+const IG_ID_RE = /instagram\.com\/(?:reels?|p|tv|stories)\/([A-Za-z0-9_-]+)/;
 const TYPE_PRIORITY = { direct_video: 0, manifest: 1, segment: 2, audio: 3 };
 
 function emptyCounts() {
@@ -273,6 +273,20 @@ async function startInspection(tabId, reload) {
           if (acquireMode && !acquireSent) maybeHandoff(true);
           else if (!acquireMode) finish();
         }, WINDOW_MS);
+
+        // Cached/autoplay: if no direct-video request appeared within ~2.5s,
+        // stimulate a fresh one via a cache-bypass reload of the SAME content
+        // (content-ID locked by the onUpdated handler; re-inspected via onDetach).
+        if (acquireMode) {
+          phaseTimers.push(setTimeout(() => {
+            if (acquireMode && !acquireSent) {
+              const best = selectBestCandidate(mem.accepted);
+              if (!best || best.type !== 'direct_video') {
+                chrome.debugger.sendCommand({ tabId }, 'Page.reload', { ignoreCache: true }, () => {});
+              }
+            }
+          }, 2500));
+        }
         resolve({ ok: true });
       });
     });

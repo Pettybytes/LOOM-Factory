@@ -28,11 +28,15 @@ class TestContentId(unittest.TestCase):
         self.assertEqual(instagram_content_id("https://www.instagram.com/p/DdZS1QRhrXE/"), CID)
         self.assertEqual(instagram_content_id("https://www.instagram.com/other/stuff"), "")
 
+    def test_reels_plural_same_content_id(self):
+        self.assertEqual(instagram_content_id("https://www.instagram.com/reels/DdZS1QRhrXE/"), CID)
+
 
 class TestNavigation(unittest.TestCase):
     def test_expected_same_content_reload(self):
         self.assertEqual(classify_navigation(REEL, CID), "same_content")
         self.assertEqual(classify_navigation("https://www.instagram.com/p/DdZS1QRhrXE/", CID), "same_content")
+        self.assertEqual(classify_navigation("https://www.instagram.com/reels/DdZS1QRhrXE/", CID), "same_content")
 
     def test_unexpected_navigation(self):
         self.assertEqual(classify_navigation("https://www.instagram.com/p/OTHER123/", CID), "different_content")

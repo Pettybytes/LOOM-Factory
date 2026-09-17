@@ -182,6 +182,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, result)
         except acq.DownloadError as e:
             self._send(422, {"ok": False, "error": e.code, "message": e.message})
+        except acquisition.AcquisitionError as e:
+            self._send(400, {"ok": False, "error": e.code, "message": e.message})
+        except ValidationError as e:
+            self._send(400, {"ok": False, "error": e.code, "message": e.message})
         except Exception as e:
             self._send(500, {"ok": False, "error": "internal", "message": type(e).__name__})
 
@@ -206,13 +210,17 @@ class Handler(BaseHTTPRequestHandler):
         os.makedirs(LIBRARY_DIR, exist_ok=True)
         os.makedirs(TMP_DIR, exist_ok=True)
 
+        tmp_path = None
         try:
             # Download (validated redirects + byte ceiling) to a temp file.
-            tmp_path, written = acq.download_one_video(
+            tmp_path, written, http_status, content_type = acq.download_one_video(
                 payload["candidate_url"], TMP_DIR, max_bytes=MAX_BYTES,
                 timeout=DOWNLOAD_TIMEOUT, max_redirects=MAX_REDIRECTS)
 
-            # Validate asset.
+            # Validate HTTP status + Content-Type + MP4 signature BEFORE ffprobe.
+            acq.classify_downloaded_file(tmp_path, http_status=http_status,
+                                         content_type=content_type, size_bytes=written)
+
             meta = acq.parse_ffprobe_result(
                 acq.run_ffprobe(tmp_path), actual_size_bytes=written,
                 max_bytes=MAX_BYTES, max_duration=MAX_DURATION)
@@ -221,12 +229,16 @@ class Handler(BaseHTTPRequestHandler):
             filename = acq.library_filename(payload["canonical_url"], digest)
             final_path = os.path.join(LIBRARY_DIR, filename)
             acq.finalize(tmp_path, final_path)  # atomic rename after validation
-        except Exception:
-            # Any failure before persist: mark job failed.
+            tmp_path = None  # finalized (renamed) — no cleanup needed
+        except Exception as e:
+            # Guarantee no final or partial asset on ANY failure.
+            if tmp_path:
+                acq.cleanup_temp(tmp_path)
             try:
                 if supabase_url and key:
+                    reason = getattr(e, "code", None) or type(e).__name__
                     update_job_status(supabase_url, key, job["dedup_key"],
-                                      acquisition.STATUS_FAILED, "acquisition failed")
+                                      acquisition.STATUS_FAILED, reason)
             except Exception:
                 pass
             raise

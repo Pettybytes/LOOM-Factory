@@ -61,7 +61,7 @@ def _follow_redirects(url: str, timeout: float, max_redirects: int, opener):
     raise DownloadError("TOO_MANY_REDIRECTS", "too many redirects")
 
 
-def _cleanup(path: str) -> None:
+def cleanup_temp(path: str) -> None:
     try:
         if os.path.exists(path):
             os.remove(path)
@@ -72,17 +72,23 @@ def _cleanup(path: str) -> None:
 def download_one_video(candidate_url, tmp_dir, *, max_bytes, timeout,
                        max_redirects=5, opener=None):
     """Download exactly one MP4 to a temp file, validating every redirect and
-    the byte ceiling. Returns (temp_path, bytes_written). The caller computes the
-    checksum, derives the final filename, then atomically finalizes (see
-    finalize()). The temp file is cleaned on ANY failure."""
+    the byte ceiling. Returns (temp_path, bytes_written, http_status, content_type).
+    The caller validates status/signature, computes the checksum, derives the final
+    filename, then atomically finalizes (see finalize()). The temp file is cleaned
+    on ANY download failure."""
     validate_media_url(candidate_url)
     op = opener or _DEFAULT_OPENER
     os.makedirs(tmp_dir, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, suffix=".mp4.part")
     os.close(fd)
     written = 0
+    http_status = 200
+    content_type = ""
     try:
         resp = _follow_redirects(candidate_url, timeout, max_redirects, op)
+        http_status = getattr(resp, "status", 200) or 200
+        if hasattr(resp, "headers") and hasattr(resp.headers, "get"):
+            content_type = resp.headers.get("Content-Type") or ""
         try:
             with open(tmp_path, "wb") as f:
                 while True:
@@ -100,12 +106,12 @@ def download_one_video(candidate_url, tmp_dir, *, max_bytes, timeout,
                 pass
         if written == 0:
             raise DownloadError("EMPTY_DOWNLOAD", "downloaded zero bytes")
-        return tmp_path, written
+        return tmp_path, written, http_status, content_type
     except DownloadError:
-        _cleanup(tmp_path)
+        cleanup_temp(tmp_path)
         raise
     except Exception as e:
-        _cleanup(tmp_path)
+        cleanup_temp(tmp_path)
         raise DownloadError("DOWNLOAD_FAILED", type(e).__name__) from e
 
 
@@ -187,6 +193,55 @@ def checksum_sha256(path: str) -> str:
         for chunk in iter(lambda: f.read(64 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def read_signature(path: str) -> str:
+    """Classify the first bytes of a downloaded file.
+
+    Returns 'ftyp' (standard MP4), 'moof' (fragmented-MP4 fragment, not a
+    standalone MP4), 'html' (HTML/error body), 'empty', or 'unknown'."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(64)
+    except OSError:
+        return "empty"
+    if not head:
+        return "empty"
+    if len(head) >= 8 and head[4:8] == b"ftyp":
+        return "ftyp"
+    if len(head) >= 8 and head[4:8] == b"moof":
+        return "moof"
+    lower = head.lower()
+    if b"<!doctype" in lower or b"<html" in lower or b"<head" in lower:
+        return "html"
+    return "unknown"
+
+
+def classify_downloaded_file(path: str, *, http_status, content_type, size_bytes) -> str:
+    """Validate HTTP status, Content-Type and MP4 signature BEFORE ffprobe.
+
+    Raises DownloadError with a classified reason; returns 'ok' on success."""
+    if http_status != 200:
+        raise DownloadError("HTTP_STATUS", f"HTTP {http_status} (expected 200)")
+    ct = (content_type or "").lower()
+    if ct:
+        if "text/html" in ct:
+            raise DownloadError("HTML_RESPONSE", "downloaded an HTML error body (content-type text/html)")
+        if ("video/" not in ct and "octet-stream" not in ct
+                and "mpegurl" not in ct and "dash" not in ct):
+            raise DownloadError("BAD_CONTENT_TYPE", f"content-type {ct!r} is not video")
+    if size_bytes == 0:
+        raise DownloadError("ZERO_BYTE", "zero-byte download")
+    sig = read_signature(path)
+    if sig == "ftyp":
+        return "ok"
+    if sig == "moof":
+        raise DownloadError("FRAGMENTED_MP4", "fragmented MP4 fragment (moof) — not a standalone MP4")
+    if sig == "html":
+        raise DownloadError("HTML_RESPONSE", "downloaded an HTML error body (not media)")
+    if sig == "empty":
+        raise DownloadError("ZERO_BYTE", "empty download")
+    raise DownloadError("MALFORMED_MP4", f"unrecognized file signature ({sig})")
 
 
 # ---------------------------------------------------------------------------

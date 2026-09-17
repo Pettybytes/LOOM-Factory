@@ -19,9 +19,11 @@ import acquire as acq  # noqa: E402
 
 # --- fake opener/response for download tests (no network) ---
 class _FakeResponse:
-    def __init__(self, chunks):
+    def __init__(self, chunks, status=200, content_type="video/mp4"):
         self._chunks = list(chunks)
         self._i = 0
+        self.status = status
+        self.headers = {"Content-Type": content_type}
 
     def read(self, n):
         if self._i >= len(self._chunks):
@@ -56,11 +58,13 @@ class TestDownload(_TempDir):
 
     def test_success_returns_temp_and_bytes(self):
         resp = _FakeResponse([b"hello", b" world"])
-        path, written = acq.download_one_video(self.URL, self._tmp.name,
-                                               max_bytes=100, timeout=5,
-                                               opener=_FakeOpener(resp))
+        path, written, status, ct = acq.download_one_video(self.URL, self._tmp.name,
+                                                           max_bytes=100, timeout=5,
+                                                           opener=_FakeOpener(resp))
         self.assertTrue(os.path.exists(path))
         self.assertEqual(written, 11)
+        self.assertEqual(status, 200)
+        self.assertEqual(ct, "video/mp4")
 
     def test_byte_ceiling_cleans_temp(self):
         resp = _FakeResponse([b"x" * 100])
@@ -177,6 +181,70 @@ class TestPayloads(unittest.TestCase):
         f2 = acq.library_filename(self.URL, "a" * 64)
         self.assertEqual(f1, f2)
         self.assertTrue(f1.startswith("instagram__DdZS1QRhrXE__"))
+
+
+class TestSignature(_TempDir):
+    def _write(self, data):
+        p = os.path.join(self._tmp.name, "f.bin")
+        with open(p, "wb") as f:
+            f.write(data)
+        return p
+
+    def test_ftyp(self):
+        self.assertEqual(acq.read_signature(self._write(b"\x00\x00\x00\x18ftypmp42")), "ftyp")
+
+    def test_moof(self):
+        self.assertEqual(acq.read_signature(self._write(b"\x00\x00\x02\xbcmoof\x00\x00\x00\x10mfhd")), "moof")
+
+    def test_html(self):
+        self.assertEqual(acq.read_signature(self._write(b"<!DOCTYPE html><html></html>")), "html")
+
+    def test_empty(self):
+        self.assertEqual(acq.read_signature(self._write(b"")), "empty")
+
+
+class TestClassifyDownloadedFile(_TempDir):
+    def _write(self, data):
+        p = os.path.join(self._tmp.name, "f.bin")
+        with open(p, "wb") as f:
+            f.write(data)
+        return p
+
+    def _mp4(self):
+        p = os.path.join(self._tmp.name, "f.mp4")
+        with open(p, "wb") as f:
+            f.write(b"\x00\x00\x00\x18ftypmp42")
+        return p
+
+    def test_ok(self):
+        self.assertEqual(acq.classify_downloaded_file(self._mp4(), http_status=200,
+                                                       content_type="video/mp4", size_bytes=8), "ok")
+
+    def test_http_status(self):
+        with self.assertRaises(acq.DownloadError) as cm:
+            acq.classify_downloaded_file(self._mp4(), http_status=403,
+                                         content_type="video/mp4", size_bytes=8)
+        self.assertEqual(cm.exception.code, "HTTP_STATUS")
+
+    def test_html_content_type(self):
+        with self.assertRaises(acq.DownloadError) as cm:
+            acq.classify_downloaded_file(self._mp4(), http_status=200,
+                                         content_type="text/html", size_bytes=8)
+        self.assertEqual(cm.exception.code, "HTML_RESPONSE")
+
+    def test_fragmented_mp4(self):
+        p = self._write(b"\x00\x00\x02\xbcmoof\x00\x00\x00\x10mfhd")
+        with self.assertRaises(acq.DownloadError) as cm:
+            acq.classify_downloaded_file(p, http_status=200,
+                                         content_type="video/mp4", size_bytes=12)
+        self.assertEqual(cm.exception.code, "FRAGMENTED_MP4")
+
+    def test_zero_byte(self):
+        p = self._write(b"")
+        with self.assertRaises(acq.DownloadError) as cm:
+            acq.classify_downloaded_file(p, http_status=200,
+                                         content_type="video/mp4", size_bytes=0)
+        self.assertEqual(cm.exception.code, "ZERO_BYTE")
 
 
 if __name__ == "__main__":

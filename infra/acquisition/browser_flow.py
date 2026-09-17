@@ -12,7 +12,7 @@ import re
 
 TYPE_PRIORITY = {"direct_video": 0, "manifest": 1, "segment": 2, "audio": 3}
 
-_IG_ID_RE = re.compile(r"instagram\.com/(?:reel|p|tv|stories)/([A-Za-z0-9_-]+)")
+_IG_ID_RE = re.compile(r"instagram\.com/(?:reels?|p|tv|stories)/([A-Za-z0-9_-]+)")
 
 
 def instagram_content_id(url: str) -> str:
