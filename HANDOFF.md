@@ -9,15 +9,22 @@
 ---
 
 ## Last Updated
-2026-09-17 16:45 EDT (America/Detroit) — HUMAN ACCEPTANCE REPAIR COMPLETE
+2026-09-17 16:50 EDT (America/Detroit) — CARD-BASED INTAKE WIZARD DEPLOYED
 
-## HANDOFF — Manual Source Intake V1.1 human acceptance repair (awaiting re-test)
+## HANDOFF — Manual Source Intake card-based wizard (awaiting Bryan test)
 
-Repair DONE (commit `149a7b4`). Root cause of `Unsupported interaction.` was the
-STALE running adapter (started Sep 15 22:53, before the type-2 handler existed);
-restarted via `supervise.sh` (now `/health` 200). `/submit-source` `destination`
-is now Discord autocomplete (active `loom_tenants` + "Unassigned / General"), and
-the result message shows `Routing:` + `Platform support:` as separate lines.
+`/submit-source` is now a compact ephemeral card wizard (commit `10430c8`):
+url-only slash command → ephemeral intake card → destination/format selects +
+Add Details modal → Submit (green, disabled until format chosen) / Cancel →
+final confirmation card. Persistence happens only on Submit; in-memory expiring
+sessions; atomic consume prevents double-submit. Also fixed: stale adapter
+(`Unsupported interaction.`), Instagram `stkn` tracking-param stripping.
+
+Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
+Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).
+
+Next: Bryan runs the real Discord Instagram test and confirms. Do NOT begin Chrome
+extension or Acquisition Boundary until acceptance passes.
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).

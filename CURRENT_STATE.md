@@ -6,6 +6,36 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~16:50 EDT — CARD-BASED INTAKE WIZARD DEPLOYED (awaiting Bryan test)
+
+**Manual Source Intake — card-based ephemeral wizard: DONE (commit `10430c8`).**
+
+Replaced the linear `/submit-source` slash form with a compact ephemeral card:
+- `/submit-source` takes only the required `url` (Discord min-1-input).
+- Validates + canonicalizes without persisting; returns an ephemeral "Manual
+  Source Intake" card (platform, canonical URL, destination, format, timestamps,
+  note, candidate-only notice).
+- `Choose Destination` + `Choose Format` select menus (active `loom_tenants` +
+  "Unassigned / General"); `Add Details` modal (start/end/note); `Submit Source`
+  (green, disabled until format chosen); `Cancel` (gray).
+- Persists ONLY on Submit → final ephemeral confirmation card (submission id,
+  platform, destination, format, routing, platform-support, duplicate/new,
+  candidate-only, "No media downloaded").
+- In-memory expiring session store (15 min TTL) keyed by unguessable token;
+  atomic consume guards double-submit/replay; compact deterministic custom_ids
+  (`mi:<action>:<token>`); no secrets/user data in custom_ids.
+- Fix: strip Instagram `stkn` tracking param in canonicalization.
+
+Commands re-registered (url-only `submit-source`). Adapter restarted; `/health` 200.
+Tests: **195 pass** (62 discovery + 55 content + 78 discord-review; +17 intake).
+
+**NOT run: acceptance test.** Awaiting Bryan's real Discord Instagram test.
+
+Stop conditions remain: no Chrome extension; no Acquisition Boundary;
+TikTok/Instagram/Twitch/Kick remain `accepted_pending_platform_support`.
+
+---
+
 ## STOP STATE — 2026-09-17 ~16:45 EDT — HUMAN ACCEPTANCE REPAIR COMPLETE (awaiting Bryan re-test)
 
 **Manual Source Intake V1.1 Human Acceptance Repair: DONE (commit `149a7b4`).**
