@@ -19,12 +19,20 @@ from urllib.parse import urlsplit
 _APPROVED_HOST_SUFFIXES = (".cdninstagram.com", ".fbcdn.net", ".akamaihd.net", ".instagram.com")
 _APPROVED_EXACT_HOSTS = frozenset({"instagram.com", "cdninstagram.com", "fbcdn.net", "akamaihd.net"})
 
-DIRECT_VIDEO = "direct_video"
-MANIFEST = "manifest"   # HLS (.m3u8) or DASH (.mpd)
-SEGMENT = "segment"     # DASH/HLS media segments
+DIRECT_VIDEO = "direct_video"   # unambiguous standalone container (.m4v / .webm)
+MP4 = "mp4"                     # AMBIGUOUS: standalone (ftyp) OR fMP4 fragment (moof/styp/sidx)
+MANIFEST = "manifest"           # HLS (.m3u8) or DASH (.mpd)
+SEGMENT = "segment"             # DASH/HLS media segments
 AUDIO = "audio"
 
-_DIRECT_VIDEO_EXT = {".mp4", ".m4v", ".webm"}
+REPRESENTATION_VIDEO = "video"
+REPRESENTATION_AUDIO = "audio"
+
+# ``.mp4`` is AMBIGUOUS on Instagram: the CDN serves fragmented-MP4 fragments
+# with ``.mp4`` suffixes. Only the byte signature (ftyp vs moof/styp/sidx) is
+# authoritative, so ``.mp4`` is NOT classified as a standalone direct video.
+_DIRECT_VIDEO_EXT = {".m4v", ".webm"}
+_MP4_EXT = {".mp4"}
 _MANIFEST_EXT = {".m3u8", ".mpd"}
 _SEGMENT_EXT = {".m4s", ".fmp4", ".ts", ".cmfv", ".cmfa"}
 _AUDIO_EXT = {".m4a", ".aac", ".mp3", ".ogg", ".opus"}
@@ -52,6 +60,8 @@ def classify_media_url(url: str) -> str | None:
     ext = os.path.splitext(path.lower())[1]
     if ext in _DIRECT_VIDEO_EXT:
         return DIRECT_VIDEO
+    if ext in _MP4_EXT:
+        return MP4
     if ext in _MANIFEST_EXT:
         return MANIFEST
     if ext in _SEGMENT_EXT:
@@ -78,6 +88,27 @@ def is_media_candidate(url: str, mime_type: str = "") -> bool:
         if any(m in mt for m in _MEDIA_MIME_MARKERS):
             return True
     return classify_media_url(url) is not None
+
+
+def representation_of(mime_type: str = "", url: str = "") -> str | None:
+    """Best-effort video vs audio representation from MIME type or extension.
+
+    Returns REPRESENTATION_AUDIO / REPRESENTATION_VIDEO, or None if unknown.
+    """
+    mt = (mime_type or "").lower()
+    if mt.startswith("audio/"):
+        return REPRESENTATION_AUDIO
+    if mt.startswith("video/"):
+        return REPRESENTATION_VIDEO
+    try:
+        ext = os.path.splitext(urlsplit(url).path or "")[1].lower()
+    except Exception:
+        ext = ""
+    if ext in _AUDIO_EXT:
+        return REPRESENTATION_AUDIO
+    if ext in (_DIRECT_VIDEO_EXT | _MP4_EXT | _SEGMENT_EXT):
+        return REPRESENTATION_VIDEO
+    return None
 
 
 def redact_url(url: str) -> str:

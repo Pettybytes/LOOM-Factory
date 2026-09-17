@@ -15,7 +15,11 @@ sys.path.insert(0, str(_REPO_ROOT / "infra" / "local-helper"))
 from assemble import (  # noqa: E402
     AssemblyError, plan_assembly, concatenate_files,
     build_remux_args, build_mux_args, plan_job_retry,
+    INSUFFICIENT_FMP4_SET, validate_ranged_segments, plan_ranged_assembly,
 )
+
+BASE = "https://scontent.cdninstagram.com/v/reel.mp4"
+ABASE = "https://scontent.cdninstagram.com/v/audio.mp4"
 
 
 def _video(init="init.mp4", segs=("s1.m4s", "s2.m4s")):
@@ -105,6 +109,56 @@ class TestRetry(unittest.TestCase):
 
     def test_running_is_duplicate(self):
         self.assertEqual(plan_job_retry("running"), "duplicate")
+
+
+class TestRangedAssembly(unittest.TestCase):
+    def _seg(self, url, start, end, total):
+        return {"url": url, "range_start": start, "range_end": end, "range_total": total}
+
+    def test_contiguous_ordered_ok(self):
+        segs = [self._seg(BASE, 0, 999, 5000), self._seg(BASE, 1000, 1999, 5000)]
+        out = validate_ranged_segments(segs)
+        self.assertEqual([s["range_start"] for s in out], [0, 1000])
+
+    def test_missing_range_gap_rejected(self):
+        segs = [self._seg(BASE, 0, 999, 5000), self._seg(BASE, 2000, 2999, 5000)]
+        with self.assertRaises(AssemblyError) as cm:
+            validate_ranged_segments(segs)
+        self.assertEqual(cm.exception.code, INSUFFICIENT_FMP4_SET)
+
+    def test_overlapping_range_rejected(self):
+        segs = [self._seg(BASE, 0, 999, 5000), self._seg(BASE, 500, 1499, 5000)]
+        with self.assertRaises(AssemblyError) as cm:
+            validate_ranged_segments(segs)
+        self.assertEqual(cm.exception.code, INSUFFICIENT_FMP4_SET)
+
+    def test_segment_without_range_rejected(self):
+        segs = [{"url": BASE, "range_start": None}]
+        with self.assertRaises(AssemblyError) as cm:
+            validate_ranged_segments(segs)
+        self.assertEqual(cm.exception.code, INSUFFICIENT_FMP4_SET)
+
+    def test_mixed_representation_rejected(self):
+        segs = [self._seg(BASE, 0, 999, 5000),
+                self._seg("https://other.cdninstagram.com/v/other.mp4", 1000, 1999, 5000)]
+        with self.assertRaises(AssemblyError) as cm:
+            validate_ranged_segments(segs)
+        self.assertEqual(cm.exception.code, "MIXED_REPRESENTATION")
+
+    def test_plan_ranged_missing_init_rejected(self):
+        with self.assertRaises(AssemblyError) as cm:
+            plan_ranged_assembly({"init_url": "", "segments": [self._seg(BASE, 0, 999, 5000)]}, None)
+        self.assertEqual(cm.exception.code, "MISSING_INIT")
+
+    def test_plan_ranged_complete_video_audio(self):
+        video = {"init_url": "https://x/init.mp4",
+                 "segments": [self._seg(BASE, 0, 999, 5000), self._seg(BASE, 1000, 1999, 5000)]}
+        audio = {"init_url": "https://x/ainit.mp4",
+                 "segments": [self._seg(ABASE, 0, 499, 2000)]}
+        plan = plan_ranged_assembly(video, audio)
+        self.assertTrue(plan["has_audio"])
+        self.assertEqual(plan["video_init"], "https://x/init.mp4")
+        self.assertEqual(len(plan["video_segments"]), 2)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "infra" / "acquisition"))
 
 from media_filter import (  # noqa: E402
-    DIRECT_VIDEO, MANIFEST, SEGMENT, AUDIO,
+    DIRECT_VIDEO, MP4, MANIFEST, SEGMENT, AUDIO,
+    REPRESENTATION_VIDEO, REPRESENTATION_AUDIO, representation_of,
     is_approved_media_host, classify_media_url, is_media_candidate, redact_url,
     classify_request, summarize_inspection,
     REJECTION_SCHEME, REJECTION_HOSTNAME, REJECTION_RESOURCE_TYPE,
@@ -37,7 +38,14 @@ class TestHost(unittest.TestCase):
 
 class TestClassify(unittest.TestCase):
     def test_direct_video(self):
-        self.assertEqual(classify_media_url("https://x.cdninstagram.com/v/a.mp4"), DIRECT_VIDEO)
+        self.assertEqual(classify_media_url("https://x.cdninstagram.com/v/a.m4v"), DIRECT_VIDEO)
+        self.assertEqual(classify_media_url("https://x.cdninstagram.com/v/a.webm"), DIRECT_VIDEO)
+
+    def test_mp4_ambiguous(self):
+        # .mp4 is AMBIGUOUS on Instagram: standalone (ftyp) OR fMP4 fragment (moof/styp/sidx).
+        # It must never be classified as a standalone direct video.
+        self.assertEqual(classify_media_url("https://x.cdninstagram.com/v/a.mp4"), MP4)
+        self.assertNotEqual(classify_media_url("https://x.cdninstagram.com/v/a.mp4"), DIRECT_VIDEO)
 
     def test_manifest(self):
         self.assertEqual(classify_media_url("https://x.fbcdn.net/v/a.m3u8"), MANIFEST)
@@ -52,6 +60,13 @@ class TestClassify(unittest.TestCase):
 
     def test_not_media(self):
         self.assertIsNone(classify_media_url("https://x.cdninstagram.com/v/cover.jpg"))
+
+    def test_representation_of(self):
+        self.assertEqual(representation_of("video/mp4"), REPRESENTATION_VIDEO)
+        self.assertEqual(representation_of("audio/mp4"), REPRESENTATION_AUDIO)
+        self.assertEqual(representation_of("", "https://x.cdninstagram.com/v/a.m4a"), REPRESENTATION_AUDIO)
+        self.assertEqual(representation_of("", "https://x.cdninstagram.com/v/a.m4s"), REPRESENTATION_VIDEO)
+        self.assertIsNone(representation_of("", "https://x.cdninstagram.com/v/cover.jpg"))
 
 
 class TestCandidate(unittest.TestCase):

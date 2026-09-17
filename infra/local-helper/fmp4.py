@@ -50,6 +50,14 @@ def _download_many(urls, tmp_dir, max_bytes, timeout):
 def assemble_fmp4(*, video_init, video_segments, audio_init="", audio_segments=None,
                   tmp_dir, max_bytes, timeout):
     """Download init+segments, concatenate, remux/mux. Returns (final_path, bytes)."""
+    # Validate the plan BEFORE any download: a timeout/partial set must not be
+    # assembled. plan_assembly rejects missing init, missing segments, and
+    # incomplete audio (init without segments or vice-versa).
+    asm.plan_assembly(
+        {"init_url": video_init, "segments": list(video_segments)},
+        {"init_url": audio_init, "segments": list(audio_segments or [])}
+        if (audio_init or audio_segments) else None,
+    )
     vfiles, vbytes = _download_many([video_init] + list(video_segments), tmp_dir, max_bytes, timeout)
     video_path = os.path.join(tmp_dir, "video.mp4")
     asm.concatenate_files(vfiles, video_path)

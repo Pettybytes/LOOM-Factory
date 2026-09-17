@@ -197,6 +197,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, result)
         except acq.DownloadError as e:
             self._send(422, {"ok": False, "error": e.code, "message": e.message})
+        except asm.AssemblyError as e:
+            self._send(422, {"ok": False, "error": e.code, "message": e.message})
         except acquisition.AcquisitionError as e:
             self._send(400, {"ok": False, "error": e.code, "message": e.message})
         except ValidationError as e:
