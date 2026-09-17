@@ -1,0 +1,35 @@
+# Cobalt sidecar — LOOM Acquisition Boundary (Instagram/TikTok/Reddit/Twitch/YouTube fallback)
+#
+# Cobalt is AGPL-3.0 and runs here as a SEPARATE contained service (own
+# container, HTTP boundary over 127.0.0.1 only). No Cobalt source is copied
+# into LOOM; LOOM calls it over localhost HTTP. Network boundary != linking,
+# so LOOM's own code remains AGPL-clean.
+#
+# Security posture (per LOOM Acquisition Boundary):
+#   - bind 127.0.0.1 only (never public)
+#   - API-key auth required (keys.json, gitignored)
+#   - DURATION_LIMIT 300s (5 min) matches the proof ceiling
+#   - Instagram service only (allowedServices in keys.json)
+#   - image pinned by digest (arm64) — do not use floating :latest in production
+#
+# Pin: ghcr.io/imputnet/cobalt (cobalt 11.7.1, commit a636575), arm64 manifest digest 2026-09-17.
+
+services:
+  cobalt:
+    image: ghcr.io/imputnet/cobalt@sha256:6215aed30feb01bca9fe894d7fc642d845d3550042c6412cbb894ca095fe5398
+    container_name: loom-cobalt
+    restart: unless-stopped
+    ports:
+      # loopback-only ON THE HOST (security boundary lives here)
+      - "127.0.0.1:9000:9000"
+    environment:
+      API_URL: "http://localhost:9000/"
+      API_PORT: "9000"
+      # NOTE: do NOT set API_LISTEN_ADDRESS=127.0.0.1 here — inside the container
+      # it binds loopback and breaks Docker port-forwarding. Host isolation is
+      # enforced by the ports mapping above.
+      API_KEY_URL: "file:///keys.json"
+      API_AUTH_REQUIRED: "1"
+      DURATION_LIMIT: "300"
+    volumes:
+      - ./keys.json:/keys.json:ro

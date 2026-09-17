@@ -63,8 +63,8 @@ _CAPABILITY: dict[str, dict] = {
         "candidates": ["yt-dlp", "cobalt", "streamlink"],
     },
     "instagram": {
-        "state": CAP_BLOCKED_PENDING_ADAPTER,
-        "reason": "yt-dlp 2026.03.13 anonymous Reel resolution fails ('login required'). Cobalt/gallery-dl/chrome-extension candidates not yet installed/proven; no cookie or auth-bypass permitted.",
+        "state": CAP_IMPLEMENTED_NOT_PROVEN,
+        "reason": "Cobalt sidecar installed (pinned, 127.0.0.1, API-key, Instagram-only). Anonymous Reel resolution PROVEN via Cobalt (no cookies) — but the acceptance URL DdQE_RUS0GJ resolves to a .jpg image (auto/mute/audio), not a video. Bounded media acquisition proof not yet run.",
         "candidates": ["cobalt", "gallery-dl", "chrome-extension"],
     },
 }

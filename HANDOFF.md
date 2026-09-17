@@ -9,16 +9,14 @@
 ---
 
 ## Last Updated
-2026-09-17 17:25 EDT (America/Detroit) — ADAPTER EVALUATION COMPLETE
+2026-09-17 17:35 EDT (America/Detroit) — COBALT SIDECAR PROVEN
 
-## HANDOFF — Acquisition adapter evaluation (awaiting install/proof approval)
+## HANDOFF — Cobalt sidecar proven (anonymous Instagram resolution; image finding)
 
-Full adapter-ladder evaluation done (commit `a4884e1`); see
-`infra/acquisition/ADAPTER_EVALUATION.md`. 218 tests pass. Instagram anonymous
-yt-dlp = "login required" → `blocked_pending_adapter` (candidates: cobalt /
-gallery-dl / chrome-extension, unproven). Cobalt = AGPL-3.0 sidecar (pin, local
-bind, API-key). Nothing installed/downloaded yet — awaiting Bryan approval for
-migrations 031/032 + installs + the single bounded Instagram proof.
+Migrations 031+032 applied + verified. Cobalt sidecar installed (`infra/cobalt/`,
+pinned 11.7.1, 127.0.0.1, API-key, Instagram-only). Anonymous Reel resolution
+PROVEN (no cookies). Finding: acceptance URL `DdQE_RUS0GJ` resolves to a `.jpg`
+image, not a video. Awaiting Bryan's decision before the bounded download.
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).

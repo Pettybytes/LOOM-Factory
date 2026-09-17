@@ -6,6 +6,25 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~17:35 EDT — COBALT SIDECAR PROVEN (anonymous Instagram resolution works; image finding)
+
+**Migrations 031 + 032 APPLIED + verified (both tables HTTP 200).**
+
+**Cobalt sidecar installed + anonymous resolution PROVEN:**
+- `infra/cobalt/docker-compose.yml` — image pinned by arm64 digest (cobalt 11.7.1),
+  host `127.0.0.1:9000` only, API-key auth (gitignored `keys.json`), Instagram-only
+  service, `DURATION_LIMIT=300` (5 min). Fixed loopback-binding gotcha.
+- POST `/` resolution test: `status:"tunnel"` → Cobalt resolves Instagram
+  **anonymously (no cookies)**.
+- **Finding:** the acceptance URL `…/reel/DdQE_RUS0GJ/` resolves to a **`.jpg`
+  image** (all three modes: auto/mute/audio) — NOT a video. The `/reel/` path is a
+  photo/slide post, or the id is a photo. Awaiting Bryan's decision before any
+  bounded download.
+
+No media downloaded. No cookies. No OpenShorts/OBS/GHL/publish.
+
+---
+
 ## STOP STATE — 2026-09-17 ~17:25 EDT — ADAPTER EVALUATION COMPLETE (awaiting install/proof approval)
 
 **Acquisition adapter ladder evaluated; first output produced (commit `a4884e1`).**
