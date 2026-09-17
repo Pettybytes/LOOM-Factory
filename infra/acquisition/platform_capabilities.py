@@ -63,8 +63,8 @@ _CAPABILITY: dict[str, dict] = {
         "candidates": ["yt-dlp", "cobalt", "streamlink"],
     },
     "instagram": {
-        "state": CAP_IMPLEMENTED_NOT_PROVEN,
-        "reason": "Anonymous URL resolution PROVEN via Cobalt (no cookies). Instagram VIDEO acquisition NOT runtime-proven: DdQE_RUS0GJ resolves to a .jpg (not accepted as video proof). Pending Bryan's verification — if it plays as video, record Cobalt misclassification; else a confirmed video Reel is provided. Bounded video download not yet authorized.",
+        "state": CAP_BLOCKED_PENDING_ADAPTER,
+        "reason": "All anonymous tool paths fail for VIDEO: yt-dlp 'login required', gallery-dl 'redirect to login', Cobalt resolves but returns .jpg cover (misclassification, confirmed on two video reels DdQE_RUS0GJ + DdZS1QRhrXE). Chrome-extension browser-assisted capture built but feasibility unproven (pending Bryan's browser test). No cookie/auth-bypass permitted.",
         "candidates": ["cobalt", "gallery-dl", "chrome-extension"],
     },
 }

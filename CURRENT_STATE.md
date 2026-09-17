@@ -6,6 +6,22 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~17:45 EDT — INSTAGRAM VIDEO: ALL TOOL PATHS FAIL; CHROME-EXT BUILT
+
+**Ladder result (anonymous, no cookies):**
+- yt-dlp: ❌ "login required"
+- Cobalt: ⚠️ resolves but returns **`.jpg` cover** for video (misclassification —
+  confirmed on BOTH video reels `DdQE_RUS0GJ` + `DdZS1QRhrXE`). Not video-proof.
+- gallery-dl 1.32.12: ❌ "HTTP redirect to login page"
+- Chrome extension: **built** (`infra/chrome-extension/`, MV3, activeTab+scripting+
+  instagram host only) — browser-assisted capture of direct media URL; feasibility
+  UNPROVEN (pending Bryan's install + open-Reel test).
+
+Instagram VIDEO acquisition = `blocked_pending_adapter`. No cookies, no JPG
+download, no tunnel fetch, no Apify/OpenShorts/OBS/GHL/publish.
+
+---
+
 ## STOP STATE — 2026-09-17 ~17:35 EDT — COBALT SIDECAR PROVEN (anonymous Instagram resolution works; image finding)
 
 **Migrations 031 + 032 APPLIED + verified (both tables HTTP 200).**

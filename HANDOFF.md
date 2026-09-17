@@ -9,15 +9,15 @@
 ---
 
 ## Last Updated
-2026-09-17 17:38 EDT (America/Detroit) — AWAITING CONFIRMED VIDEO REEL
+2026-09-17 17:45 EDT (America/Detroit) — INSTAGRAM VIDEO: TOOL PATHS FAIL; CHROME-EXT BUILT
 
-## HANDOFF — Cobalt proven; awaiting confirmed video Reel
+## HANDOFF — Instagram video acquisition blocked on all tool paths; chrome-ext built
 
-Cobalt anonymous URL resolution PROVEN (no cookies); sidecar kept running.
-Instagram VIDEO acquisition NOT runtime-proven. Acceptance URL `DdQE_RUS0GJ`
-resolves to a `.jpg` — NOT accepted as video proof. Pending Bryan's verification
-(photo vs Cobalt misclassification) + a confirmed video Reel; no tunnel fetch
-until explicit go-ahead for the bounded download.
+Ladder result: yt-dlp ❌ login · Cobalt ⚠️ .jpg cover misclassification (two reels)
+· gallery-dl ❌ login redirect · Chrome extension BUILT (`infra/chrome-extension/`)
+but feasibility unproven. Instagram VIDEO = `blocked_pending_adapter`. Cobalt
+sidecar kept running. Next: Bryan installs the extension, opens a playing Reel,
+and reports the capture result (direct URL vs blob/MSE).
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).

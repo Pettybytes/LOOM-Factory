@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "LOOM Source Capture",
+  "version": "0.1.0",
+  "description": "Browser-assisted capture of the active Instagram media URL for LOOM Acquire-for-Reaction. Reads only the active tab's <video> element on user click — never touches cookies, history, passwords, or runs a passive background listener.",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["https://*.instagram.com/*"],
+  "action": {
+    "default_title": "LOOM: Capture media URL",
+    "default_popup": "popup.html"
+  }
+}
