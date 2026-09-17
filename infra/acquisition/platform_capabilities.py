@@ -64,7 +64,7 @@ _CAPABILITY: dict[str, dict] = {
     },
     "instagram": {
         "state": CAP_IMPLEMENTED_NOT_PROVEN,
-        "reason": "Cobalt sidecar installed (pinned, 127.0.0.1, API-key, Instagram-only). Anonymous Reel resolution PROVEN via Cobalt (no cookies) — but the acceptance URL DdQE_RUS0GJ resolves to a .jpg image (auto/mute/audio), not a video. Bounded media acquisition proof not yet run.",
+        "reason": "Anonymous URL resolution PROVEN via Cobalt (no cookies). Instagram VIDEO acquisition NOT runtime-proven: DdQE_RUS0GJ resolves to a .jpg (not accepted as video proof). Pending Bryan's verification — if it plays as video, record Cobalt misclassification; else a confirmed video Reel is provided. Bounded video download not yet authorized.",
         "candidates": ["cobalt", "gallery-dl", "chrome-extension"],
     },
 }

@@ -17,9 +17,11 @@
 - POST `/` resolution test: `status:"tunnel"` → Cobalt resolves Instagram
   **anonymously (no cookies)**.
 - **Finding:** the acceptance URL `…/reel/DdQE_RUS0GJ/` resolves to a **`.jpg`
-  image** (all three modes: auto/mute/audio) — NOT a video. The `/reel/` path is a
-  photo/slide post, or the id is a photo. Awaiting Bryan's decision before any
-  bounded download.
+  image** (all three modes) — NOT a video. **JPG is NOT accepted as video proof.**
+  Instagram VIDEO acquisition stays `implemented_not_proven` (not runtime-proven).
+  Pending Bryan's verification: photo/carousel → he supplies a confirmed video
+  Reel; or it plays as video → record as Cobalt misclassification. Cobalt sidecar
+  KEPT RUNNING. No tunnel fetch until a confirmed video Reel + explicit go-ahead.
 
 No media downloaded. No cookies. No OpenShorts/OBS/GHL/publish.
 

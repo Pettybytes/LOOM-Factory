@@ -9,14 +9,15 @@
 ---
 
 ## Last Updated
-2026-09-17 17:35 EDT (America/Detroit) — COBALT SIDECAR PROVEN
+2026-09-17 17:38 EDT (America/Detroit) — AWAITING CONFIRMED VIDEO REEL
 
-## HANDOFF — Cobalt sidecar proven (anonymous Instagram resolution; image finding)
+## HANDOFF — Cobalt proven; awaiting confirmed video Reel
 
-Migrations 031+032 applied + verified. Cobalt sidecar installed (`infra/cobalt/`,
-pinned 11.7.1, 127.0.0.1, API-key, Instagram-only). Anonymous Reel resolution
-PROVEN (no cookies). Finding: acceptance URL `DdQE_RUS0GJ` resolves to a `.jpg`
-image, not a video. Awaiting Bryan's decision before the bounded download.
+Cobalt anonymous URL resolution PROVEN (no cookies); sidecar kept running.
+Instagram VIDEO acquisition NOT runtime-proven. Acceptance URL `DdQE_RUS0GJ`
+resolves to a `.jpg` — NOT accepted as video proof. Pending Bryan's verification
+(photo vs Cobalt misclassification) + a confirmed video Reel; no tunnel fetch
+until explicit go-ahead for the bounded download.
 
 Acceptance URL: `https://www.instagram.com/reel/DdQE_RUS0GJ/?utm_source=ig_web_copy_link&stkn=MzRlODBiNWFlZA==`
 Intended result: Routing "Awaiting tenant assignment" + Platform "Pending Instagram support" + canonical URL (tracking removed) + submission ID + candidate-only (no analysis/score/acquisition/download).
