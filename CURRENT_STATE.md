@@ -21,7 +21,8 @@
 - `infra/acquisition/orchestrate.py` — end-to-end dispatch with injected
   transport/downloader/finalizer (mock-testable).
 - Migrations `034_loom_provider_runs.sql` + `035_loom_provider_ceiling.sql`
-  STAGED, NOT applied.
+  **APPLIED + verified** (Bryan, 2026-09-17 20:06 EDT; both tables HTTP 200,
+  ceiling seed row = $1.00 / max 10 / disabled=false).
 - Tests: 380 passing (acquisition 109 = +33 provider; content 55; local-helper
   76; discovery 62; discord-review 78).
 
@@ -34,8 +35,8 @@
 - Expected max cost: $0.0026 (one metadata result). Verify zero-result billing,
   exact output field name, one-URL→one-result, playable muxed MP4 with audio,
   signed-URL expiry.
-- Requires: apply migrations 034/035 (Bryan, one at a time) + explicit Phase 3
-  go-ahead.
+- Requires: migrations 034/035 (APPLIED + verified). Remaining: explicit
+  Phase 3 go-ahead for the single Reel proof.
 
 ---
 
