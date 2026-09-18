@@ -27,6 +27,15 @@ ACTOR_INSTAGRAM_SCRAPER = "apify/instagram-scraper"
 ROLE_DEFAULT = "default"
 ROLE_FALLBACK = "fallback"
 
+# Pinned numeric Apify actor ids for the REST API. The human-readable name
+# (e.g. 'apify/instagram-reel-scraper') is the WEBSITE slug and is NOT a valid
+# API actor id — the API expects the numeric id or the 'username~actor-name'
+# tilde slug. The numeric id is stable and unambiguous.
+ACTOR_API_IDS = {
+    ACTOR_REEL_SCRAPER: "dSCLg0C3YEZ83HzYX",
+    ACTOR_INSTAGRAM_SCRAPER: "shu8hvrXbJbY3Eb9W",
+}
+
 # platform -> ordered pinned actors (role + active flag).
 _ACTOR_ALLOWLIST: dict[str, tuple[dict, ...]] = {
     "instagram": (
@@ -73,6 +82,11 @@ def actor_active(platform: str, actor: str) -> bool:
 
 def adapter_name(actor: str) -> str:
     return f"{PROVIDER_APIFY}:{actor.removeprefix('apify/')}"
+
+
+def actor_api_id(actor: str) -> str:
+    """Return the pinned numeric Apify actor id for the REST API."""
+    return ACTOR_API_IDS.get(actor, actor)
 
 
 def build_input(canonical_url: str, *, platform: str = "instagram") -> dict:

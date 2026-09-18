@@ -152,6 +152,12 @@ class TestActorAllowlist(unittest.TestCase):
             provider.actor_active("instagram", provider.ACTOR_INSTAGRAM_SCRAPER)
         self.assertEqual(cm.exception.code, "INACTIVE_ACTOR")
 
+    def test_actor_api_id_is_numeric(self):
+        # the REST API needs the numeric id, not the website slug (slash form)
+        self.assertEqual(provider.actor_api_id(provider.ACTOR_REEL_SCRAPER), "dSCLg0C3YEZ83HzYX")
+        self.assertEqual(provider.actor_api_id(provider.ACTOR_INSTAGRAM_SCRAPER), "shu8hvrXbJbY3Eb9W")
+        self.assertNotIn("/", provider.actor_api_id(provider.ACTOR_REEL_SCRAPER))
+
 
 class TestOutput(unittest.TestCase):
     def _result(self, **over):

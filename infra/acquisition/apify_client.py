@@ -43,6 +43,9 @@ class Transport:
     def start_run(self, actor: str, input_: dict) -> dict:
         raise NotImplementedError
 
+    def get_run_status(self, actor: str, run_id: str) -> dict:
+        raise NotImplementedError
+
     def get_dataset_items(self, dataset_id: str) -> list:
         raise NotImplementedError
 
@@ -66,6 +69,14 @@ class HttpTransport(Transport):
 
     def start_run(self, actor: str, input_: dict) -> dict:
         return self._post(f"/acts/{actor}/runs", input_)
+
+    def get_run_status(self, actor: str, run_id: str) -> dict:
+        req = urllib.request.Request(
+            f"{BASE_URL}/acts/{actor}/runs/{run_id}",
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode() or "{}")
 
     def get_dataset_items(self, dataset_id: str) -> list:
         req = urllib.request.Request(
