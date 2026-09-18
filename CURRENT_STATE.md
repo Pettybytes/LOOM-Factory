@@ -12,7 +12,7 @@
 - Universal ranked (live-API): `agentx/all-video-scraper` (`etzrjsBIFSOb19k5E`, 271 users, 4.59★, $0.38/file, no usage) most reliable; `easyapi/all-in-one-media-downloader` (`iZbsVYT4VfdMxoIPL`, 888 users, rating 2.46 API vs 4.95 README, $2.99/1k **+ usage**, returns `medias[]` direct signed URLs) cheapest-advertised but flagged.
 - Snapchat: dedicated low-adoption actors (`agentx/snapchat-video-downloader`, `automation-lab/snapchat-public-video-downloader`) — public Spotlight only, last priority. Not in allowlist.
 - Architecture decision: **HYBRID** — platform-specific primary (proven Instagram + memo23 TikTok + yt-dlp local); universal `agentx/all-video-scraper` as INACTIVE fallback for X/Snapchat/niche. Do NOT delete the proven Instagram adapter.
-- Universal is ~145× more expensive than proven Instagram ($0.38 vs $0.0026) — not a replacement.
+- Universal economics (corrected): `agentx/all-video-scraper` = $0.38/file (~146× Instagram, deterministic, fallback-only); `easyapi/all-in-one` = headline ~$0.003 but REJECTED for trust/determinism/contract (usage charge, rating discrepancy, medias[], signed headers) — NOT price. Snapchat: `agentx/snapchat-video-downloader` (`q5qkPabhaMeWxWVGa`, $0.30/file, deterministic) = bounded-proof candidate; `automation-lab` (`LIdfZyy13VzOzEUNx`, usage, 75.7%) = conditional.
 - $0 spent, no calls, no downloads, no implementation.
 
 ---

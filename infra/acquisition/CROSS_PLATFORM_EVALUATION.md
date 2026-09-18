@@ -181,9 +181,34 @@ bounded live media proof succeeds.
 | **easyapi/all-in-one** ($0.003/result + usage) | ~$0.003+usage | ~$0.30+usage | ~$3+usage | ~$5.40+usage |
 | Free/local (yt-dlp) | $0 | $0 | $0 | $0 |
 
-**Universal is NOT cost-competitive** for platforms where platform-specific/local works.
-The proven Instagram path ($0.0026) is ~145× cheaper than `agentx/all-video-scraper`
-($0.38). Universal only makes sense for X + Snapchat (no cheap alternative).
+### Universal economics — separated (corrected)
+
+- **`agentx/all-video-scraper`** — deterministic **$0.38 with file** ($0.01 start + $0.09 metadata + $0.28 download; no usage charge). That is **~146× the proven $0.0026 Instagram acquisition**. Deterministic but too expensive for routine LOOM use — suitable only as an inactive fallback.
+- **`easyapi/all-in-one-media-downloader`** — headline base **~$0.00299/result**, superficially comparable to Instagram/TikTok. BUT it is pay-per-event **plus usage** (non-deterministic all-in price), with a rating discrepancy (API 2.46 vs README 4.95), `medias[]` multiplicity, a signed-header requirement, and unproven platform support. **Rejected for trust, determinism, and contract risk — NOT because its headline price is higher** (its base price is competitive; its risk profile is not).
+
+### Snapchat economics (resolved, live-API)
+
+| Item | `agentx/snapchat-video-downloader` | `automation-lab/snapchat-public-video-downloader` |
+|---|---|---|
+| Numeric ID | `q5qkPabhaMeWxWVGa` | `LIdfZyy13VzOzEUNx` |
+| Pricing model | pay-per-event, **no usage** | pay-per-event **+ usage** |
+| File-download price | $0.20 (Download event) | UNRESOLVED |
+| Metadata price | $0.09 (Metadata event) | UNRESOLVED |
+| Actor start | $0.01 | UNRESOLVED |
+| All-in with file (1 item) | **$0.30** | ~$0.0011 + usage |
+| Input field | `video_url` (string, one Spotlight URL) | URL array (up to 100) + `saveVideos` |
+| Output media field | `video` (43-field row) + `audio_codec` | `mediaUrl` (direct CDN URL) |
+| Source audio | ✅ `audio_codec` present | ⚠️ UNRESOLVED |
+| One URL → multiple media? | No (one row) | No (one snap) |
+| Adoption / success | 4 users · 0★ · 100% (31/0/4) | 2 users · 0★ · 75.7% (28/9/0) |
+| Last update | 2026-08-26 (build 1.0.27) | 2026-08-20 (build 0.1.4) |
+| Est. 1 / 100 / 1,000 / 1,800 | $0.30 / $30 / $300 / $540 | ~$0.001 / ~$0.11 / ~$1.12 / ~$2.02 (+usage) |
+
+**Snapchat verdict:** recommended bounded-proof candidate = **`agentx/snapchat-video-downloader`**
+(numeric ID verified, deterministic $0.30/file, single `video_url`, 43-field contract,
+audio included, 100% success) — but only 4 users, so a bounded live proof is still
+required before any runtime-proven claim. Conditional candidate = `automation-lab/…`
+(non-deterministic usage, array input, 75.7% success, audio unresolved).
 
 ### Architecture decision
 

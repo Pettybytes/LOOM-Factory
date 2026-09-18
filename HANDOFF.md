@@ -9,7 +9,20 @@
 ---
 
 ## Last Updated
-2026-09-17 20:55 EDT (America/Detroit) — SNAPCHAT + UNIVERSAL INVESTIGATION (read-only, $0)
+2026-09-17 21:00 EDT (America/Detroit) — END-OF-DAY CLOSEOUT (Snapchat resolved; corrections applied)
+
+## HANDOFF — end-of-day closeout
+
+Universal (corrected): `agentx/all-video-scraper` = $0.38/file (~146× IG, deterministic,
+fallback-only); `easyapi/all-in-one` = headline ~$0.003 but REJECTED for trust/determinism/
+contract (usage charge, rating 2.46 API vs 4.95 README, medias[], signed headers) — NOT price.
+Snapchat (resolved): `agentx/snapchat-video-downloader` (`q5qkPabhaMeWxWVGa`, $0.30/file,
+deterministic, audio included, 100% success) = recommended bounded-proof candidate;
+`automation-lab/snapchat-public-video-downloader` (`LIdfZyy13VzOzEUNx`, usage, 75.7%) = conditional.
+Architecture: HYBRID (platform-specific primary + universal inactive fallback). Keep proven Instagram.
+$0 spent, nothing built, no capability changes.
+
+---
 
 ## HANDOFF — universal + Snapchat; architecture = hybrid
 
