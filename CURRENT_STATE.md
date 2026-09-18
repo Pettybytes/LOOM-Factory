@@ -6,6 +6,32 @@
 
 ---
 
+## STOP STATE — 2026-09-18 ~19:55 EDT — RANGED ACQUISITION **RUNTIME-PROVEN** (00:30–01:00 clip acquired + card repaired)
+
+### Accepted milestone
+- **Bounded ranged acquisition works end to end on a long-form source.** `ClhBXVygWbc` (05:02) yielded the approved **00:30–01:00** window: job `157184c9-7113-46c0-b7b0-10006a3e8d55` is `acquired`, `bounded_segment`, provider `local`, **$0**, range fingerprint `929e4e72…`.
+- **Acquired asset:** `youtube__ClhBXVygWbc__30-60__3a891cb35f99.mp4` · 2,489,452 B · **30.000 s** · 640×480 · H.264/AAC/yuv420p/**fast-start** · sha256 `3a891cb35f99…`. Library row, job provenance and the Discord card all agree; **1 row** per source, no duplicate.
+- **No 302 s source retained** (the full video was never downloaded); tmp empty; **Apify ceiling untouched at 7,200 micro / 2 successes**.
+- **Card (same message, updated in place):** `🎬 ACQUISITION · ACQUIRED` with `Window source 05:02 · range 00:30–01:00 · clip 30.0 s · origin manual_submit_source`, real media facts (`0:30 · 640×480 · landscape · 2.4 MB · Audio present (AAC)`), `Local acquisition · $0 provider cost`, `Open in Reaction Library` as a **link button with no custom_id**, and the **video attached natively** (2.4 MiB fits the tier-0 10 MiB limit) with an honest "Playable in this message" note.
+- **OpenShorts ingest compatibility: 9/9 PASS** (MP4, H.264, AAC, yuv420p, fast-start, geometry, duration, size, content type).
+- **Suites:** acquisition **408** · discord-review **143** · local-helper **76** — all passing.
+
+### Long-form range lane (new)
+`source_window.py` is the single contract (ms canonical): one video, one approved window, `MODE_BOUNDED_SEGMENT`; the 300 s limit applies to the **clip**, never the source; a whole source is acquirable only when ≤300 s; range-aware identity means the same source+range is idempotent while a different range is a distinct asset. Download uses `--download-sections *start-end` + `--force-keyframes-at-cuts`; the delivered clip is validated against the approved window (±2 s) and then normalized per the delivery contract.
+
+### Defects found and fixed this round
+1. **Stale adapter process** rendered the FAILED card: the click had planned Gate 2 as `full_item` with **no window**, and the old `safe_record()` **stripped the `?v=` identity** (`https://www.youtube.com/watch`). Row repaired, adapter restarted, and the identity rule now keeps `?v=`.
+2. **Empty probe result** was misclassified as a policy refusal → now `NO_RESULTS`, **retryable**, with the metadata probe bounded to **3 attempts** (metadata only, $0).
+3. **Fast-start was never applied to pass-through media** (H.264/AAC sources skipped normalization entirely). The contract now detects the atom order and **remuxes with `-c copy -movflags +faststart`** (no quality loss, no re-encode). This changed the clip's name/hash to `…3a891cb35f99.mp4` / `3a891cb35f99…` — the pre-written `…5d2df2a03c8e` was the not-yet-fast-start file.
+4. **ACQUIRING was not shown before the work** — the card stayed FAILED for 1–2 minutes. `_do_acquire` now patches the same card to `⏳ ACQUISITION · IN PROGRESS` (window visible, conflicting actions locked) **before** yt-dlp/ffmpeg runs, after the durable authorization.
+5. **`poster_fallback` previews swallowed the reason** — the card now states the exact size-limit reason and claims no playback when Discord didn't receive the video.
+
+### Still open
+- No UI yet for an operator-editable **suggested window** on an automatically discovered candidate (the data-layer fields are range-aware; the surface is not built).
+- The ranged lane's automated intake path is wired at the data layer only.
+
+---
+
 ## STOP STATE — 2026-09-18 ~19:30 EDT — REACTION LIBRARY DELIVERY FORMAT (every asset now H.264/AAC MP4)
 
 ### Why

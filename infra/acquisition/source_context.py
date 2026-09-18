@@ -179,11 +179,15 @@ class ResolvedContext:
     fingerprint: str
     card_ref: str = ""
     origin: str = ""            # which durable table answered
+    requested_start_s: float | None = None
+    requested_end_s: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {"platform": self.platform, "canonical_url": self.canonical_url,
                 "content_id": self.content_id, "fingerprint": self.fingerprint,
-                "card_ref": self.card_ref, "origin": self.origin}
+                "card_ref": self.card_ref, "origin": self.origin,
+                "requested_start_s": self.requested_start_s,
+                "requested_end_s": self.requested_end_s}
 
 
 def resolve_context(content_id: str, *, get: Callable[[str], list],
@@ -203,8 +207,11 @@ def resolve_context(content_id: str, *, get: Callable[[str], list],
             ("loom_manual_submissions", "source_url", "duplicate_fingerprint", "reviewer_note"),
             ("loom_acquisition_jobs", "canonical_url", "duplicate_fingerprint", "")):
         try:
+            range_cols = ("time_start_s,time_end_s"
+                          if table == "loom_manual_submissions"
+                          else "requested_start_s,requested_end_s")
             rows = get(f"{table}?platform_content_id=eq.{q}"
-                       f"&select=platform,{url_field},{fp_field}"
+                       f"&select=platform,{url_field},{fp_field},{range_cols}"
                        + (f",{note_field}" if note_field else "")
                        + "&limit=5")
         except Exception:  # noqa: BLE001 — a lookup failure must not fabricate context
@@ -228,6 +235,8 @@ def resolve_context(content_id: str, *, get: Callable[[str], list],
                 fingerprint=row.get(fp_field) or "",
                 card_ref=(row.get(note_field) if note_field else "") or card_ref_text,
                 origin=table,
+                requested_start_s=row.get("time_start_s") or row.get("requested_start_s"),
+                requested_end_s=row.get("time_end_s") or row.get("requested_end_s"),
             )
     return None
 

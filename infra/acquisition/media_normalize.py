@@ -140,6 +140,24 @@ def build_normalize_command(src: str | Path, dst: str | Path, *,
 # ---------------------------------------------------------------------------
 # Finalized-asset validation (pure)
 # ---------------------------------------------------------------------------
+def is_faststart(path: str | Path, *, window: int = 400_000) -> bool:
+    """True when the moov atom precedes mdat (streamable without a full download)."""
+    try:
+        head = Path(path).open("rb").read(window)
+    except OSError:
+        return False
+    moov, mdat = head.find(b"moov"), head.find(b"mdat")
+    return moov != -1 and mdat != -1 and moov < mdat
+
+
+def build_remux_command(src: str | Path, dst: str | Path, *,
+                        ffmpeg: str = "ffmpeg") -> list[str]:
+    """Stream-copy remux that only moves the moov atom (no quality loss)."""
+    return [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
+            "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
+            "-movflags", FASTSTART_FLAG, "-f", "mp4", str(dst)]
+
+
 def validate_finalized(probe: dict[str, Any], *, path: str | Path,
                        max_bytes: int = MAX_BYTES,
                        max_duration: float = MAX_DURATION_SECONDS) -> dict[str, Any]:
@@ -206,12 +224,35 @@ def normalize_and_finalize(*, src: str | Path, dst: str | Path,
     src_gaps = compatibility_gaps(probe)
     tmp = dst_path.with_name(dst_path.name + ".normalizing.mp4")
 
-    if not src_gaps and keep_compatible:
-        src_probe = probe
-        report = validate_finalized(src_probe, path=src_path,
+    if not src_gaps and keep_compatible and is_faststart(src_path):
+        report = validate_finalized(probe, path=src_path,
                                     max_bytes=max_bytes, max_duration=max_duration)
         os.replace(src_path, dst_path)                  # nothing re-encoded
-        return {**report, "normalized": False, "gaps": [], "temp_removed": True}
+        return {**report, "normalized": False, "gaps": [], "remuxed": False,
+                "temp_removed": True}
+
+    if not src_gaps and keep_compatible:
+        # Correct codecs but not streamable: remux (stream copy, no quality loss)
+        # so the delivery contract is met without a needless re-encode.
+        try:
+            run_ffmpeg(build_remux_command(src_path, tmp))
+            if not tmp.is_file():
+                raise NormalizeError("NO_OUTPUT", "remux produced no file")
+            report = validate_finalized(run_ffprobe(str(tmp)), path=tmp,
+                                        max_bytes=max_bytes, max_duration=max_duration)
+            if not is_faststart(tmp):
+                raise NormalizeError("NOT_FASTSTART",
+                                     "remux did not produce fast-start metadata")
+            os.replace(tmp, dst_path)
+        except Exception:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+            raise
+        return {**report, "normalized": False, "remuxed": True, "gaps": [],
+                "temp_removed": True}
 
     try:
         run_ffmpeg(build_normalize_command(src_path, tmp, probe=probe))
@@ -220,6 +261,9 @@ def normalize_and_finalize(*, src: str | Path, dst: str | Path,
         out_probe = run_ffprobe(str(tmp))
         report = validate_finalized(out_probe, path=tmp,
                                     max_bytes=max_bytes, max_duration=max_duration)
+        if not is_faststart(tmp):
+            raise NormalizeError("NOT_FASTSTART",
+                                 "normalized output lacks fast-start metadata")
         os.replace(tmp, dst_path)                       # atomic swap
     except Exception:
         try:
@@ -228,7 +272,8 @@ def normalize_and_finalize(*, src: str | Path, dst: str | Path,
         except OSError:
             pass
         raise
-    return {**report, "normalized": True, "gaps": src_gaps, "temp_removed": True}
+    return {**report, "normalized": True, "remuxed": False,
+            "gaps": src_gaps, "temp_removed": True}
 
 
 def run_ffmpeg_command(cmd: list[str], *, timeout: float = 900.0) -> str:

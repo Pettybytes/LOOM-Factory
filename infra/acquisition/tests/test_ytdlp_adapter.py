@@ -16,6 +16,9 @@ for d in ("acquisition", "discord-review"):
     sys.path.insert(0, str(_REPO_ROOT / "infra" / d))
 
 import ytdlp_adapter as ya  # noqa: E402
+# A minimal fast-start MP4: moov precedes mdat, as the delivery contract requires.
+_FS = b"\x00\x00\x00\x18moov" + b"\x00" * 64 + b"\x00\x00\x00\x18mdat" + b"x" * 4096
+
 
 VID = "dQw4w9WgXcQ"
 URL = f"https://www.youtube.com/watch?v={VID}"
@@ -111,7 +114,7 @@ class TestMediaValidation(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="loom-ytdlp-media-"))
         self.file = self.tmp / f"{VID}.mp4"
-        self.file.write_bytes(b"x" * 2048)
+        self.file.write_bytes(_FS)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -125,7 +128,7 @@ class TestMediaValidation(unittest.TestCase):
         media = ya.validate_media(ffprobe_ok(), path=self.file, expected_id=VID)
         self.assertEqual(media["video_codec"], "h264")
         self.assertEqual(media["audio_codec"], "aac")
-        self.assertEqual(media["size_bytes"], 2048)
+        self.assertEqual(media["size_bytes"], len(_FS))
         self.assertEqual(len(media["sha256"]), 64)
         self.assertEqual(media["duration_seconds"], 77.6)
 
@@ -183,7 +186,7 @@ class TestAcquireLocal(unittest.TestCase):
             template = cmd[cmd.index("--output") + 1]
             path = Path(template.replace("%(ext)s", "mp4"))
             if write:
-                path.write_bytes(b"v" * 4096)
+                path.write_bytes(_FS)
             produced["path"] = path
             return str(path)
 

@@ -200,6 +200,24 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
     effective["canonical_url"] = job_url
 
     # --- 10. Budget reservation (worst case) -----------------------------
+    window = None
+    if local:
+        s = effective.get("requested_start_s")
+        e = effective.get("requested_end_s")
+        if s is not None and e is not None:
+            import source_window as _sw
+            origin = ((job.get("provenance") or {}).get("origin")
+                      or ("automated_source_engine" if not job.get("actor")
+                          else "operator_adjusted"))
+            window = _sw.validate_window(
+                platform=platform, canonical_url=dispatch_url, content_id=content_id,
+                start_ms=_sw.to_ms(s, field="requested_start"),
+                end_ms=_sw.to_ms(e, field="requested_end"),
+                origin=origin, authorized_by=str(job.get("actor") or ""))
+            if window["clip_duration_ms"] != int(
+                    (effective.get("max_duration_seconds") or 300) * 1000):
+                # the approved range is the authority; the job bound only caps it
+                pass
     if local:
         estimate, reserved = 0, 0            # $0 provider cost: nothing to reserve
     else:
@@ -224,6 +242,7 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
         "reserved_micro": reserved,
         "bounds_clamped": bounds["clamped"],
         "local": local,
+        "window": window,
     }
 
 
@@ -522,6 +541,7 @@ def _run_local_attempt(io: LiveIO, pre: dict[str, Any], *, job_id: str,
         canonical_url=pre["canonical_url"],
         content_id=pre["content_id"],
         fingerprint=pre.get("fingerprint") or "",
+        window=pre.get("window") or None,
         acquire_fn=_LOCAL_ACQUIRE or local_acquisition.default_acquire,
         persist_library=io.persist_library if io.persist_library else None,
         ledger=io.ledger,

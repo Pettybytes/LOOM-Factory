@@ -20,6 +20,9 @@ for d in ("acquisition", "discord-review"):
     sys.path.insert(0, str(_REPO_ROOT / "infra" / d))
 
 import media_normalize as mn  # noqa: E402
+# A minimal fast-start MP4: moov precedes mdat, as the delivery contract requires.
+_FS = b"\x00\x00\x00\x18moov" + b"\x00" * 64 + b"\x00\x00\x00\x18mdat" + b"x" * 4096
+
 import ytdlp_adapter as ya  # noqa: E402
 
 VID = "dQw4w9WgXcQ"
@@ -89,7 +92,7 @@ class TestFinalizedValidation(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="loom-norm-"))
         self.good = self.tmp / "good.mp4"
-        self.good.write_bytes(b"x" * 4096)
+        self.good.write_bytes(_FS)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -132,7 +135,7 @@ class TestNormalizeAndFinalize(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="loom-norm-fin-"))
         self.src = self.tmp / "source.mp4"
-        self.src.write_bytes(b"vp9-encoded" * 512)
+        self.src.write_bytes(_FS)
         self.dst = self.tmp / "delivered.mp4"
 
     def tearDown(self):
@@ -146,7 +149,7 @@ class TestNormalizeAndFinalize(unittest.TestCase):
             if not converted_ok:
                 raise mn.NormalizeError("FFMPEG_FAILED", "simulated failure")
             out = Path(cmd[-1])
-            out.write_bytes(b"h264-encoded" * 512)
+            out.write_bytes(_FS)
             return ""
 
         def run_ffprobe(path):
@@ -227,14 +230,14 @@ class TestAcquisitionPathDeliversCompatibleAsset(unittest.TestCase):
 
         def run_download(cmd):
             path = Path(cmd[cmd.index("--output") + 1].replace("%(ext)s", "mp4"))
-            path.write_bytes(b"vp9-source" * 512)
+            path.write_bytes(_FS)
             return str(path)
 
         def run_ffprobe(path):
             return probe() if str(path).endswith(f"{VID}.mp4") else probe(v="h264", a="aac")
 
         def run_ffmpeg(cmd):
-            Path(cmd[-1]).write_bytes(b"h264-final" * 512)
+            Path(cmd[-1]).write_bytes(_FS)
             return ""
 
         out = ya.acquire_local(url=URL, expected_id=VID, tmp_dir=self.tmp,
@@ -262,7 +265,7 @@ class TestAcquisitionPathDeliversCompatibleAsset(unittest.TestCase):
 
         def run_download(cmd):
             path = Path(cmd[cmd.index("--output") + 1].replace("%(ext)s", "mp4"))
-            path.write_bytes(b"h264-source" * 256)
+            path.write_bytes(_FS)
             return str(path)
 
         def run_ffmpeg(_cmd):

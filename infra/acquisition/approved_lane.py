@@ -84,6 +84,8 @@ def plan_pending_job(
     destination: str = DESTINATION_PERSONAL_REACTION_LIBRARY,
     rights_usage_note: str = "",
     correlation_id: str = "",
+    requested_start_s: float | None = None,
+    requested_end_s: float | None = None,
 ) -> dict[str, Any]:
     """Qualify a source and plan its single pending acquisition job.
 
@@ -98,7 +100,11 @@ def plan_pending_job(
         authorization_type=acquisition.AUTH_APPROVED_FOR_ACQUISITION,
         actor=actor,
         destination=destination,
-        acquisition_mode=acquisition.MODE_FULL_ITEM,
+        acquisition_mode=(acquisition.MODE_BOUNDED_SEGMENT
+                          if requested_start_s is not None and requested_end_s is not None
+                          else acquisition.MODE_FULL_ITEM),
+        start_s=requested_start_s,
+        end_s=requested_end_s,
         max_bytes=PILOT_MAX_BYTES,
         max_duration_seconds=PILOT_MAX_DURATION_SECONDS,
         rights_usage_note=rights_usage_note,
@@ -115,6 +121,8 @@ def plan_authorized_job(
     actor: str,
     destination: str | None = None,
     rights_usage_note: str = "",
+    requested_start_s: float | None = None,
+    requested_end_s: float | None = None,
 ) -> dict[str, Any]:
     """Gate 2: turn an approved source into exactly one spend-authorized job.
 
@@ -137,7 +145,16 @@ def plan_authorized_job(
         actor=actor,
         destination=(destination or pending_job.get("destination")
                      or DESTINATION_PERSONAL_REACTION_LIBRARY),
-        acquisition_mode=acquisition.MODE_FULL_ITEM,
+        acquisition_mode=(acquisition.MODE_BOUNDED_SEGMENT
+                          if (requested_start_s if requested_start_s is not None
+                              else pending_job.get("requested_start_s")) is not None
+                          and (requested_end_s if requested_end_s is not None
+                               else pending_job.get("requested_end_s")) is not None
+                          else acquisition.MODE_FULL_ITEM),
+        start_s=(requested_start_s if requested_start_s is not None
+                 else pending_job.get("requested_start_s")),
+        end_s=(requested_end_s if requested_end_s is not None
+               else pending_job.get("requested_end_s")),
         max_bytes=PILOT_MAX_BYTES,
         max_duration_seconds=PILOT_MAX_DURATION_SECONDS,
         rights_usage_note=rights_usage_note or pending_job.get("rights_usage_note", ""),

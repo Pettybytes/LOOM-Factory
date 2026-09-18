@@ -9,7 +9,43 @@
 ---
 
 ## Last Updated
-2026-09-18 19:30 EDT (America/Detroit) — REACTION LIBRARY DELIVERY FORMAT (all assets H.264/AAC MP4)
+2026-09-18 19:55 EDT (America/Detroit) — RANGED ACQUISITION RUNTIME-PROVEN (00:30–01:00 clip + repaired card)
+
+## HANDOFF — Ranged acquisition milestone (2026-09-18)
+
+**Bounded ranged acquisition is runtime-proven on a long-form source.** `ClhBXVygWbc` (05:02) produced the
+approved **00:30–01:00** window: job `157184c9-7113-46c0-b7b0-10006a3e8d55` = `acquired`, `bounded_segment`,
+provider `local`, **$0**, range fingerprint `929e4e72…`.
+
+**Asset:** `youtube__ClhBXVygWbc__30-60__3a891cb35f99.mp4` · 2,489,452 B · 30.000 s · 640×480 ·
+H.264/AAC/yuv420p/**fast-start** · sha256 `3a891cb35f99…`. One library row, job provenance and card all agree;
+no 302 s source retained; tmp empty; **Apify ceiling untouched at 7,200 micro / 2**.
+
+**Card** (same message, in place): `🎬 ACQUISITION · ACQUIRED`, `Window source 05:02 · range 00:30–01:00 ·
+clip 30.0 s · origin manual_submit_source`, real media facts, `Local acquisition · $0 provider cost`,
+`Open in Reaction Library` as a **link button with no custom_id**, and the **video attached natively**
+(2.4 MiB fits tier-0 10 MiB) with honest "Playable in this message".
+
+**Long-form lane:** `source_window.py` is the single contract (ms). The 300 s limit applies to the CLIP, not the
+source; a whole source is acquirable only when ≤300 s; range-aware identity makes source+range idempotent and a
+different range a distinct asset. Download is `--download-sections *start-end` + `--force-keyframes-at-cuts`;
+the delivered clip is validated against the approved window (±2 s), then normalized per the delivery contract.
+
+**Defects fixed:** (1) a **stale adapter process** had planned Gate 2 as `full_item` with no window and its old
+`safe_record` stripped the `?v=` identity → row repaired + adapter restarted, identity rule keeps `?v=`;
+(2) an **empty probe result** was misclassified as a non-retryable refusal → now `NO_RESULTS` retryable with the
+metadata probe bounded to 3 attempts; (3) **fast-start was never applied to pass-through media** → the contract
+now remuxes (`-c copy -movflags +faststart`), which is why the clip is `…3a891cb35f99.mp4` rather than the
+pre-written `…5d2df2a03c8e.mp4`; (4) **ACQUIRING was not shown until the work finished** → `_do_acquire` now
+patches `⏳ ACQUISITION · IN PROGRESS` before yt-dlp/ffmpeg starts; (5) a **poster fallback swallowed the size
+reason** → it now states the exact reason and claims no playback.
+
+**OpenShorts ingest compatibility: 9/9 PASS.** Suites: acquisition **408** · discord-review **143** ·
+local-helper **76**.
+
+**Still open:** no UI for an operator-editable suggested window on an automatically discovered candidate (data
+layer is range-aware, surface is not built); the ranged lane's automated intake path is wired at the data layer
+only.
 
 ## HANDOFF — Reaction Library delivery format (2026-09-18)
 

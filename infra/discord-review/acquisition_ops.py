@@ -81,6 +81,8 @@ class LaneContext:
     fixture: bool = False
     library_url: str = ""
     local_acquisition: bool = False
+    window: dict[str, Any] = field(default_factory=dict)
+    requires_range: bool = False
 
     def view_model(self, state: str | None = None, **over: Any) -> dict[str, Any]:
         kw = dict(
@@ -99,6 +101,8 @@ class LaneContext:
             tenant_id=self.tenant_id, profile_id=self.profile_id,
             fixture=self.fixture, library_url=self.library_url,
             local_acquisition=self.local_acquisition,
+            window=self.window,
+            requires_range=self.requires_range,
         )
         kw.update(over)
         return card.build_view_model(**kw)
@@ -535,6 +539,28 @@ def context_for(parsed: dict[str, str], *, store: LaneStore) -> LaneContext:
         ctx.library = {"status": "acquired",
                        "asset_filename": row.get("asset_filename", ""),
                        "sha256": row.get("asset_hash", "")}
+    # Approved window (if the durable submission or job carries one) so the card
+    # can show source/range/clip and gate Acquire on a real approved range.
+    win: dict[str, Any] = {}
+    s_ms = source.get("requested_start_s")
+    e_ms = source.get("requested_end_s")
+    if s_ms is None and durable:
+        s_ms, e_ms = durable.get("requested_start_s"), durable.get("requested_end_s")
+    if s_ms is not None and e_ms is not None:
+        try:
+            import source_window as _sw
+            win = _sw.validate_window(
+                platform=ctx.platform, canonical_url=ctx.canonical_url,
+                content_id=ctx.content_id,
+                start_ms=_sw.to_ms(s_ms, field="requested_start"),
+                end_ms=_sw.to_ms(e_ms, field="requested_end"),
+                origin="manual_submit_source")
+        except Exception:  # noqa: BLE001 — an invalid stored range shows as no range
+            win = {}
+    ctx.window = win
+    ctx.requires_range = bool(win) or bool(
+        (source.get("source_duration_ms") or 0) > 300_000)
+
     return ctx
 
 
@@ -659,7 +685,7 @@ def handle(parsed: dict[str, str], *,
                         "effects": {"runner_missing": True}}
             effects, new_state = _do_acquire(
                 deps=deps, ctx=ctx, actor=actor, action=action, runner=runner,
-                runner_kwargs=runner_kwargs or {})
+                runner_kwargs=runner_kwargs or {}, transport=transport)
         else:
             transport.ephemeral("Unknown acquisition action.")
             return {"ok": False, "guard": card.GUARD_OK, "action": action, "effects": {}}
@@ -684,12 +710,22 @@ def _do_approve(*, deps: LaneStore, ctx: LaneContext, actor: str) -> dict[str, A
     if pending:
         return {"pending_job": pending, "created": False,
                 "view_facts": {"provenance": ctx.provenance}}
+    # The durable submission is the authority for an optional approved range.
+    sub: dict[str, Any] = {}
+    try:
+        sub = deps.source_context(ctx.content_id or ctx.ref) or {}
+    except Exception:  # noqa: BLE001 — an unreadable context means a full-item plan
+        sub = {}
+    start_s = sub.get("requested_start_s", sub.get("time_start_s"))
+    end_s = sub.get("requested_end_s", sub.get("time_end_s"))
     job = lane.plan_pending_job(
         fingerprint=ctx.ref,
         platform=ctx.platform,
         platform_content_id=ctx.content_id or ctx.ref,
         canonical_url=ctx.canonical_url,
         actor=actor,
+        requested_start_s=start_s,
+        requested_end_s=end_s,
     )
     row, created = deps.create_job(job)
     return {"pending_job": row, "created": created,
@@ -698,7 +734,8 @@ def _do_approve(*, deps: LaneStore, ctx: LaneContext, actor: str) -> dict[str, A
 
 def _do_acquire(*, deps: LaneStore, ctx: LaneContext, actor: str, action: str,
                 runner: Callable[..., dict[str, Any]],
-                runner_kwargs: dict[str, Any]) -> tuple[dict[str, Any], str]:
+                runner_kwargs: dict[str, Any],
+                transport: Transport | None = None) -> tuple[dict[str, Any], str]:
     """Gate 2: authorize spending for an approved source, then run ONE attempt."""
     # Repeat-acquisition protection comes before anything else.
     if lane.library_has_content(deps.library_rows(), platform_content_id=ctx.content_id,
@@ -710,7 +747,21 @@ def _do_acquire(*, deps: LaneStore, ctx: LaneContext, actor: str, action: str,
     if pending is None:
         raise lane.LaneError("NOT_APPROVED", "approve the source before acquiring it")
 
-    job = lane.plan_authorized_job(pending_job=pending, actor=actor)
+    # Fail closed: a known long-form source must never download without an
+    # approved, valid window. (An unknown duration is still bounded by the
+    # adapter, which refuses any source longer than the clip limit.)
+    start_s = pending.get("requested_start_s")
+    end_s = pending.get("requested_end_s")
+    known_source_ms = (pending.get("source_duration_ms")
+                       or (ctx.window or {}).get("source_duration_ms"))
+    if (known_source_ms and int(known_source_ms) > 300_000
+            and (start_s is None or end_s is None)):
+        raise lane.LaneError(
+            "RANGE_REQUIRED",
+            "this source is longer than the 300 s clip limit: approve a valid range "
+            "before acquiring")
+    job = lane.plan_authorized_job(pending_job=pending, actor=actor,
+                                   requested_start_s=start_s, requested_end_s=end_s)
     row, created = deps.create_job(job)
     if not created and action == card.ACT_ACQUIRE:
         raise lane.LaneError("ALREADY_AUTHORIZED",
@@ -724,6 +775,25 @@ def _do_acquire(*, deps: LaneStore, ctx: LaneContext, actor: str, action: str,
                                             "status_reason": f"retry authorized by {actor}"})
         row = reopened or row
 
+    # The durable retry/acquisition authorization is already recorded. Show the
+    # operator that work has STARTED before yt-dlp or ffmpeg is invoked — never
+    # after it finishes — with every conflicting action locked.
+    if transport is not None:
+        try:
+            acquiring = card.build_view_model(
+                ref=ctx.ref, platform=ctx.platform, state=card.STATE_ACQUIRING,
+                content_id=ctx.content_id, canonical_url=ctx.canonical_url,
+                window=ctx.window, requires_range=ctx.requires_range,
+                local_acquisition=ctx.local_acquisition,
+                estimated_cost_micro=ctx.estimated_cost_micro,
+                ceiling_micro=ctx.ceiling_micro,
+                remaining_acquisitions=ctx.remaining_acquisitions,
+                provenance=ctx.provenance, tenant_id=ctx.tenant_id,
+                profile_id=ctx.profile_id, fixture=ctx.fixture,
+                library_url=ctx.library_url)
+            transport.patch_original(card.format_acquisition_card(acquiring))
+        except Exception:  # noqa: BLE001 — a display failure must not block the work
+            pass
     deps.ledger_put(in_flight=True, last_ref=ctx.ref)
     outcome = runner(job=row, retry_authorized=(action == card.ACT_RETRY),
                      **runner_kwargs)

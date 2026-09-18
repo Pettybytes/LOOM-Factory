@@ -430,6 +430,8 @@ def build_view_model(
     fixture: bool = False,
     library_url: str = "",
     local_acquisition: bool = False,
+    window: dict[str, Any] | None = None,
+    requires_range: bool = False,
 ) -> dict[str, Any]:
     """Assemble the presentation view model (no I/O, no validation of media)."""
     if state not in CARD_STATES:
@@ -465,6 +467,8 @@ def build_view_model(
         "fixture": bool(fixture),
         "library_url": library_url,
         "local_acquisition": bool(local_acquisition),
+        "window": window or {},
+        "requires_range": bool(requires_range),
     }
 
 
@@ -516,6 +520,23 @@ def cost_line(vm: dict[str, Any]) -> str:
     return line + ("\n" + " · ".join(tail) if tail else "")
 
 
+def window_field(vm: dict[str, Any]) -> str:
+    """Source length, approved range, resulting clip and provenance origin."""
+    import source_window as _sw
+    win = vm.get("window") or {}
+    if not win:
+        return ""
+    bits = []
+    if win.get("source_duration_ms"):
+        bits.append(f"source **{_sw.human_clock(win['source_duration_ms'])}**")
+    if win.get("start_ms") is not None and win.get("end_ms") is not None:
+        bits.append(f"range **{_sw.human_range(win['start_ms'], win['end_ms'])}**")
+        bits.append(f"clip **{_sw.human_duration(win['clip_duration_ms'])}**")
+    if win.get("origin"):
+        bits.append(f"origin `{win['origin']}`")
+    return " · ".join(bits)
+
+
 def library_line(vm: dict[str, Any]) -> str:
     lib = vm.get("library") or {}
     if vm.get("state") == STATE_ACQUIRED and lib:
@@ -536,6 +557,12 @@ def preview_field(vm: dict[str, Any]) -> str:
     kind = pv.get("kind") or "none"
     if kind == "video_url":
         return "Inline preview available."
+    if kind == "poster_fallback":
+        # The video could not be attached: state the exact reason and claim no
+        # playback, because Discord never received the video.
+        reason = str(pv.get("attach_reason") or "").strip()
+        note = str(pv.get("note") or "Poster frame attached to this message.")
+        return f"{note}\n{reason}" if reason else note
     if kind == "video_attachment":
         return "Playable in this message — native Discord player."
     if kind == "thumbnail":
@@ -571,6 +598,9 @@ def format_acquisition_embed(vm: dict[str, Any]) -> dict[str, Any]:
                        "inline": True})
     fields.append({"name": "Media", "value": media_summary(vm), "inline": True})
     fields.append({"name": "Cost", "value": cost_line(vm), "inline": True})
+    if window_field(vm):
+        fields.append({"name": "Window", "value": window_field(vm),
+                       "inline": False})
     fields.append({"name": "Reaction Library", "value": library_line(vm), "inline": False})
 
     if state == STATE_ACQUIRING:
@@ -658,6 +688,10 @@ def format_acquisition_buttons(vm: dict[str, Any], *,
     buttons: list[dict[str, Any]] = []
     for action, label, style in STATE_BUTTONS.get(state, ()):
         if state == STATE_ACQUIRED and action == ACT_PLAY:
+            continue
+        if (action == ACT_ACQUIRE and vm.get("requires_range")
+                and not (vm.get("window") or {}).get("start_ms")):
+            # Long-form source with no approved window: never offer Acquire.
             continue
         if state == STATE_FAILED and action == ACT_RETRY and _is_policy_refusal(vm):
             # A fixed policy refusal (e.g. duration > 300 s) is not retryable.

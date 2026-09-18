@@ -23,11 +23,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 import media_normalize as mn
+import source_window as swc
 
 PROVIDER_LOCAL = "local"
 ADAPTER_LOCAL_YTDLP = "local:yt-dlp"
 
 MAX_DURATION_SECONDS = 300
+MAX_SOURCE_DURATION_SECONDS = 4 * 60 * 60   # 4 h source cap (range mode)
 MAX_BYTES = 100 * 1024 * 1024
 MAX_RESULTS = 1
 MAX_ATTEMPTS = 1
@@ -70,7 +72,8 @@ def build_probe_command(url: str, *, ytdlp: str = "yt-dlp") -> list[str]:
 
 
 def build_download_command(url: str, *, out_template: str, ytdlp: str = "yt-dlp",
-                           max_bytes: int = MAX_BYTES) -> list[str]:
+                           max_bytes: int = MAX_BYTES,
+                           section_arg: str | None = None) -> list[str]:
     """One bounded item with local ffmpeg merge; never enumerates the playlist."""
     cmd = [ytdlp,
            "--no-playlist",
@@ -85,6 +88,11 @@ def build_download_command(url: str, *, out_template: str, ytdlp: str = "yt-dlp"
            "--output", out_template,
            "--print", "after_move:filepath",
            "--", url]
+    if section_arg:
+        # Bounded segment: ffmpeg cuts the exact requested window and re-encodes at
+        # the cut points so the delivered clip starts/ends where it was approved.
+        cmd[cmd.index("--"):cmd.index("--")] = ["--download-sections", section_arg,
+                                                "--force-keyframes-at-cuts"]
     return _assert_hygiene(cmd)
 
 
@@ -102,7 +110,8 @@ def _assert_hygiene(cmd: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 # Validation (pure)
 # ---------------------------------------------------------------------------
-def validate_metadata(meta: dict[str, Any], *, expected_id: str) -> dict[str, Any]:
+def validate_metadata(meta: dict[str, Any], *, expected_id: str,
+                      allow_long_source: bool = False) -> dict[str, Any]:
     """Refuse BEFORE downloading when trustworthy metadata already violates a bound."""
     if not isinstance(meta, dict):
         raise YtDlpError("BAD_METADATA", "probe returned no metadata")
@@ -114,6 +123,11 @@ def validate_metadata(meta: dict[str, Any], *, expected_id: str) -> dict[str, An
             # Some responses carry the video fields at top level with an EMPTY
             # `entries` array; the object itself is the single item.
             meta = {k: v for k, v in meta.items() if k != "entries"}
+        elif not counts:
+            # An empty result set (no id, nothing extracted) is a transient
+            # extractor response — retryable, never a policy refusal.
+            raise YtDlpError("NO_RESULTS",
+                             "the extractor returned no item for this URL")
         elif len(counts) != 1:
             raise YtDlpError("MULTIPLE_RESULTS",
                              f"probe returned {len(counts)} items; exactly 1 is required")
@@ -150,9 +164,11 @@ def validate_metadata(meta: dict[str, Any], *, expected_id: str) -> dict[str, An
         duration_f = float(duration)
     except (TypeError, ValueError):
         raise YtDlpError("BAD_DURATION", f"unusable duration {duration!r}")
-    if duration_f > MAX_DURATION_SECONDS:
+    source_limit = MAX_SOURCE_DURATION_SECONDS if allow_long_source else MAX_DURATION_SECONDS
+    if duration_f > source_limit:
         raise YtDlpError("TOO_LONG",
-                         f"{duration_f:.1f}s exceeds the {MAX_DURATION_SECONDS}s limit")
+                         f"{duration_f:.1f}s exceeds the {source_limit}s "
+                         f"{'source' if allow_long_source else 'clip'} limit")
 
     size = meta.get("filesize") or meta.get("filesize_approx")
     if size and int(size) > MAX_BYTES:
@@ -246,6 +262,7 @@ def acquire_local(*, url: str, expected_id: str, tmp_dir: Path, library_dir: Pat
                   run_download: Callable[[list[str]], str],
                   run_ffprobe: Callable[[str], dict],
                   run_ffmpeg: Callable[[list[str]], Any] | None = None,
+                  window: dict[str, Any] | None = None,
                   cleanup: Callable[[Path], None] | None = None,
                   ytdlp: str = "yt-dlp") -> dict[str, Any]:
     """One bounded attempt; returns the finalized library record or raises."""
@@ -255,12 +272,14 @@ def acquire_local(*, url: str, expected_id: str, tmp_dir: Path, library_dir: Pat
     library_dir.mkdir(parents=True, exist_ok=True)
 
     meta = run_probe(build_probe_command(url, ytdlp=ytdlp))
-    checked = validate_metadata(meta, expected_id=expected_id)      # pre-download gate
+    checked = validate_metadata(meta, expected_id=expected_id,
+                                 allow_long_source=bool(window))      # pre-download gate
 
     stem = f"{expected_id}"
     out_template = str(tmp_dir / f"{stem}.%(ext)s")
-    produced = run_download(build_download_command(url, out_template=out_template,
-                                                  ytdlp=ytdlp))
+    produced = run_download(build_download_command(
+        url, out_template=out_template, ytdlp=ytdlp,
+        section_arg=swc.ytdlp_section_arg(window) if window else None))
     tmp_path = Path(str(produced).strip().splitlines()[-1]) if produced else None
     if tmp_path is None or not tmp_path.is_file():
         candidates = sorted(p for p in tmp_dir.glob(f"{stem}.*") if p.is_file())
@@ -280,7 +299,13 @@ def acquire_local(*, url: str, expected_id: str, tmp_dir: Path, library_dir: Pat
             run_ffmpeg=run_ffmpeg or mn.run_ffmpeg_command,
             run_ffprobe=run_ffprobe)
         digest = sha256_file(staged)              # hash what we actually ship
-        filename = filename_for(expected_id, digest)
+        if window:
+            # The delivered clip must match the window that was actually approved.
+            swc.validate_resulting_duration(approved=window,
+                                            measured_ms=int(round(delivered["duration_seconds"] * 1000)))
+        platform = (window or {}).get("platform") or "youtube"
+        filename = (swc.filename_stem(platform, expected_id, window, digest) + ".mp4"
+                    if window else filename_for(expected_id, digest))
         final_path = library_dir / filename
         os.replace(staged, final_path)            # atomic finalize
 

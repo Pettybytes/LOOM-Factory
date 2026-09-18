@@ -22,14 +22,15 @@ COST_LABEL = "Local acquisition · $0 provider cost"
 
 
 def default_acquire(*, url: str, expected_id: str, tmp_dir: Path,
-                    library_dir: Path) -> dict[str, Any]:
+                    library_dir: Path,
+                    window: dict[str, Any] | None = None) -> dict[str, Any]:
     """The real bounded attempt (only reached in the live proof)."""
     def probe(cmd):
         # Metadata only: zero media bytes, zero cost. A transient extractor
         # hiccup (which --retries 0 can surface as an empty result set) is
         # retried once here rather than being reported as an unavailable source.
         last: Any = None
-        for _attempt in range(2):
+        for _attempt in range(3):
             try:
                 meta = _json(ya.run_ytdlp_command(cmd, timeout=120))
             except ya.YtDlpError as e:
@@ -44,6 +45,7 @@ def default_acquire(*, url: str, expected_id: str, tmp_dir: Path,
 
     return ya.acquire_local(
         url=url, expected_id=expected_id, tmp_dir=tmp_dir, library_dir=library_dir,
+        window=window,
         run_probe=probe,
         run_download=lambda cmd: ya.run_ytdlp_command(cmd, timeout=600),
         run_ffprobe=ya.run_ffprobe_json,
@@ -65,7 +67,7 @@ def _json(raw: str) -> dict[str, Any]:
 
 
 def run_local(*, canonical_url: str, content_id: str, video_id: str = "",
-              fingerprint: str = "",
+              fingerprint: str = "", window: dict[str, Any] | None = None,
               acquire_fn: Callable[..., dict[str, Any]] = default_acquire,
               tmp_dir: Path | None = None, library_dir: Path | None = None,
               persist_library: Callable[[dict[str, Any]], Any] | None = None,
@@ -88,14 +90,15 @@ def run_local(*, canonical_url: str, content_id: str, video_id: str = "",
                           output_ref=f"local yt-dlp attempt for {expected}")
 
     try:
-        result = acquire_fn(url=canonical_url, expected_id=expected,
+        result = acquire_fn(url=canonical_url, expected_id=expected, window=window,
                             tmp_dir=tmp, library_dir=lib)
     except ya.YtDlpError as e:
         return _failure(e.code, e.message, ledger=ledger, run_id=run_id,
-                        job_id=job_id, expected=expected)
+                        job_id=job_id, expected=expected, window=window)
     except Exception as e:  # noqa: BLE001 — a broken toolchain is a classified failure
         return _failure("LOCAL_TOOLCHAIN_ERROR", f"{type(e).__name__}: {e}"[:200],
-                        ledger=ledger, run_id=run_id, job_id=job_id, expected=expected)
+                        ledger=ledger, run_id=run_id, job_id=job_id,
+                        expected=expected, window=window)
 
     # Build the library row with the SAME contract the paid path uses, so both
     # lanes persist identical shapes (and uuid columns never receive "").
@@ -108,7 +111,8 @@ def run_local(*, canonical_url: str, content_id: str, video_id: str = "",
                             "a library row requires the acquisition job id (uuid)")
     import youtube_url as _yt
     candidates = {
-        "duplicate_fingerprint": (fingerprint
+        "duplicate_fingerprint": ((window or {}).get("range_fingerprint")
+                                  or fingerprint
                                   or _yt.fingerprint_for(result["canonical_url"])),
         "platform": "youtube",
         "platform_content_id": result["video_id"],
@@ -122,6 +126,10 @@ def run_local(*, canonical_url: str, content_id: str, video_id: str = "",
         "provenance": {
             "platform": "youtube",
             "canonical_url": result["canonical_url"],
+            "window": ({"start_ms": window["start_ms"], "end_ms": window["end_ms"],
+                        "clip_duration_ms": window["clip_duration_ms"],
+                        "origin": window.get("origin", "")} if window else None),
+            "range_fingerprint": (window or {}).get("range_fingerprint", ""),
             "adapter": LOCAL_ADAPTER,
             "provider": LOCAL_PROVIDER,
             "provider_cost_micro": 0,
@@ -161,7 +169,14 @@ def run_local(*, canonical_url: str, content_id: str, video_id: str = "",
         "cost": {"actual_micro": 0, "estimated_micro": 0, "provider": LOCAL_PROVIDER,
                  "label": COST_LABEL},
         "provenance": {"adapter": LOCAL_ADAPTER, "provider": LOCAL_PROVIDER,
-                       "run_id": run_id, "provider_cost_micro": 0},
+                       "run_id": run_id, "provider_cost_micro": 0,
+                       "mode": ("bounded_segment" if window else "full_item"),
+                       "window": ({"start_ms": window["start_ms"],
+                                   "end_ms": window["end_ms"],
+                                   "clip_duration_ms": window["clip_duration_ms"],
+                                   "origin": window.get("origin", ""),
+                                   "range_fingerprint": window.get("range_fingerprint", "")}
+                                  if window else None)},
         "ledger": audit,
         "job_patch": {"status": "acquired", "retry_count": 1,
                       "status_reason": f"local yt-dlp acquired {result['asset_filename']}",
@@ -173,8 +188,7 @@ def run_local(*, canonical_url: str, content_id: str, video_id: str = "",
 
 
 # Stable, operator-facing classifications. A fixed POLICY refusal is not retryable.
-POLICY_CODE_MAP = {"TOO_LONG": "DURATION_LIMIT", "TOO_LARGE": "SIZE_LIMIT",
-                   "MULTIPLE_RESULTS": "SOURCE_UNAVAILABLE"}
+POLICY_CODE_MAP = {"TOO_LONG": "DURATION_LIMIT", "TOO_LARGE": "SIZE_LIMIT"}
 POLICY_REFUSAL_CODES = frozenset({
     "DURATION_LIMIT", "SIZE_LIMIT", "PLAYLIST_REJECTED", "LIVE_REJECTED",
     "MULTIPLE_VIDEOS", "MULTIPLE_RESULTS", "VIDEO_STREAM_COUNT", "NO_AUDIO",
@@ -183,12 +197,15 @@ POLICY_REFUSAL_CODES = frozenset({
     "MISSING_VIDEO_ID", "MALFORMED_ID", "SELECTION_PARAM", "UNSUPPORTED_HOST",
     "UNSUPPORTED_PATH", "EMPTY_URL", "BAD_SCHEME", "CREDENTIALS",
 })
+RETRYABLE_TRANSIENT_CODES = frozenset({"NO_RESULTS", "MULTIPLE_RESULTS",
+                                      "YTDLP_FAILED", "BAD_METADATA"})
 
 
 def _failure(code: str, message: str, *, ledger: Any | None, run_id: str,
-             job_id: str, expected: str) -> dict[str, Any]:
+             job_id: str, expected: str,
+             window: dict[str, Any] | None = None) -> dict[str, Any]:
     code = POLICY_CODE_MAP.get(code, code)
-    policy = code in POLICY_REFUSAL_CODES
+    policy = code in POLICY_REFUSAL_CODES and code not in RETRYABLE_TRANSIENT_CODES
     audit = {}
     if ledger is not None and run_id:
         audit = ledger.reconcile_local(
@@ -205,7 +222,14 @@ def _failure(code: str, message: str, *, ledger: Any | None, run_id: str,
         "cost": {"actual_micro": 0, "estimated_micro": 0, "provider": LOCAL_PROVIDER,
                  "label": COST_LABEL},
         "provenance": {"adapter": LOCAL_ADAPTER, "provider": LOCAL_PROVIDER,
-                       "run_id": run_id, "provider_cost_micro": 0},
+                       "run_id": run_id, "provider_cost_micro": 0,
+                       "mode": ("bounded_segment" if window else "full_item"),
+                       "window": ({"start_ms": window["start_ms"],
+                                   "end_ms": window["end_ms"],
+                                   "clip_duration_ms": window["clip_duration_ms"],
+                                   "origin": window.get("origin", ""),
+                                   "range_fingerprint": window.get("range_fingerprint", "")}
+                                  if window else None)},
         "ledger": audit,
         "job_patch": {"status": "failed", "retry_count": 1,
                       "status_reason": f"local_download: {code}: {message}"[:200],

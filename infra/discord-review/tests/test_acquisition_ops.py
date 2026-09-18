@@ -162,7 +162,7 @@ class TestGateOneFromTheCard(unittest.TestCase):
     def test_approve_updates_the_card_in_place(self):
         _out, _s, transport, _l = click(card.ACT_APPROVE)
         self.assertEqual(len(transport.updates), 1)
-        embed = transport.updates[0]["embeds"][0]
+        embed = transport.updates[-1]["embeds"][0]
         self.assertEqual(embed["title"], card.STATE_TITLES[card.STATE_APPROVED])
 
     def test_duplicate_click_inside_the_window_is_suppressed(self):
@@ -191,7 +191,7 @@ class TestGateTwoFromTheCard(unittest.TestCase):
 
     def test_acquire_updates_the_card_with_library_facts(self):
         _out, _s, transport = self._approved()
-        payload = transport.updates[0]
+        payload = transport.updates[-1]
         blob = json.dumps(payload)
         self.assertIn("Acquired", blob)
         self.assertIn("9b22f887b2ff", blob)
@@ -210,7 +210,7 @@ class TestGateTwoFromTheCard(unittest.TestCase):
         out, _s, transport = self._approved(runner=fail_runner)
         self.assertTrue(out["ok"])
         self.assertEqual(out["state"], card.STATE_FAILED)
-        embed = transport.updates[0]["embeds"][0]
+        embed = transport.updates[-1]["embeds"][0]
         self.assertEqual(embed["title"], card.STATE_TITLES[card.STATE_FAILED])
         self.assertIn("EMPTY_RESULT", json.dumps(embed))
 

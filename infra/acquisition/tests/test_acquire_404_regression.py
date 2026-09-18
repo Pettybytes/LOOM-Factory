@@ -257,7 +257,15 @@ class TestOutcomePersistence(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(out["state"], card.STATE_FAILED)
         self.assertIn("job_update", log)
-        self.assertLess(log.index("job_update"), log.index("card_patch"))
+        job_pos = [i for i, e in enumerate(log) if e == "job_update"]
+        card_pos = [i for i, e in enumerate(log) if e == "card_patch"]
+        # acquiring is shown BEFORE the work starts, and the durable outcome lands
+        # BEFORE the terminal card update — the card can never outrun the ledger
+        self.assertTrue(card_pos, "the card is updated for acquiring and terminal")
+        self.assertLess(card_pos[0], log.index("runner"),
+                        "the acquiring state must be visible before the runner runs")
+        self.assertLess(job_pos[-1], card_pos[-1],
+                        "the durable outcome must precede the terminal card update")
         persisted = next(row for row in store.jobs.values()
                          if row.get("authorization_type") == "acquire_for_reaction")
         self.assertEqual(persisted["status"], "failed")
