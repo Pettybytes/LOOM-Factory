@@ -44,8 +44,12 @@ PLATFORMS = frozenset({"youtube", "reddit", "tiktok", "instagram", "twitch", "ki
 # (0 media bytes) but a bounded media acquisition proof has NOT run.
 _CAPABILITY: dict[str, dict] = {
     "youtube": {
-        "state": CAP_IMPLEMENTED_NOT_PROVEN,
-        "reason": "yt-dlp 2026.03.13 installed; transcript-only extraction proven (0 media bytes); bounded media acquisition proof not yet run.",
+        "state": CAP_RUNTIME_PROVEN,
+        "reason": ("Bounded local yt-dlp media acquisition PROVEN 2026-09-18: exact URL "
+                   "youtube.com/watch?v=h3Q_tAFWY5g acquired in one attempt "
+                   "(40.64 s, 16,407,149 B, sha256 d8990649b8e3…), no cookies/auth, "
+                   "$0 provider cost, Apify ceiling untouched. A >300 s source "
+                   "(ClhBXVygWbc, 302 s) was refused at metadata with no download."),
         "candidates": ["yt-dlp", "cobalt"],
     },
     "reddit": {
@@ -107,3 +111,30 @@ def candidates(platform: str) -> list[str]:
 def capability_map() -> dict[str, str]:
     """{platform: state} summary."""
     return {p: _CAPABILITY[p]["state"] for p in sorted(_CAPABILITY)}
+
+
+# ---------------------------------------------------------------------------
+# Adapter proof mode (bounded, non-claiming)
+#
+# A platform whose adapter is IMPLEMENTED but not yet runtime-proven may run its
+# bounded proof while the state still says implemented_not_proven. This only
+# permits the attempt; it never claims the platform is proven. The capability
+# state is flipped to runtime_proven separately, and only after a proof succeeds.
+# ---------------------------------------------------------------------------
+PROOF_ENV = "LOOM_ADAPTER_PROOF_PLATFORMS"
+
+
+def proof_platforms() -> frozenset:
+    import os
+    raw = os.environ.get(PROOF_ENV) or ""
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def proof_mode_allows(platform: str) -> bool:
+    """True while a bounded adapter proof is explicitly in progress."""
+    name = (platform or "").lower()
+    if name not in proof_platforms():
+        return False
+    entry = _CAPABILITY.get(name) or {}
+    return entry.get("state") in (CAP_IMPLEMENTED_NOT_PROVEN, CAP_RUNTIME_PROVEN,
+                                  CAP_RUNTIME_PROVEN_PROVIDER)

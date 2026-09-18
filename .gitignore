@@ -39,3 +39,5 @@ infra/discord-review/failed-attempt-repair.json
 infra/discord-review/failed-card-update.json
 infra/discord-review/live-proof-preparation.json
 infra/discord-review/verify-approve-click.json
+infra/discord-review/youtube-cards.json
+infra/discord-review/youtube-cards-fixed.json

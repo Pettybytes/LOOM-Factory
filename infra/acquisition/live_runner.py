@@ -37,6 +37,13 @@ import approved_lane as lane
 import approved_runner as runner
 import cost
 import ledger as spend_ledger
+import local_acquisition
+
+# Platforms acquired by a LOCAL adapter (no paid provider, no ceiling spend).
+LOCAL_PLATFORMS = frozenset({"youtube"})
+
+# Test seam: replaced by tests to inject a fake bounded local attempt.
+_LOCAL_ACQUIRE = None
 import provider
 import reaction_library
 
@@ -90,6 +97,7 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
         raise LiveRunnerError("NO_JOB", "no acquisition job")
 
     platform = job.get("platform") or ""
+    local = platform in LOCAL_PLATFORMS
 
     # --- 2. Gate 2 authorization (also rejects a Gate 1-only job) ---------
     lane.require_spend_authorization(job)
@@ -109,24 +117,34 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
                               "Gate 2 authorization does not reference this Gate 1 job")
 
     # --- 3. The URL and content id must be unchanged ----------------------
-    job_url = _strip(job.get("canonical_url") or "")
+    # Compare NORMALIZED forms (trailing-slash tolerant) but dispatch the job's
+    # own canonical URL verbatim: for YouTube the query string IS the video id, so
+    # stripping it would acquire "watch" with no id at all.
+    job_raw = (job.get("canonical_url") or "").strip()
+    job_url = _strip(job_raw)
     pending_url = _strip(pending.get("canonical_url") or "")
     if not job_url:
         raise LiveRunnerError("NO_URL", "authorized job carries no canonical URL")
     if job_url != pending_url:
         raise LiveRunnerError("URL_CHANGED",
                               "the canonical URL differs from the approved source")
+    dispatch_url = job_raw
     content_id = (job.get("platform_content_id") or "").strip()
     if not content_id or content_id != (pending.get("platform_content_id") or "").strip():
         raise LiveRunnerError("CONTENT_ID_CHANGED",
                               "the platform content id differs from the approved source")
 
-    # --- 7. Actor allowlist (pinned, active; a fallback is never used) -----
-    actor = lane.default_provider_actor(platform)
-    try:
-        provider.actor_active(platform, actor)
-    except provider.ProviderError as e:
-        raise LiveRunnerError(e.code, e.message) from e
+    # --- 7. Adapter identity: paid actor allowlist, or the local adapter ----
+    # A local platform never travels through an Apify-shaped transport, so it has
+    # no pinned provider actor to allowlist or activate.
+    if local:
+        actor = local_acquisition.LOCAL_ADAPTER
+    else:
+        actor = lane.default_provider_actor(platform)
+        try:
+            provider.actor_active(platform, actor)
+        except provider.ProviderError as e:
+            raise LiveRunnerError(e.code, e.message) from e
 
     # --- 4. Already acquired ---------------------------------------------
     if lane.library_has_content(io.library_rows(), platform_content_id=content_id,
@@ -155,7 +173,8 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
 
     # --- 6. Provider token present (presence only) -----------------------
     env = environ if environ is not None else os.environ
-    if not apify_client.token_present(env):
+    if not local and not apify_client.token_present(env):
+        # Only a paid provider needs credentials; a local attempt needs none.
         raise LiveRunnerError("TOKEN_MISSING",
                               f"{apify_client.TOKEN_ENV} is not configured")
 
@@ -165,12 +184,14 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
     succeeded = int(ceiling.get("acquisitions_succeeded") or 0)
     ceiling_micro = int(ceiling.get("ceiling_micro") or cost.DEFAULT_CEILING_MICRO)
     max_success = int(ceiling.get("max_acquisitions") or cost.DEFAULT_MAX_SUCCESS)
-    if ceiling.get("disabled"):
-        raise LiveRunnerError("BREAKER_DISABLED", "the acquisition breaker is disabled")
-    state = cost.check_circuit(lifetime_spent, succeeded,
-                               ceiling_micro=ceiling_micro, max_success=max_success)
-    if state != "ok":
-        raise LiveRunnerError(state, "circuit breaker refuses dispatch")
+    if not local:
+        # The breaker governs PAID provider spend; a local attempt spends nothing.
+        if ceiling.get("disabled"):
+            raise LiveRunnerError("BREAKER_DISABLED", "the acquisition breaker is disabled")
+        state = cost.check_circuit(lifetime_spent, succeeded,
+                                   ceiling_micro=ceiling_micro, max_success=max_success)
+        if state != "ok":
+            raise LiveRunnerError(state, "circuit breaker refuses dispatch")
 
     # --- Bounds (clamped down, never widened) ----------------------------
     bounds = lane.enforce_pilot_bounds(job)
@@ -179,17 +200,20 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
     effective["canonical_url"] = job_url
 
     # --- 10. Budget reservation (worst case) -----------------------------
-    estimate = _estimate_micro(platform)
-    try:
-        reserved = cost.reserve_worst_case(estimate, True, lifetime_spent,
-                                           ceiling_micro=ceiling_micro)
-    except cost.CostError as e:
-        raise LiveRunnerError(e.code, e.message) from e
+    if local:
+        estimate, reserved = 0, 0            # $0 provider cost: nothing to reserve
+    else:
+        estimate = _estimate_micro(platform)
+        try:
+            reserved = cost.reserve_worst_case(estimate, True, lifetime_spent,
+                                               ceiling_micro=ceiling_micro)
+        except cost.CostError as e:
+            raise LiveRunnerError(e.code, e.message) from e
 
     return {
         "job": effective,
         "actor": actor,
-        "canonical_url": job_url,
+        "canonical_url": dispatch_url,
         "content_id": content_id,
         "fingerprint": fingerprint,
         "lifetime_spent_micro": lifetime_spent,
@@ -199,6 +223,7 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
         "estimate_micro": estimate,
         "reserved_micro": reserved,
         "bounds_clamped": bounds["clamped"],
+        "local": local,
     }
 
 
@@ -394,11 +419,6 @@ def build_live_runner(*, io: LiveIO, store: Any,
                                               max_duration=pre["job"]["max_duration_seconds"])
         finalizer = build_finalizer(io, pre=pre)
 
-        # --- Durable reservation BEFORE the provider call ------------------
-        # No ledger, no spend: an unaccounted acquisition is never attempted.
-        if io.ledger is None:
-            return _refusal("LEDGER_UNAVAILABLE",
-                            "durable spend ledger not configured; refusing to spend")
         # Attempts are checked BEFORE any reservation, so a refusal can never hold
         # budget or leave an audit trail for a run that was never permitted.
         if not lane.attempts_allowed(pre["job"], retry_authorized=retry_authorized):
@@ -406,6 +426,20 @@ def build_live_runner(*, io: LiveIO, store: Any,
                             "one attempt only; a retry needs a separate explicit "
                             "authorization")
         job_id = str(pre["job"].get("id") or "")
+
+        # --- LOCAL platform: bounded local attempt, $0 provider cost ---------
+        # No provider reservation happens here at all: there is no paid charge to
+        # account for, and the Apify ceiling must not move. The attempt is still
+        # audited through the same ledger contract with cost 0.
+        if pre.get("local"):
+            return _run_local_attempt(io, pre, job_id=job_id,
+                                      retry_authorized=retry_authorized)
+
+        # --- Durable reservation BEFORE the provider call ------------------
+        # No ledger, no spend: an unaccounted acquisition is never attempted.
+        if io.ledger is None:
+            return _refusal("LEDGER_UNAVAILABLE",
+                            "durable spend ledger not configured; refusing to spend")
         try:
             io.ledger.reserve(amount_micro=pre["estimate_micro"], job_id=job_id)
         except Exception as e:  # noqa: BLE001 — breaker/CAS refusals are final
@@ -477,6 +511,32 @@ def build_live_runner(*, io: LiveIO, store: Any,
 
     run.preflight = preflight  # type: ignore[attr-defined]
     return run
+
+
+def _run_local_attempt(io: LiveIO, pre: dict[str, Any], *, job_id: str,
+                       retry_authorized: bool) -> dict[str, Any]:
+    """One bounded LOCAL attempt (yt-dlp): audited at $0, ceiling untouched."""
+    attempt = int(pre["job"].get("retry_count") or 0) + 1
+    run_id = f"local:{job_id or pre['content_id']}:{attempt}"
+    outcome = local_acquisition.run_local(
+        canonical_url=pre["canonical_url"],
+        content_id=pre["content_id"],
+        fingerprint=pre.get("fingerprint") or "",
+        acquire_fn=_LOCAL_ACQUIRE or local_acquisition.default_acquire,
+        persist_library=io.persist_library if io.persist_library else None,
+        ledger=io.ledger,
+        run_id=run_id,
+        job_id=job_id,
+    )
+    patch = dict(outcome.get("job_patch") or {})
+    patch["retry_count"] = attempt
+    patch["updated_at"] = _now_iso()
+    if retry_authorized:
+        patch["status_reason"] = (f"retry-authorized · "
+                                  f"{patch.get('status_reason') or ''}").strip(" ·")
+    outcome["job_patch"] = patch
+    outcome["local"] = True
+    return outcome
 
 
 def _settle(io: LiveIO, capture: dict[str, str], fallback_run_id: str,

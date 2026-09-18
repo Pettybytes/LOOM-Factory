@@ -333,6 +333,10 @@ _SAFE_URL_RE = re.compile(r"^https://[\w.-]+(/[^\s?#]*)?$")
 _ATTACHMENT_RE = re.compile(r"^attachment://[\w.-]{1,64}$")
 
 
+_YOUTUBE_WATCH_RE = re.compile(r"^https://(?:www\.)?youtube\.com/watch$")
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
 def sanitize_display_url(url: str) -> str:
     """Strip query/fragment and reject URLs carrying signature parameters.
 
@@ -347,8 +351,17 @@ def sanitize_display_url(url: str) -> str:
     low = u.lower()
     if any(m in low for m in _UNSAFE_URL_MARKERS):
         return ""
-    stripped = u.split("#", 1)[0].split("?", 1)[0]
-    return stripped if _SAFE_URL_RE.match(stripped) else ""
+    import urllib.parse as _up
+    head, _, query = u.split("#", 1)[0].partition("?")
+    # Identity-preserving exception: for a YouTube WATCH url the video id IS the
+    # query. Only ?v=<11-char id> is kept — every other parameter is dropped, so
+    # no credential-bearing value can survive this path.
+    if _YOUTUBE_WATCH_RE.match(head):
+        for k, v in _up.parse_qsl(query, keep_blank_values=True):
+            if k == "v" and _VIDEO_ID_RE.match(v):
+                return f"{head}?v={v}"
+        return ""
+    return head if _SAFE_URL_RE.match(head) else ""
 
 
 _OPERATOR_ALIASES = {"passportpetty": "Bryan", "bryan": "Bryan", "bpetty": "Bryan",
@@ -416,6 +429,7 @@ def build_view_model(
     profile_id: str = "",
     fixture: bool = False,
     library_url: str = "",
+    local_acquisition: bool = False,
 ) -> dict[str, Any]:
     """Assemble the presentation view model (no I/O, no validation of media)."""
     if state not in CARD_STATES:
@@ -450,6 +464,7 @@ def build_view_model(
         "profile_id": profile_id,
         "fixture": bool(fixture),
         "library_url": library_url,
+        "local_acquisition": bool(local_acquisition),
     }
 
 
@@ -471,6 +486,8 @@ def media_summary(vm: dict[str, Any]) -> str:
 
 
 def cost_line(vm: dict[str, Any]) -> str:
+    if vm.get("local_acquisition"):
+        return "Local acquisition · $0 provider cost"
     """Estimated cost before spending; actual cost after.
 
     A failed run is reported honestly: the estimate is shown, but "not yet
@@ -603,6 +620,21 @@ def format_acquisition_embed(vm: dict[str, Any]) -> dict[str, Any]:
     return embed
 
 
+_POLICY_REFUSAL_CODES = frozenset({
+    "DURATION_LIMIT", "SIZE_LIMIT", "PLAYLIST_REJECTED", "LIVE_REJECTED",
+    "MULTIPLE_VIDEOS", "MULTIPLE_RESULTS", "NO_AUDIO", "UNSUPPORTED_VIDEO_CODEC",
+    "UNSUPPORTED_AUDIO_CODEC", "BAD_DURATION", "UNKNOWN_DURATION",
+    "CONTENT_ID_DRIFT", "SELECTED_PARAM", "SELECTION_PARAM",
+})
+
+
+def _is_policy_refusal(vm: dict[str, Any]) -> bool:
+    """Fixed-policy refusals are final: no Retry, only View Error / View Source."""
+    err = vm.get("error") or {}
+    return (str(err.get("code") or "") in _POLICY_REFUSAL_CODES
+            or err.get("retryable") is False)
+
+
 def _is_valid_http_url(url: str) -> bool:
     """A link button must point somewhere real (localhost http is legitimate here)."""
     u = (url or "").strip()
@@ -626,6 +658,9 @@ def format_acquisition_buttons(vm: dict[str, Any], *,
     buttons: list[dict[str, Any]] = []
     for action, label, style in STATE_BUTTONS.get(state, ()):
         if state == STATE_ACQUIRED and action == ACT_PLAY:
+            continue
+        if state == STATE_FAILED and action == ACT_RETRY and _is_policy_refusal(vm):
+            # A fixed policy refusal (e.g. duration > 300 s) is not retryable.
             continue
         if state == STATE_ACQUIRED and action == ACT_LIBRARY:
             if _is_valid_http_url(url):

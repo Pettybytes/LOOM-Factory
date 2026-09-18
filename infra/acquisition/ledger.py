@@ -184,6 +184,29 @@ class DurableLedger:
                 "reserved_micro": reserved, "delta_micro": delta,
                 "ceiling": applied}
 
+    def reconcile_local(self, *, run_id: str, succeeded: bool,
+                        status_reason: str = "") -> dict[str, Any]:
+        """Finalize a LOCAL (zero-cost) run: audited, but never touches the ceiling.
+
+        Local yt-dlp acquisitions are kept out of paid-provider accounting on
+        purpose: there is no Apify charge to reserve, release, or bill, so the
+        ceiling must not move. The audit row still records the attempt truthfully
+        (``cost_actual_micro = 0``).
+        """
+        final = STATUS_ACQUIRED if succeeded else STATUS_FAILED_KNOWN
+        rows = self._http.patch(
+            f"{RUNS_TABLE}?run_id=eq.{run_id}&status=eq.{STATUS_RESERVED}",
+            {"status": final,
+             "cost_actual_micro": 0,
+             "output_ref": (status_reason or "")[:200],
+             "updated_at": _now_iso()})
+        if not rows:
+            return {"applied": False, "idempotent": True, "status": final,
+                    "actual_micro": 0, "ceiling_touched": False}
+        return {"applied": True, "idempotent": False, "status": final,
+                "actual_micro": 0, "ceiling_touched": False,
+                "local": True}
+
     def _apply_ceiling_delta(self, *, delta_micro: int, succeeded: bool) -> dict[str, Any]:
         for _attempt in range(MAX_CAS_ATTEMPTS):
             row = self.state()

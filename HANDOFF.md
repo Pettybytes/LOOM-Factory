@@ -9,7 +9,73 @@
 ---
 
 ## Last Updated
-2026-09-18 18:30 EDT (America/Detroit) — INSTAGRAM MILESTONE CLOSED (runtime-proven; committed + pushed)
+2026-09-18 19:15 EDT (America/Detroit) — YOUTUBE ADAPTER RUNTIME-PROVEN (bounded local yt-dlp acquisition succeeded)
+
+## HANDOFF — YouTube adapter runtime-proven (2026-09-18)
+
+**YouTube exact-URL acquisition is runtime-proven.** `https://www.youtube.com/watch?v=h3Q_tAFWY5g`
+was acquired through the real lane (signed Discord click → Gate 1 → Gate 2 → one bounded local yt-dlp
+attempt → validated media → atomic finalize → library row → card updated in place):
+`youtube__h3Q_tAFWY5g__d8990649b8e3.mp4`, 16,407,149 B, 40.641 s, sha256 `d8990649b8e3…`, vp9/opus.
+
+**Cost $0.** Adapter `local:yt-dlp`, provider `local`. The Apify ceiling is untouched at **7,200 micro /
+2 successes** (both Instagram); no YouTube row ever touched Apify; three `local:yt-dlp` audit rows
+exist for the attempts, all $0 and all classified.
+
+**Real-metadata refusal proven:** `ClhBXVygWbc` probes at **302 s** → terminal `DURATION_LIMIT` at the
+metadata stage with **no download**; the card shows the exact duration and limit, `Acquire` removed and
+no `Retry`.
+
+**Capability:** `platform_capabilities.youtube` = `runtime_proven` (flipped only because this proof
+succeeded); `can_acquire("youtube") == True`.
+
+**Cards (both updated in place, no duplicates):** Short = `🎬 ACQUISITION · ACQUIRED` with
+`Open in Reaction Library` + `Hold`, `Local acquisition · $0 provider cost`, provenance
+`` `local:yt-dlp` · Authorized by Bryan ``; 5:01 = terminal `DURATION_LIMIT` with
+`Hold | View Error | View Source`.
+
+**Seven defects were found by running it live and are fixed** (proof-mode env never plumbed; preflight
+`_strip` dropping the `?v=` identity; `safe_record` stripping identity queries; the local path
+hand-rolling its library row and sending `""` into a uuid column; `context_for` state vs a crashed
+retry leaving the job `queued`; yt-dlp single-entry playlist envelopes / empty `entries`; the card's
+`sanitize_display_url` stripping `?v=`). Full detail in the `CURRENT_STATE.md` stop-state entry.
+
+**Suites:** acquisition 374 · discord-review 134 · local-helper 76 — all passing.
+
+**Human clicks used:** two genuine operator clicks (Approve, then Retry Manually).
+
+**Still open:** the exact-URL lane currently requires the proof-mode switch (`LOOM_ADAPTER_PROOF_PLATFORMS`)
+to be unnecessary now that the platform is proven — worth removing from the dispatch critic and from
+`can_acquire`'s env; the Short's card shows "No preview yet" (no poster/native attachment for local
+assets yet); and a second real proof for a different host (reddit/tiktok/twitch/kick) is still
+`implemented_not_proven`.
+
+## HANDOFF — YouTube adapter increment 1 (2026-09-18)
+
+**Built + tested (39 new tests; acquisition 363 · discord-review 134 · local-helper 76 all green):**
+`youtube_url.py` (strict exact-URL contract — every supported form collapses to
+`www.youtube.com/watch?v=<id>`; playlists/mixes/channels/searches/feeds/live/embed, selection params on
+watch URLs, id drift, multi-video, foreign hosts and credentials all rejected; fingerprint identical
+to the manual-intake construction so both lanes share one identity per video); `ytdlp_adapter.py`
+(local adapter: `--no-playlist --playlist-items 1`, `bv*+ba/b`, `--merge-output-format mp4`,
+`--max-filesize`, `--retries 0`, a hygiene guard that forbids cookies/browser-profile/auth flags,
+bounds 300 s / 100 MiB / 1 result / 1 attempt enforced before, during and after, atomic finalize,
+partial cleanup); `local_acquisition.py` + `ledger.reconcile_local()` ($0 provider cost, truthful
+034 audit row as `local:yt-dlp`, ceiling never touched).
+
+**Not wired yet (gaps):** runner platform dispatch for `youtube`, the card's
+`Local acquisition · $0 provider cost` line, and the intake bridge (manual `/submit_source` +
+automated Source Engine candidate → shared premium REVIEW card with `manual_submit_source` /
+`automated_source_engine` provenance).
+
+**Honesty:** `platform_capabilities` still says `youtube = implemented_not_proven`;
+`can_acquire("youtube") == False`. Not flipped — no bounded media proof has run.
+
+**Untouched:** 0 Apify calls, 0 ceiling mutations, 0 real YouTube downloads, 0 cookies/account auth,
+0 migrations, 0 production YouTube cards.
+
+**Next input:** one exact public YouTube URL under five minutes from Bryan; then finish the wiring and
+run the bounded local proof before claiming runtime-proven.
 
 ## HANDOFF — Instagram acquisition milestone closed (2026-09-18)
 

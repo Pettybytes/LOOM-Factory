@@ -143,7 +143,9 @@ def plan_acquisition_job(
 
     dest = (destination or "").strip() or DESTINATION_PERSONAL_REACTION_LIBRARY
 
-    if caps.can_acquire(platform):
+    # A platform whose adapter proof is explicitly in progress may plan a
+    # dispatchable job; this grants no capability claim of its own.
+    if caps.can_acquire(platform) or caps.proof_mode_allows(platform):
         status, reason = STATUS_QUEUED, ""
     else:
         status, reason = STATUS_BLOCKED_PENDING_ADAPTER, caps.capability_reason(platform)

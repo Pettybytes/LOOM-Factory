@@ -41,11 +41,16 @@ class TestDedupKey(unittest.TestCase):
 
 class TestPlan(unittest.TestCase):
     def test_blocked_pending_adapter_by_default(self):
-        # No platform is runtime-proven yet -> job is blocked, not queued.
-        job = acq.plan_acquisition_job(**_base())
-        self.assertEqual(job["status"], acq.STATUS_BLOCKED_PENDING_ADAPTER)
-        self.assertTrue(job["status_reason"])
-        self.assertEqual(job["destination"], "personal_reaction_library")
+        # An IMPLEMENTED-but-not-proven adapter plans a BLOCKED job (no download).
+        orig = caps._CAPABILITY["youtube"]["state"]
+        try:
+            caps._CAPABILITY["youtube"]["state"] = caps.CAP_IMPLEMENTED_NOT_PROVEN
+            job = acq.plan_acquisition_job(**_base())
+            self.assertEqual(job["status"], acq.STATUS_BLOCKED_PENDING_ADAPTER)
+            self.assertTrue(job["status_reason"])
+            self.assertEqual(job["destination"], "personal_reaction_library")
+        finally:
+            caps._CAPABILITY["youtube"]["state"] = orig
 
     def test_queued_when_runtime_proven(self):
         # Monkeypatch capability to simulate a proven adapter.
@@ -95,10 +100,13 @@ class TestPlan(unittest.TestCase):
 class TestCapabilities(unittest.TestCase):
     def test_only_instagram_acquirable(self):
         self.assertTrue(caps.can_acquire("instagram"))
-        self.assertFalse(any(caps.can_acquire(p) for p in caps.PLATFORMS if p != "instagram"))
+        # YouTube joined the proven set on 2026-09-18 (bounded local yt-dlp proof).
+        self.assertTrue(caps.can_acquire("youtube"))
+        self.assertFalse(any(caps.can_acquire(p) for p in ("reddit", "tiktok", "twitch", "kick")))
 
-    def test_youtube_implemented_not_proven(self):
-        self.assertEqual(caps.capability("youtube"), caps.CAP_IMPLEMENTED_NOT_PROVEN)
+    def test_youtube_runtime_proven_after_the_bounded_proof(self):
+        self.assertEqual(caps.capability("youtube"), caps.CAP_RUNTIME_PROVEN)
+        self.assertTrue(caps.can_acquire("youtube"))
 
     def test_matrix_honest(self):
         m = caps.matrix()

@@ -6,6 +6,54 @@
 
 ---
 
+## STOP STATE — 2026-09-18 ~19:15 EDT — YOUTUBE ADAPTER **RUNTIME-PROVEN** (bounded local yt-dlp acquisition succeeded)
+
+### Accepted milestone
+- **YouTube exact-URL acquisition is runtime-proven.** One exact URL (`https://www.youtube.com/watch?v=h3Q_tAFWY5g`) acquired through the real lane: signed Discord click → Gate 1 → Gate 2 → one bounded local yt-dlp attempt → validated media → atomic finalize → Reaction Library row → card updated in place.
+- **Acquired asset:** `youtube__h3Q_tAFWY5g__d8990649b8e3.mp4` · 16,407,149 B · 40.641 s · sha256 `d8990649b8e3…` · vp9/opus · library row canonical URL `https://www.youtube.com/watch?v=h3Q_tAFWY5g`.
+- **Cost: $0.** Adapter `local:yt-dlp`, provider `local`, `provider_cost_micro 0`. The **Apify ceiling never moved** (7,200 micro / 2 successes, both Instagram). Three `local:yt-dlp` audit rows exist for the attempts (all $0, all classified) and **no YouTube row ever touched Apify**.
+- **>300 s refusal proven on real metadata:** `ClhBXVygWbc` probed at **302 s** → terminal `DURATION_LIMIT` at the metadata stage, **no download**, card shows the exact duration and limit, `Acquire` removed, no `Retry`.
+- **Capability flipped honestly:** `platform_capabilities.youtube` is now `runtime_proven` **because of this proof**; `can_acquire("youtube") == True`. It stayed `implemented_not_proven` until the proof actually succeeded.
+- **Cards:** Short `🎬 ACQUISITION · ACQUIRED` (`Open in Reaction Library` link + `Hold`, `Local acquisition · $0 provider cost`, provenance `` `local:yt-dlp` · Authorized by Bryan ``); 5:01 terminal `DURATION_LIMIT` (`Hold | View Error | View Source`). Both updated **in place** — no replacement cards, no duplicate submissions or jobs.
+- **Suites:** acquisition **374** · discord-review **134** · local-helper **76** — all passing.
+
+### Defects found by running it live (all fixed)
+1. `LOOM_ADAPTER_PROOF_PLATFORMS` was never set → the durable planner wrote `blocked_pending_platform_adapter`. Now plumbed through `~/.openclaw/.env` **and** the adapter's `run.sh` sourcing list.
+2. Preflight's `_strip()` dropped the query string — for YouTube the `?v=` **is** the video, so dispatch targeted `youtube.com/watch` with no id. Preflight now compares normalized forms but **dispatches the job's canonical URL verbatim**.
+3. `safe_record()` stripped every query string, destroying the identity query in stored provenance. It now keeps a single 11-char `v=` for YouTube watch URLs (signed/credential URLs are still dropped).
+4. The local path hand-rolled its library row instead of the shared contract (`plan_library_entry` + `safe_record`) and sent an empty string into a **uuid** column. Both lanes now persist an identical shape.
+5. `context_for` derives the card state from the **authorized job status**, so a crashed attempt that left the job `queued` made `Retry` illegal on a FAILED card. The retry is self-correcting, and `pending_job`/`authorized_job` now resolve by **content id OR fingerprint** (a card carries the content id).
+6. yt-dlp can wrap the one requested video in a single-entry playlist envelope, or return top-level video fields with an empty `entries` array; both are now treated as exactly one item, and only genuine multi-item results are refused. The metadata probe also retries once (zero media bytes, $0).
+7. The card's `sanitize_display_url` also stripped `?v=`, so embed and `View Source` pointed at nothing. Fixed with the same narrow allowance.
+
+### Human clicks used
+Two genuine operator clicks (Approve, then Retry Manually). The `Approve` on the 5:01 was authorized before its duration was known; it is now a terminal policy refusal.
+
+---
+
+## STOP STATE — 2026-09-18 ~18:45 EDT — YOUTUBE ADAPTER INCREMENT 1 (URL contract + local adapter; NOT yet wired)
+
+### Built and tested this increment (39 new tests, suites green)
+- `infra/acquisition/youtube_url.py` — strict YouTube exact-URL contract: accepts `watch?v=`, `youtu.be/<id>`, `/shorts/<id>` (tracking params/fragments stripped) and collapses every form to `https://www.youtube.com/watch?v=<id>`; rejects playlists/mixes/channels/searches/feeds/live/upcoming/embed, selection params on watch URLs (`list`, `index`, `start_radio`, …), malformed or missing ids, path-vs-query id drift, multiple videos, foreign hosts, credentials and non-http(s) schemes. Fingerprint construction is identical to `manual_intake.submission_fingerprint`, so both lanes share one identity per video.
+- `infra/acquisition/ytdlp_adapter.py` — local adapter: `--no-playlist --playlist-items 1`, bounded format `bv*+ba/b`, `--merge-output-format mp4`, `--max-filesize 104857600`, `--retries 0`; a hygiene guard forbids cookies/browser-profile/username/password/netrc/header flags; bounds 300 s / 100 MiB / 1 result / 1 attempt enforced from metadata before download, during, and after; post-download validation (streams, audio, codecs, container duration, size, SHA-256, id drift); atomic finalize via `os.replace`; partials removed on failure.
+- `infra/acquisition/local_acquisition.py` + `ledger.reconcile_local()` — local path reports **$0 provider cost**, writes a truthful 034 audit row (`actor_id = local:yt-dlp`), and **never touches the Apify ceiling**.
+
+### Deliberately NOT done yet (honest gaps)
+- Runner platform dispatch (a `youtube` job still routes to the Apify-shaped path).
+- The card's `Local acquisition · $0 provider cost` line.
+- The intake bridge from a manual `/submit_source` submission or an automated Source Engine candidate into the shared premium REVIEW card with `manual_submit_source` / `automated_source_engine` provenance.
+
+### Capability + provenance honesty
+`platform_capabilities` still reports `youtube = implemented_not_proven` and `can_acquire("youtube") == False`. I did NOT flip it: no bounded local media proof has run, so claiming runtime-proven would be false.
+
+### Unchanged / untouched
+**0** Apify calls, **0** Apify ceiling mutations, **0** real YouTube downloads, **0** cookies or account auth, **0** migrations, **0** production YouTube cards. Suites: acquisition 363 · discord-review 134 · local-helper 76.
+
+### Only remaining input
+One exact **public YouTube URL under five minutes** from Bryan. With it: finish the three wiring items, run the bounded local proof (one attempt, ≤300 s, ≤100 MiB, no cookies), and flip `youtube` to runtime-proven only if that proof succeeds.
+
+---
+
 ## STOP STATE — 2026-09-18 ~18:30 EDT — INSTAGRAM ACQUISITION MILESTONE **RUNTIME-PROVEN** (accepted)
 
 ### Accepted milestone

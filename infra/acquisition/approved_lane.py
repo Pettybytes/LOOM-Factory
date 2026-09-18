@@ -30,6 +30,8 @@ gate logic in between.
 
 from __future__ import annotations
 
+import re
+
 from typing import Any
 
 import acquisition
@@ -204,10 +206,13 @@ def default_provider_actor(platform: str) -> str:
 def require_runtime_proven(job: dict[str, Any]) -> None:
     """Only a runtime-proven platform adapter may be dispatched."""
     platform = job.get("platform") or ""
-    if not caps.can_acquire(platform):
-        raise LaneError("NOT_RUNTIME_PROVEN",
-                        f"{platform or 'platform'} is not runtime-proven: "
-                        f"{caps.capability_reason(platform)}")
+    if caps.can_acquire(platform):
+        return
+    if caps.proof_mode_allows(platform):
+        return          # bounded adapter proof in progress; state flips only on success
+    raise LaneError("NOT_RUNTIME_PROVEN",
+                    f"{platform or 'platform'} is not runtime-proven: "
+                    f"{caps.capability_reason(platform)}")
 
 
 def attempts_allowed(job: dict[str, Any], *, retry_authorized: bool = False) -> bool:
@@ -270,6 +275,27 @@ def _is_credential_key(key: str) -> bool:
     return any(m in k for m in _CREDENTIAL_KEY_SUBSTR)
 
 
+_YT_WATCH_RE = re.compile(r"^https://(?:www\.)?youtube\.com/watch$")
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _strip_query_keep_identity(url: str) -> str:
+    """Drop query/fragment but KEEP a video's identity query.
+
+    A YouTube watch URL's ``?v=`` IS the video: stripping it would turn stored
+    provenance into a link to nothing. Only a single 11-character ``v=``
+    survives; tracking params, signatures and tokens are still removed.
+    """
+    import urllib.parse as _up
+    head, _, query = url.split("#", 1)[0].partition("?")
+    if _YT_WATCH_RE.match(head):
+        for k, val in _up.parse_qsl(query, keep_blank_values=True):
+            if k == "v" and _VIDEO_ID_RE.match(val):
+                return f"{head}?v={val}"
+        return head
+    return head
+
+
 def safe_record(payload: dict[str, Any]) -> dict[str, Any]:
     """Strip query strings and drop any credential-shaped field.
 
@@ -285,6 +311,6 @@ def safe_record(payload: dict[str, Any]) -> dict[str, Any]:
             if any(m in low for m in _UNSAFE_MARKERS):
                 continue
             if "://" in v:
-                v = v.split("#", 1)[0].split("?", 1)[0]
+                v = _strip_query_keep_identity(v)
         out[k] = v
     return out

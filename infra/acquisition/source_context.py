@@ -102,6 +102,33 @@ def normalize_instagram_url(url: str, *, expected_content_id: str = "") -> str:
     return f"https://{CANONICAL_HOST}/reel/{content_id}/"
 
 
+def normalize_source_url(platform: str, url: str, *, expected_content_id: str = "") -> str:
+    """Canonicalize a DURABLE stored value, per platform (fail closed).
+
+    YouTube goes through the strict exact-URL contract so the stored value and the
+    shared intake fingerprint agree. Every other platform keeps the existing
+    normalization, so Instagram behaviour is unchanged.
+    """
+    if (platform or "").lower() == "youtube":
+        try:
+            import youtube_url as _yt
+        except ImportError:  # keep working when only this package is importable
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "acquisition"))
+            import youtube_url as _yt
+        try:
+            parsed = _yt.parse(url)
+        except _yt.YouTubeUrlError as e:
+            raise SourceContextError(e.code, e.message) from e
+        if expected_content_id and parsed["video_id"] != expected_content_id:
+            raise SourceContextError("CONTENT_ID_DRIFT",
+                                     "stored value does not match this content id")
+        return parsed["canonical_url"]
+    return normalize_instagram_url(url, expected_content_id=expected_content_id)
+
+
 def content_id_from_canonical(canonical_url: str) -> str:
     return [s for s in urlsplit(canonical_url).path.split("/") if s][-1]
 
@@ -189,7 +216,9 @@ def resolve_context(content_id: str, *, get: Callable[[str], list],
             if not stored_url:
                 continue
             try:
-                canonical = normalize_instagram_url(stored_url, expected_content_id=content_id)
+                canonical = normalize_source_url(row.get("platform") or "instagram",
+                                                 stored_url,
+                                                 expected_content_id=content_id)
             except SourceContextError:
                 continue                     # refuse a drifted/invalid stored value
             return ResolvedContext(

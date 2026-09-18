@@ -80,6 +80,7 @@ class LaneContext:
     profile_id: str = ""
     fixture: bool = False
     library_url: str = ""
+    local_acquisition: bool = False
 
     def view_model(self, state: str | None = None, **over: Any) -> dict[str, Any]:
         kw = dict(
@@ -97,6 +98,7 @@ class LaneContext:
             provenance=self.provenance, error=self.error,
             tenant_id=self.tenant_id, profile_id=self.profile_id,
             fixture=self.fixture, library_url=self.library_url,
+            local_acquisition=self.local_acquisition,
         )
         kw.update(over)
         return card.build_view_model(**kw)
@@ -251,14 +253,18 @@ class SupabaseLaneStore:
     def pending_job(self, fingerprint: str) -> dict[str, Any] | None:
         import urllib.parse as _up
         q = _up.quote(fingerprint)
-        rows = self._get("loom_acquisition_jobs?duplicate_fingerprint=eq." + q
+        # A card carries the CONTENT ID while a job may be keyed by fingerprint:
+        # match either so one video has one resolvable identity on every surface.
+        rows = self._get("loom_acquisition_jobs?or=(platform_content_id.eq." + q
+                         + ",duplicate_fingerprint.eq." + q + ")"
                          + "&authorization_type=eq.approved_for_acquisition&select=*&limit=1")
         return rows[0] if isinstance(rows, list) and rows else None
 
     def authorized_job(self, fingerprint: str) -> dict[str, Any] | None:
         import urllib.parse as _up
         q = _up.quote(fingerprint)
-        rows = self._get("loom_acquisition_jobs?duplicate_fingerprint=eq." + q
+        rows = self._get("loom_acquisition_jobs?or=(platform_content_id.eq." + q
+                         + ",duplicate_fingerprint.eq." + q + ")"
                          + "&authorization_type=eq.acquire_for_reaction&select=*&limit=1")
         return rows[0] if isinstance(rows, list) and rows else None
 
@@ -730,9 +736,11 @@ def _do_acquire(*, deps: LaneStore, ctx: LaneContext, actor: str, action: str,
     if patch and job_id:
         deps.update_job(job_id, patch)
 
+    local = bool(outcome.get("local"))
     if outcome.get("ok"):
         lib = outcome.get("library") or {}
         facts = {
+            "local_acquisition": local,
             "actual_cost_micro": (outcome.get("cost") or {}).get("actual_micro"),
             "library": {
                 "status": "acquired",
@@ -745,9 +753,12 @@ def _do_acquire(*, deps: LaneStore, ctx: LaneContext, actor: str, action: str,
                 "attempts": outcome.get("attempts"), "view_facts": facts}, card.STATE_ACQUIRED
 
     err = outcome.get("error") or {}
-    facts = {"error": {"code": err.get("code") or "FAILED",
+    facts = {"local_acquisition": local,
+             "error": {"code": err.get("code") or "FAILED",
                        "message": err.get("message") or "Acquisition failed.",
-                       "stage": outcome.get("failure_stage") or ""}}
+                       "stage": outcome.get("failure_stage") or "",
+                       "retryable": err.get("retryable",
+                                            outcome.get("policy_refusal") is not True)}}
     return {"job": row, "status": outcome.get("status"),
             "attempts": outcome.get("attempts"), "job_patch": patch,
             "view_facts": facts}, card.STATE_FAILED

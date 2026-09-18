@@ -272,8 +272,26 @@ def validate_and_canonicalize(url: str) -> dict[str, str]:
     if platform is None:
         raise SubmissionError("UNSUPPORTED_HOST", f"host {host!r} not in platform allowlist")
 
-    canonical = canonicalize_url(url)
-    content_id = _extract_content_id(platform, parts)
+    if platform == "youtube":
+        # Strict exact-URL contract: one video, one canonical form, one identity
+        # shared with the automated lane. Untracked params are stripped; anything
+        # that could select different content is rejected.
+        try:
+            import youtube_url as _yt
+        except ImportError:  # acquire the sibling package when running standalone
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "acquisition"))
+            import youtube_url as _yt
+        try:
+            parsed = _yt.parse(url)
+        except _yt.YouTubeUrlError as e:
+            raise SubmissionError(e.code, e.message) from e
+        canonical, content_id = parsed["canonical_url"], parsed["video_id"]
+    else:
+        canonical = canonicalize_url(url)
+        content_id = _extract_content_id(platform, parts)
     status = STATUS_ACCEPTED if platform in SUPPORTED_PLATFORMS else STATUS_PENDING_PLATFORM
 
     return {

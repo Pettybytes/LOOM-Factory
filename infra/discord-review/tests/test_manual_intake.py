@@ -101,8 +101,8 @@ class TestRejections(unittest.TestCase):
 
 class TestCanonicalization(unittest.TestCase):
     def test_strips_tracking(self):
-        a = canonicalize_url("https://www.youtube.com/watch?v=abc&utm_source=x&si=y")
-        b = canonicalize_url("https://www.youtube.com/watch?v=abc")
+        a = canonicalize_url("https://www.youtube.com/watch?v=qgLaCZyKv_8&utm_source=x&si=y")
+        b = canonicalize_url("https://www.youtube.com/watch?v=qgLaCZyKv_8")
         self.assertEqual(a, b)
         self.assertNotIn("utm_source", a)
         self.assertNotIn("si", a.split("?")[-1])
@@ -116,10 +116,10 @@ class TestCanonicalization(unittest.TestCase):
 
 class TestDedupAndStatus(unittest.TestCase):
     def test_fingerprint_deterministic(self):
-        a = submission_fingerprint("youtube", "https://www.youtube.com/watch?v=abc")
-        b = submission_fingerprint("youtube", "https://www.youtube.com/watch?v=abc")
+        a = submission_fingerprint("youtube", "https://www.youtube.com/watch?v=qgLaCZyKv_8")
+        b = submission_fingerprint("youtube", "https://www.youtube.com/watch?v=qgLaCZyKv_8")
         self.assertEqual(a, b)
-        self.assertNotEqual(a, submission_fingerprint("reddit", "https://www.youtube.com/watch?v=abc"))
+        self.assertNotEqual(a, submission_fingerprint("reddit", "https://www.youtube.com/watch?v=qgLaCZyKv_8"))
 
     def test_status_mapping(self):
         self.assertEqual(status_for_platform("youtube"), STATUS_ACCEPTED)
@@ -132,7 +132,7 @@ class TestBuildSubmission(unittest.TestCase):
     ACTIVE = {"dreemzy", "client-a"}
 
     def _build(self, **kw):
-        base = dict(url="https://www.youtube.com/watch?v=abc", destination="dreemzy",
+        base = dict(url="https://www.youtube.com/watch?v=qgLaCZyKv_8", destination="dreemzy",
                     content_format="commentary_story", submitter="bryan#1",
                     active_tenants=self.ACTIVE)
         base.update(kw)
@@ -159,7 +159,7 @@ class TestBuildSubmission(unittest.TestCase):
 
     def test_proof_destination_rejected(self):
         with self.assertRaises(SubmissionError) as cm:
-            build_submission(url="https://www.youtube.com/watch?v=abc",
+            build_submission(url="https://www.youtube.com/watch?v=qgLaCZyKv_8",
                              destination="proof-tenant", content_format="commentary_story",
                              submitter="b", active_tenants={"proof-tenant"})
         self.assertEqual(cm.exception.code, "INVALID_DESTINATION")
