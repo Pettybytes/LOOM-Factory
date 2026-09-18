@@ -9,7 +9,26 @@
 ---
 
 ## Last Updated
-2026-09-17 19:45 EDT (America/Detroit) — LOCAL INSTAGRAM CLOSED OUT; APIFY PHASE 1 DONE (awaiting approval)
+2026-09-17 20:05 EDT (America/Detroit) — PHASE 2 COMPLETE (provider boundary built; awaiting migration + runtime-proof auth)
+
+## HANDOFF — Phase 2 complete; awaiting Phase 3 authorization
+
+Paid-provider boundary implemented (deterministic, $0):
+- `infra/acquisition/provider.py` — actor allowlist (reel-scraper default,
+  instagram-scraper INACTIVE fallback), single-URL/maxResults=1 input, output
+  validation, authorization, provenance (no signed URL).
+- `infra/acquisition/cost.py` — circuit breaker ($1 ceiling + max 10).
+- `infra/acquisition/apify_client.py` — token load (presence-only) + transport.
+- `infra/acquisition/orchestrate.py` — mock-testable end-to-end dispatch.
+- Migrations 034/035 STAGED, NOT applied.
+- 380 tests pass (acquisition 109 = +33 provider tests).
+
+No Actor call, $0 spent, no token use, no download, no migration applied.
+
+Next: Phase 3 (UNAUTHORIZED) — one real Reel proof on DdZS1QRhrXE, max $0.0026.
+Requires Bryan to apply migrations 034/035 + explicit Phase 3 go-ahead.
+
+---
 
 ## HANDOFF — local Instagram closed out; Apify Phase 1 done (awaiting approval)
 

@@ -6,6 +6,39 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~20:05 EDT — PHASE 2 COMPLETE (provider boundary built; awaiting migration + runtime-proof auth)
+
+### Phase 2 — paid-provider boundary implemented (deterministic, $0)
+- `infra/acquisition/provider.py` — platform-neutral boundary: pinned actor
+  allowlist (reel-scraper default + instagram-scraper INACTIVE fallback),
+  single-URL/maxResults=1 input, output validation (exactly-one, content-id
+  match, https+approved-host+no-creds video URL, 5-min duration ceiling),
+  authorization verification, provenance (signed URL never persisted).
+- `infra/acquisition/cost.py` — microdollar reservation + reconciliation +
+  circuit breaker ($1 ceiling + max 10 successes).
+- `infra/acquisition/apify_client.py` — token load (presence-only; TOKEN_MISSING
+  discloses nothing) + Transport interface + HttpTransport (untested).
+- `infra/acquisition/orchestrate.py` — end-to-end dispatch with injected
+  transport/downloader/finalizer (mock-testable).
+- Migrations `034_loom_provider_runs.sql` + `035_loom_provider_ceiling.sql`
+  STAGED, NOT applied.
+- Tests: 380 passing (acquisition 109 = +33 provider; content 55; local-helper
+  76; discovery 62; discord-review 78).
+
+### Phase 2 must-NOTs honored
+- No Actor call, $0 spent, no token use, no media download, no migration
+  applied, no fallback activation, no other platform, no OpenShorts/OBS/GHL.
+
+### Next — Phase 3 (UNAUTHORIZED)
+- One real Reel proof on `https://www.instagram.com/reel/DdZS1QRhrXE/`.
+- Expected max cost: $0.0026 (one metadata result). Verify zero-result billing,
+  exact output field name, one-URL→one-result, playable muxed MP4 with audio,
+  signed-URL expiry.
+- Requires: apply migrations 034/035 (Bryan, one at a time) + explicit Phase 3
+  go-ahead.
+
+---
+
 ## STOP STATE — 2026-09-17 ~19:45 EDT — LOCAL INSTAGRAM CLOSED OUT; APIFY PHASE 1 DONE (awaiting approval)
 
 ### Local Instagram — crossed pivot threshold (verified + closed out)
