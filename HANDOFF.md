@@ -9,7 +9,17 @@
 ---
 
 ## Last Updated
-2026-09-17 20:45 EDT (America/Detroit) — TIKTOK + X PROVIDER CORRECTION (read-only, $0)
+2026-09-17 20:55 EDT (America/Detroit) — SNAPCHAT + UNIVERSAL INVESTIGATION (read-only, $0)
+
+## HANDOFF — universal + Snapchat; architecture = hybrid
+
+Universal: agentx/all-video-scraper (etzrjsBIFSOb19k5E) most reliable; easyapi/all-in-one
+(iZbsVYT4VfdMxoIPL) cheapest but flagged (rating discrepancy, usage charge, medias[]).
+Snapchat: dedicated low-adoption actors, public Spotlight only, last priority.
+Decision: HYBRID — platform-specific primary + universal INACTIVE fallback (X/Snapchat).
+Keep proven Instagram adapter. $0 spent, nothing built.
+
+---
 
 ## HANDOFF — TikTok + X provider deep-dive; X deferred
 

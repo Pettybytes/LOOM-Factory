@@ -125,3 +125,89 @@ keep it `evaluated_not_proven` (high risk); emergency = yt-dlp (often fails) or 
 runtime-proven (provider). Every other platform remains `implemented_not_proven`
 (yt-dlp installed) or `evaluated_not_proven` (provider evaluated: TikTok, X) until a
 bounded live media proof succeeds.
+
+---
+
+## Snapchat + Universal Media Downloaders (final read-only investigation)
+
+### Universal / all-in-one — ranked candidates (live-API verified)
+
+| Rank | Actor | API ID | Maintainer | Adoption | Success / rating | Price | Notes |
+|---|---|---|---|---|---|---|---|
+| **Most reliable** | `agentx/all-video-scraper` | `etzrjsBIFSOb19k5E` | AgentX | 271 users · 21 mo | 100% / 4.59★ | $0.01 start + $0.09 meta + $0.28 file | one `video_url` → 43 fields, no usage charge, metadata/file priced apart |
+| **Cheapest advertised** | `easyapi/all-in-one-media-downloader` | `iZbsVYT4VfdMxoIPL` | EasyApi | 888 users · 69 mo | 100% / **2.46★ (API) vs 4.95★ (README)** | $2.99/1k **+ usage** | single `link` → `medias[]` of direct signed URLs; usage charge; rating discrepancy |
+| Established alt | `agentx/all-video-scraper` family / `burbn/all-in-one-downloader` | — | community | — | — | — | marketing-heavy, unverified schemas |
+
+### Primary candidate `easyapi/all-in-one-media-downloader` — findings
+
+- **ID:** `iZbsVYT4VfdMxoIPL` · build `0.0.55` · community (EasyApi) · 888 users, 69 monthly.
+- **Input:** single `link` (string) + `proxyConfiguration`. ✅ exact one-URL.
+- **Output:** `medias[]` array (multiple quality variants: `no_watermark`, `hd_no_watermark`, `audio` mp3) — **NOT one result; a list**. LOOM must select one. Direct signed CDN URLs (48h expiry + exact-header requirement), not stored files.
+- **Watermark removal:** present as separate `no_watermark` / `hd_no_watermark` variants (base result, no extra event).
+- **Pricing:** $2.99/1k **pay-per-event AND usage** → non-deterministic (compute/proxy/storage). ⚠️.
+- **Rating discrepancy:** API `actorReviewRating` = 2.46 vs README "4.95". Trust the API (2.46). ⚠️.
+- **Platform support:** marketing lists Snapchat/Reddit/Spotify/etc.; the actual schema + sample only prove TikTok. Per-platform support is **unverified** for most listed names.
+
+### Snapchat — dedicated candidates (public Spotlight only)
+
+| Actor | API ID | Notes |
+|---|---|---|
+| `agentx/snapchat-video-downloader` | (resolve) | "one public Spotlight link → title/desc/thumbnail + optional stored video"; agentx family contract |
+| `automation-lab/snapchat-public-video-downloader` | (resolve) | "high-quality videos + metadata from Snapchat URLs"; public Spotlight |
+
+**Snapchat verdict:** public Spotlight/share URLs are the only compliant target (no private/friends/story/cookie capture). Dedicated Actors exist but are low-adoption; a bounded runtime proof is feasible but should be **last** in priority. Do NOT add Snapchat to the allowlist without a separate decision.
+
+### Platform-support matrix (universal Actors)
+
+| Platform | easyapi | agentx/all-video | Exact-URL | Audio | Expansion risk | Proof required |
+|---|---|---|---|---|---|---|
+| Instagram Reel | marketing (unverified) | explicit | ✅ | ✅ (muxed) | low | yes |
+| TikTok | ✅ (proven sample) | explicit | ✅ | ✅ | low | yes |
+| YouTube | marketing | explicit | ✅ | ✅ | low | yes |
+| Reddit v.redd.it | marketing ("Others") | unclear ("1000+") | ⚠️ | varies | medium | yes |
+| X/Twitter | marketing | explicit | ⚠️ | often video-only | high (auth) | yes |
+| Snapchat Spotlight | marketing | not listed (dedicated actor) | ⚠️ | unverified | high | yes |
+| Twitch clip | not listed | explicit | ✅ | ✅ | low | yes |
+| Kick clip | not listed | not listed | ❌ | — | — | — |
+
+**No inference across platforms:** one successful platform does not prove another.
+
+### Economic comparison (all-in, with file)
+
+| Path | 1 | 100 | 1,000 | 1,800 |
+|---|---|---|---|---|
+| **Platform-specific** (Instagram $0.0026 + TikTok ~$0.002 + local $0) | ~$0.003 | ~$0.26 | ~$2.60 | ~$4.68 |
+| **agentx/all-video-scraper** ($0.38/file) | $0.38 | $38 | $380 | $684 |
+| **easyapi/all-in-one** ($0.003/result + usage) | ~$0.003+usage | ~$0.30+usage | ~$3+usage | ~$5.40+usage |
+| Free/local (yt-dlp) | $0 | $0 | $0 | $0 |
+
+**Universal is NOT cost-competitive** for platforms where platform-specific/local works.
+The proven Instagram path ($0.0026) is ~145× cheaper than `agentx/all-video-scraper`
+($0.38). Universal only makes sense for X + Snapchat (no cheap alternative).
+
+### Architecture decision
+
+1. **One universal replace Instagram+TikTok? No.** The proven `apify/instagram-reel-scraper`
+   ($0.0026) and `memo23/tiktok-video-downloader` ($0.002) are far cheaper and better-scoped.
+2. **Universal for X + Snapchat? Conditional.** `agentx/all-video-scraper` claims X;
+   dedicated Snapchat Actors exist. A universal *fallback* for these two is defensible,
+   but each needs a bounded proof (X is auth-walled; Snapchat is unproven).
+3. **Stay free/local:** YouTube, Twitch, Kick, Reddit (yt-dlp/ffmpeg).
+4. **Does it reduce plumbing? Marginally** — one dispatch interface, but per-platform
+   canonicalization/content-ID/host/media validation/cost/provenance remains.
+5. **Platform-specific validation that must remain regardless:** URL canonicalization,
+   content-ID match, host/CDN allowlist, ffprobe+SHA-256, source-audio check, cost
+   accounting, provenance, failure classification.
+6. **Single point of failure? Yes** if universal is primary — one vendor, one pricing
+   change, one de-list breaks everything. Avoid by keeping platform-specific primaries.
+7. **Recommendation: HYBRID.** Platform-specific primary (proven Instagram + memo23 TikTok
+   + yt-dlp local) + universal `agentx/all-video-scraper` as **inactive fallback** for
+   X/Snapchat/niche. Do NOT delete the proven Instagram adapter.
+
+### Bounded runtime proofs still required (tomorrow, in order)
+
+1. Instagram UI wiring (Discord/extension → proven provider) — deferred by Bryan.
+2. YouTube local (yt-dlp) media proof.
+3. Twitch + Kick clips (yt-dlp).
+4. TikTok provider (memo23) proof.
+5. Universal fallback (agentx/all-video-scraper) — only for X + Snapchat, last.

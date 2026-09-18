@@ -6,6 +6,17 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~20:55 EDT — SNAPCHAT + UNIVERSAL INVESTIGATION (read-only, $0)
+
+### Universal + Snapchat (final read-only)
+- Universal ranked (live-API): `agentx/all-video-scraper` (`etzrjsBIFSOb19k5E`, 271 users, 4.59★, $0.38/file, no usage) most reliable; `easyapi/all-in-one-media-downloader` (`iZbsVYT4VfdMxoIPL`, 888 users, rating 2.46 API vs 4.95 README, $2.99/1k **+ usage**, returns `medias[]` direct signed URLs) cheapest-advertised but flagged.
+- Snapchat: dedicated low-adoption actors (`agentx/snapchat-video-downloader`, `automation-lab/snapchat-public-video-downloader`) — public Spotlight only, last priority. Not in allowlist.
+- Architecture decision: **HYBRID** — platform-specific primary (proven Instagram + memo23 TikTok + yt-dlp local); universal `agentx/all-video-scraper` as INACTIVE fallback for X/Snapchat/niche. Do NOT delete the proven Instagram adapter.
+- Universal is ~145× more expensive than proven Instagram ($0.38 vs $0.0026) — not a replacement.
+- $0 spent, no calls, no downloads, no implementation.
+
+---
+
 ## STOP STATE — 2026-09-17 ~20:45 EDT — TIKTOK + X PROVIDER CORRECTION (read-only, $0)
 
 ### TikTok + X provider deep-dive (correction)
