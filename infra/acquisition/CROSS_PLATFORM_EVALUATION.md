@@ -83,3 +83,45 @@ input/output schema verification **before any dispatch**.
   implementation time (the website slug is NOT the API ID).
 - Adoptions/prices are search snapshots and drift; re-verify before dispatch.
 - No actor was called, no money spent, nothing downloaded during this evaluation.
+
+---
+
+## TikTok + X/Twitter provider deep-dive (correction, read-only 2026-09-17)
+
+Verified against the live Apify API (numeric IDs + adoption) and actor READMEs.
+
+### TikTok — ranked candidates
+
+| Role | Actor | API ID | Maintainer | Adoption | Success / rating | Price | Notes |
+|---|---|---|---|---|---|---|---|
+| **Cheapest compliant** | `memo23/tiktok-video-downloader` | `pQGdDfhFC35QToTxZ` | community | 24 users | 99.5% / 5.0★ | $2.00/1k posts | single-URL `posts[]`, no profile/feed/search, no cookies, re-hosts stable no-watermark MP4, `maxFileSizeMb` cap |
+| **Most reliable** | `clockworks/tiktok-scraper` | `GdWCkxBtKWOsKjdch` | Clockworks | 286,773 users | 98.2% / 4.76★ | $1.70/1k | supports "video URLs" but bulk-first (profiles/hashtags/search/`scrapeRelatedVideos`) |
+| Established alt | `pocesar/download-tiktok-video` | `5kThqg0kUkp50prLA` | community | 558 | 2.77★ | — | post links → KV-store video |
+| Official API | `api/tiktok-api` | (resolve) | Apify | — | — | $0.03 start + $0.004 item + $0.001 video | **$0.03 start fee → ~$0.035 single-item, ABOVE $0.01** |
+
+**Verdict:** recommended primary = `memo23` (contract-compliant; verify output + pricing before dispatch);
+inactive fallback = `clockworks` (reliable but bulk-first — must hard-code single video-URL + disable
+`scrapeRelatedVideos`/profiles/hashtags/search); emergency = yt-dlp (hit-or-miss).
+
+### X/Twitter — ranked candidates
+
+| Role | Actor | API ID | Maintainer | Adoption | Price | Notes |
+|---|---|---|---|---|---|---|
+| Cheapest claimed | `scrapeai/twitter-media-downloader` | `hSJvwRUtIBWMDm2KW` | community | **2 users** | $2.49/1k **+ usage** | non-deterministic (usage charge), no rating, media output unproven |
+| Cheapest claimed | `feedminer/x-media-scraper` | `CrPZmLxFE32UibRPc` | community | **2 users** | $0.40/1k | no adoption |
+| Official | `apify/twitter-scraper` | (unresolved) | Apify | large | $0.18–0.40/1k | metadata-first, not a media downloader |
+
+**Verdict:** NO candidate meets the exact-item + deterministic-cost + established bar.
+X is the hardest platform (auth walls, anti-bot, video often login-gated). **Defer X** —
+keep it `evaluated_not_proven` (high risk); emergency = yt-dlp (often fails) or manual browser save.
+
+> ⚠️ **X is not even in the LOOM platform allowlist** (`PLATFORMS` = youtube/reddit/tiktok/
+> instagram/twitch/kick). It is documented here for future consideration only — do NOT add it
+> to the intake allowlist or capability matrix without a separate decision.
+
+### Capability-language correction
+
+"Extractor exists" / "expected to work" is NOT runtime-proven. Only **Instagram** is
+runtime-proven (provider). Every other platform remains `implemented_not_proven`
+(yt-dlp installed) or `evaluated_not_proven` (provider evaluated: TikTok, X) until a
+bounded live media proof succeeds.

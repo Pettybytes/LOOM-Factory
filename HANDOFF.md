@@ -9,7 +9,16 @@
 ---
 
 ## Last Updated
-2026-09-17 20:35 EDT (America/Detroit) — CROSS-PLATFORM EVALUATION (read-only; stop for the day)
+2026-09-17 20:45 EDT (America/Detroit) — TIKTOK + X PROVIDER CORRECTION (read-only, $0)
+
+## HANDOFF — TikTok + X provider deep-dive; X deferred
+
+TikTok: recommended `memo23/tiktok-video-downloader` (id pQGdDfhFC35QToTxZ), fallback
+`clockworks/tiktok-scraper` (id GdWCkxBtKWOsKjdch, 286K users), emergency yt-dlp.
+X/Twitter: NO compliant candidate (2-user actors, usage pricing, auth walls) — DEFER; not in allowlist.
+Capability: tiktok → evaluated_not_proven. Only Instagram runtime-proven. $0 spent.
+
+---
 
 ## HANDOFF — cross-platform evaluation complete; nothing built
 

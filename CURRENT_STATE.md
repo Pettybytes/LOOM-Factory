@@ -6,6 +6,17 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~20:45 EDT — TIKTOK + X PROVIDER CORRECTION (read-only, $0)
+
+### TikTok + X provider deep-dive (correction)
+- `infra/acquisition/CROSS_PLATFORM_EVALUATION.md` now has ranked TikTok + X candidates (verified via live Apify API: numeric IDs + adoption).
+- TikTok: recommended `memo23/tiktok-video-downloader` (`pQGdDfhFC35QToTxZ`, single-URL, $2/1k, no cookies); fallback `clockworks/tiktok-scraper` (`GdWCkxBtKWOsKjdch`, 286K users); emergency yt-dlp.
+- X/Twitter: NO compliant candidate (2-user actors, usage pricing, auth walls) — DEFER. X is NOT in the LOOM platform allowlist.
+- Capability: tiktok → `evaluated_not_proven` (new state). Only Instagram is runtime-proven. "Extractor exists" ≠ runtime-proven.
+- $0 spent, no calls, no downloads, no implementation.
+
+---
+
 ## STOP STATE — 2026-09-17 ~20:35 EDT — CROSS-PLATFORM EVALUATION (read-only; stop for the day)
 
 ### Cross-platform acquisition evaluation (read-only, $0, nothing built)

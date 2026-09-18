@@ -23,6 +23,7 @@ CAP_BLOCKED_PENDING_ADAPTER = "blocked_pending_adapter"
 CAP_UNSUPPORTED_WITH_REASON = "unsupported_with_reason"
 CAP_BLOCKED_LOCAL_FMP4_INCOMPLETE = "blocked_local_fmp4_incomplete"
 CAP_RUNTIME_PROVEN_PROVIDER = "runtime_proven_provider"
+CAP_EVALUATED_NOT_PROVEN = "evaluated_not_proven"
 
 CAPABILITY_STATES = frozenset({
     CAP_RUNTIME_PROVEN,
@@ -31,6 +32,7 @@ CAPABILITY_STATES = frozenset({
     CAP_UNSUPPORTED_WITH_REASON,
     CAP_BLOCKED_LOCAL_FMP4_INCOMPLETE,
     CAP_RUNTIME_PROVEN_PROVIDER,
+    CAP_EVALUATED_NOT_PROVEN,
 })
 
 # Platform set (must match manual_intake PLATFORM_HOSTS keys).
@@ -62,9 +64,9 @@ _CAPABILITY: dict[str, dict] = {
         "candidates": ["yt-dlp", "streamlink"],
     },
     "tiktok": {
-        "state": CAP_IMPLEMENTED_NOT_PROVEN,
-        "reason": "yt-dlp TikTok extractor installed but anonymous resolution is hit-or-miss (anti-bot); cobalt + browser-assisted candidates unproven. No bounded proof.",
-        "candidates": ["yt-dlp", "cobalt", "streamlink"],
+        "state": CAP_EVALUATED_NOT_PROVEN,
+        "reason": "Provider evaluated (read-only, 2026-09-17): memo23/tiktok-video-downloader (id pQGdDfhFC35QToTxZ, single-URL, $2/1k, no cookies) recommended; clockworks/tiktok-scraper (id GdWCkxBtKWOsKjdch, 286K users) established fallback. NOT runtime-proven — no bounded live media proof yet.",
+        "candidates": ["apify", "yt-dlp", "cobalt"],
     },
     "instagram": {
         "state": CAP_RUNTIME_PROVEN_PROVIDER,
