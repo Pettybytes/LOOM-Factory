@@ -93,8 +93,9 @@ class TestPlan(unittest.TestCase):
 
 
 class TestCapabilities(unittest.TestCase):
-    def test_no_platform_runtime_proven_yet(self):
-        self.assertFalse(any(caps.can_acquire(p) for p in caps.PLATFORMS))
+    def test_only_instagram_acquirable(self):
+        self.assertTrue(caps.can_acquire("instagram"))
+        self.assertFalse(any(caps.can_acquire(p) for p in caps.PLATFORMS if p != "instagram"))
 
     def test_youtube_implemented_not_proven(self):
         self.assertEqual(caps.capability("youtube"), caps.CAP_IMPLEMENTED_NOT_PROVEN)
@@ -108,7 +109,7 @@ class TestCapabilities(unittest.TestCase):
             self.assertTrue(entry["candidates"])
 
     def test_candidate_ladder(self):
-        self.assertEqual(caps.candidates("instagram"), ["chrome-extension", "apify"])
+        self.assertEqual(caps.candidates("instagram"), ["apify", "chrome-extension"])
         self.assertEqual(caps.candidates("youtube")[0], "yt-dlp")
 
 

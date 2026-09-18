@@ -6,6 +6,24 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~20:35 EDT — CROSS-PLATFORM EVALUATION (read-only; stop for the day)
+
+### Cross-platform acquisition evaluation (read-only, $0, nothing built)
+- `infra/acquisition/CROSS_PLATFORM_EVALUATION.md` — full comparison table + verdicts.
+- **Local (yt-dlp, free) primary:** YouTube, Reddit (v.redd.it), Twitch clips + VOD, Kick clips + VOD.
+- **Apify primary:** TikTok + X/Twitter (yt-dlp unreliable). Instagram already provider-proven.
+- Capability: instagram → `runtime_proven_provider` (new state); `can_acquire()` now includes it.
+- Bounded VOD ranges: yt-dlp `--download-sections` retrieves only the approved timestamp range (not the whole stream).
+- Next implementation order documented (NOT built): wire Instagram UI → YouTube → Twitch/Kick clips → TikTok → Reddit → X → bounded VOD.
+
+### Do not (per Bryan)
+- No Actor calls, no spend, no download, no UI wiring, no ceiling change, no OpenShorts/OBS/GHL/publish.
+
+### Note
+- Instagram UI (Discord/extension) NOT wired to the provider — do NOT claim the operator workflow is production-ready.
+
+---
+
 ## STOP STATE — 2026-09-17 ~20:22 EDT — PHASE 3 PROOF SUCCEEDED (first paid acquisition)
 
 ### Acceptance evidence (verified)

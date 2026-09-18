@@ -9,7 +9,22 @@
 ---
 
 ## Last Updated
-2026-09-17 20:22 EDT (America/Detroit) — PHASE 3 PROOF SUCCEEDED (first paid acquisition, $0.0026)
+2026-09-17 20:35 EDT (America/Detroit) — CROSS-PLATFORM EVALUATION (read-only; stop for the day)
+
+## HANDOFF — cross-platform evaluation complete; nothing built
+
+Read-only cross-platform acquisition evaluation (TikTok/Reddit/X/YouTube/Twitch/Kick):
+- `infra/acquisition/CROSS_PLATFORM_EVALUATION.md` (comparison table + verdicts).
+- Local (yt-dlp, free) primary: YouTube, Reddit v.redd.it, Twitch clips+VOD, Kick clips+VOD.
+- Apify primary: TikTok + X/Twitter. Instagram already provider-proven ($0.0026/Reel).
+- Capability: instagram → runtime_proven_provider; can_acquire() updated.
+- Bounded VOD via yt-dlp --download-sections.
+- Next order documented (NOT built): Instagram UI → YouTube → Twitch/Kick → TikTok → Reddit → X → VOD.
+
+$0 spent, no Actor calls, no downloads, no UI wiring, no ceiling change.
+Instagram UI NOT wired to provider (do not claim production-ready).
+
+---
 
 ## HANDOFF — Phase 3 proof succeeded; Instagram acquisition runtime-proven
 
