@@ -6,6 +6,29 @@
 
 ---
 
+## STOP STATE — 2026-09-17 ~20:22 EDT — PHASE 3 PROOF SUCCEEDED (first paid acquisition)
+
+### Acceptance evidence (verified)
+- Actor: `apify/instagram-reel-scraper` (API id `xMc5Ga1oCONPmWJIa`), build 0.0.569, run `0DPOKk2bEwxqVTS0i`.
+- Output: exactly 1 result, content id `DdZS1QRhrXE`, field `videoUrl`.
+- Media: h264 + aac (muxed, has_audio=true), 720x1280, 30 fps, 55.26s, 23.7 MB.
+- **Actual billed cost: $0.0026** (2600 microdollars) — estimate == actual.
+- Local: `~/.openclaw/loom-reaction-library/library/instagram__DdZS1QRhrXE__9b22f887b2ff.mp4` (sha256 `9b22f887b2ff…`).
+- IDs: job `4bc99e59` (acquired) · library `acb7aa0f` · provider run `ef8c57e8`.
+- Circuit breaker: lifetime_spent=2600 micro, succeeded=1 (ceiling $1.00 / max 10).
+- Hygiene: signed URL volatile (not persisted); temp files removed; source_host redacted.
+
+### Key findings (verification gaps resolved)
+- Output field = `videoUrl` (confirmed). `videoUrl` is already muxed WITH audio — no separate `audioUrl` needed.
+- One URL → one result (count=1); playable MP4 with audio confirmed.
+- Zero-result billing still unverified (this run produced 1 result).
+
+### Next
+- Instagram acquisition is now runtime-proven end-to-end at $0.0026/Reel. Nothing blocked.
+- Still out of scope: OpenShorts / OBS / GHL upload / publishing / distribution.
+
+---
+
 ## STOP STATE — 2026-09-17 ~20:05 EDT — PHASE 2 COMPLETE (provider boundary built; awaiting migration + runtime-proof auth)
 
 ### Phase 2 — paid-provider boundary implemented (deterministic, $0)

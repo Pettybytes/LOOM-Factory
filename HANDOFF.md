@@ -9,7 +9,21 @@
 ---
 
 ## Last Updated
-2026-09-17 20:05 EDT (America/Detroit) — PHASE 2 COMPLETE (provider boundary built; awaiting migration + runtime-proof auth)
+2026-09-17 20:22 EDT (America/Detroit) — PHASE 3 PROOF SUCCEEDED (first paid acquisition, $0.0026)
+
+## HANDOFF — Phase 3 proof succeeded; Instagram acquisition runtime-proven
+
+First paid acquisition succeeded end-to-end:
+- `apify/instagram-reel-scraper` (id `xMc5Ga1oCONPmWJIa`), run `0DPOKk2bEwxqVTS0i`.
+- 1 result, content id DdZS1QRhrXE, field `videoUrl`.
+- Media: h264+aac (muxed with audio), 720x1280, 30fps, 55.26s, 23.7 MB.
+- Actual cost $0.0026 (2600 micro). Circuit breaker: spent 2600 / succeeded 1.
+- Local mp4 + sha256 + job/library/provider-run records all persisted + verified.
+- Signed URL volatile; temp files removed.
+
+Instagram acquisition now runtime-proven at $0.0026/Reel.
+
+---
 
 ## HANDOFF — Phase 2 complete; awaiting Phase 3 authorization
 
