@@ -26,7 +26,9 @@ for d in ("acquisition", "local-helper", "discord-review"):
 
 import acquisition  # noqa: E402
 import apify_client  # noqa: E402
+import assemble as asm  # noqa: E402
 import cost  # noqa: E402
+import fmp4  # noqa: E402
 import helper  # noqa: E402
 import provider  # noqa: E402
 import acquire as acq  # noqa: E402
@@ -158,8 +160,9 @@ def main() -> None:
     out = provider.validate_output(items, content_id=v["content_id"])
     video_url = out["video_url"]  # signed; never printed/persisted
 
-    # 9. download + classify + ffprobe + hash + finalize
+    # 9. download + classify + ffprobe (+ mux audio if separate) + hash + finalize
     tmp = tempfile.mkdtemp(prefix="loom-apify-")
+    muxed = False
     try:
         tmp_path, written, http_status, ct = acq.download_one_video(
             video_url, tmp, max_bytes=MAX_BYTES, timeout=60)
@@ -168,8 +171,27 @@ def main() -> None:
         meta = acq.parse_ffprobe_result(acq.run_ffprobe(tmp_path),
                                         actual_size_bytes=written,
                                         max_bytes=MAX_BYTES, max_duration=MAX_DURATION)
+
+        # If the video stream is audio-less and a separate audioUrl is present,
+        # mux them into a single playable MP4 (source audio required).
         if not meta["has_audio"]:
-            raise SystemExit("[fatal] downloaded MP4 has NO audio (source audio required)")
+            audio_url = (out["result"].get("audioUrl") or "").strip()
+            if not audio_url:
+                raise SystemExit("[fatal] no audio (videoUrl is video-only, no audioUrl)")
+            audio_path, _aw, _as, _act = acq.download_one_video(
+                audio_url, tmp, max_bytes=MAX_BYTES, timeout=60)
+            muxed_path = os.path.join(tmp, "muxed.mp4")
+            fmp4.run_ffmpeg(asm.build_mux_args(tmp_path, audio_path, muxed_path))
+            written = os.path.getsize(muxed_path)
+            tmp_path = muxed_path
+            muxed = True
+            meta = acq.parse_ffprobe_result(acq.run_ffprobe(muxed_path),
+                                            actual_size_bytes=written,
+                                            max_bytes=MAX_BYTES, max_duration=MAX_DURATION)
+
+        if not meta["has_audio"]:
+            raise SystemExit("[fatal] final MP4 has NO audio (source audio required)")
+
         digest = acq.checksum_sha256(tmp_path)
         filename = acq.library_filename(v["canonical_url"], digest)
         os.makedirs(LIBRARY_DIR, exist_ok=True)
@@ -218,8 +240,8 @@ def main() -> None:
         "4_media": {"duration_seconds": meta["duration_seconds"],
                     "width": meta["width"], "height": meta["height"],
                     "frame_rate": meta["frame_rate"], "has_audio": meta["has_audio"],
-                    "size_bytes": written, "container": meta["container"],
-                    "video_codec": meta["video_codec"]},
+                    "muxed": muxed, "size_bytes": written,
+                    "container": meta["container"], "video_codec": meta["video_codec"]},
         "5_obs_path_sha256": {"local_path": final_path, "sha256": digest},
         "6_ids": {"provider_run_id": (run_row[0]["id"] if isinstance(run_row, list) and run_row else None),
                   "acquisition_job_id": job_id,

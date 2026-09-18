@@ -124,15 +124,15 @@ class TestUrl(unittest.TestCase):
 class TestInput(unittest.TestCase):
     def test_one_url_max_results_one(self):
         inp = provider.build_input(REEL)
-        self.assertEqual(inp, {"urls": [REEL], "resultsLimit": 1})
+        self.assertEqual(inp, {"username": [REEL], "resultsLimit": 1})
 
     def test_expansion_fields_impossible(self):
         inp = provider.build_input(REEL)
-        self.assertEqual(set(inp.keys()), {"urls", "resultsLimit"})
-        self.assertNotIn("usernames", inp)
+        self.assertEqual(set(inp.keys()), {"username", "resultsLimit"})
         self.assertNotIn("profiles", inp)
         self.assertNotIn("hashtags", inp)
         self.assertNotIn("search", inp)
+        self.assertNotIn("includeDownloadedVideo", inp)  # no premium stored-file event
 
 
 class TestActorAllowlist(unittest.TestCase):
@@ -154,7 +154,7 @@ class TestActorAllowlist(unittest.TestCase):
 
     def test_actor_api_id_is_numeric(self):
         # the REST API needs the numeric id, not the website slug (slash form)
-        self.assertEqual(provider.actor_api_id(provider.ACTOR_REEL_SCRAPER), "dSCLg0C3YEZ83HzYX")
+        self.assertEqual(provider.actor_api_id(provider.ACTOR_REEL_SCRAPER), "xMc5Ga1oCONPmWJIa")
         self.assertEqual(provider.actor_api_id(provider.ACTOR_INSTAGRAM_SCRAPER), "shu8hvrXbJbY3Eb9W")
         self.assertNotIn("/", provider.actor_api_id(provider.ACTOR_REEL_SCRAPER))
 

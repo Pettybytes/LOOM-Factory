@@ -32,7 +32,7 @@ ROLE_FALLBACK = "fallback"
 # API actor id — the API expects the numeric id or the 'username~actor-name'
 # tilde slug. The numeric id is stable and unambiguous.
 ACTOR_API_IDS = {
-    ACTOR_REEL_SCRAPER: "dSCLg0C3YEZ83HzYX",
+    ACTOR_REEL_SCRAPER: "xMc5Ga1oCONPmWJIa",
     ACTOR_INSTAGRAM_SCRAPER: "shu8hvrXbJbY3Eb9W",
 }
 
@@ -90,16 +90,19 @@ def actor_api_id(actor: str) -> str:
 
 
 def build_input(canonical_url: str, *, platform: str = "instagram") -> dict:
-    """Deterministic single-item input: exactly one URL, maxResults=1.
+    """Deterministic single-item input: exactly one direct reel URL, maxResults=1.
 
-    Hard-codes direct-Reel mode: NO profiles, usernames, hashtags, search,
-    related content, pagination, or carousel-expansion fields. The input schema
-    is deliberately minimal so those capabilities cannot be expressed.
+    The reel-scraper's input field is ``username`` (array), which accepts
+    usernames, profile URLs, IDs, OR direct reel URLs. LOOM passes exactly ONE
+    direct reel URL (never a username/profile/hashtag/search), so no profile,
+    related-content, pagination, or carousel expansion can occur. ``resultsLimit``
+    is ignored for direct URLs but kept at 1 for safety. ``includeDownloadedVideo``
+    is deliberately omitted (defaults false) so no premium stored-file event runs.
     """
     if platform not in _ACTOR_ALLOWLIST:
         raise ProviderError("UNSUPPORTED_PLATFORM", f"no actor allowlist for platform {platform!r}")
     return {
-        "urls": [canonical_url],
+        "username": [canonical_url],
         "resultsLimit": MAX_RESULTS,
     }
 
