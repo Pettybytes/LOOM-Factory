@@ -9,7 +9,32 @@
 ---
 
 ## Last Updated
-2026-09-18 19:15 EDT (America/Detroit) — YOUTUBE ADAPTER RUNTIME-PROVEN (bounded local yt-dlp acquisition succeeded)
+2026-09-18 19:30 EDT (America/Detroit) — REACTION LIBRARY DELIVERY FORMAT (all assets H.264/AAC MP4)
+
+## HANDOFF — Reaction Library delivery format (2026-09-18)
+
+Acquired YouTube media had landed as **VP9 + Opus in MP4**: fine in the browser player, but **QuickTime refused it**
+with a compatibility warning (Instagram assets were unaffected — they are H.264 + AAC). Fixed as **shared library
+finalization behavior**, not a YouTube workaround.
+
+**Contract** (`infra/acquisition/media_normalize.py`): MP4 · H.264 · AAC · yuv420p · fast-start, with dimensions,
+aspect ratio, orientation and frame rate preserved, single-pass encode for sync, and the ≤100 MiB / ≤300 s limits
+re-checked on the **finalized** asset. Compliant media is moved untouched; anything else is normalized to a temp file,
+validated, then swapped in atomically. A failed conversion never touches the existing asset and cleans up its temp file.
+`yt-dlp` now prefers `avc1` + `mp4a`, with normalization as the fallback; the delivered file's own SHA-256 names it.
+
+**Repaired asset (no re-download):**
+- old `youtube__h3Q_tAFWY5g__d8990649b8e3.mp4` — VP9 + Opus, 16,407,149 B, sha256 `d8990649b8e3…`
+- new `youtube__h3Q_tAFWY5g__06ab279dcb13.mp4` — H.264 + AAC + yuv420p + faststart, 19,977,430 B, sha256 `06ab279dcb13…`
+- geometry unchanged: 1080×1920, 30/1 fps, 40.641 s
+
+DB row (same id, no duplicate), `storage_url`, job provenance (`delivery_format`, `normalized_from`) and the Discord
+card were updated in place; a poster frame was captured as reference data; the retired hash now 404s. Verified with
+ffprobe and macOS metadata (`kMDItemCodecs = H.264, MPEG-4 AAC`). Ceiling untouched at **7,200 micro / 2**.
+Suites: acquisition **392** · discord-review **134** · local-helper **76**.
+
+**Note for future paths:** any new acquisition route must finalize through `media_normalize` so no lane can ship an
+incompatible asset again.
 
 ## HANDOFF — YouTube adapter runtime-proven (2026-09-18)
 

@@ -6,6 +6,36 @@
 
 ---
 
+## STOP STATE — 2026-09-18 ~19:30 EDT — REACTION LIBRARY DELIVERY FORMAT (every asset now H.264/AAC MP4)
+
+### Why
+Acquired YouTube media landed as **VP9 + Opus in MP4**: it played in the browser player but **QuickTime refused it** with a compatibility warning (Instagram assets were fine because they are H.264 + AAC). The fix is a **shared Reaction Library finalization contract**, not a YouTube-only workaround.
+
+### The contract (`infra/acquisition/media_normalize.py`)
+Delivery format is fixed for every path: **MP4 · H.264 · AAC · yuv420p · fast-start**. Dimensions, aspect ratio, orientation (rotation side data) and frame rate are preserved — no scaling or fps filters — and both streams are encoded in one pass so audio/video sync holds. The **≤100 MiB / ≤300 s** limits are re-validated on the *finalized* asset. Already-compliant media is **moved untouched** (no needless transcode); anything else is normalized once into a temp file, validated, and only then swapped in atomically. A failed conversion leaves the existing asset untouched and removes its temp file.
+
+### Acquisition path
+`yt-dlp` now **prefers `avc1` + `mp4a`** (`bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]/bv*+ba/b`), with normalization as the reliable fallback. The finalized asset's **own** SHA-256 determines the deterministic filename, and download/staging leftovers are removed on success.
+
+### Repair of the already-acquired asset (no re-download)
+| | |
+|---|---|
+| old | `youtube__h3Q_tAFWY5g__d8990649b8e3.mp4` · **VP9 + Opus** · 16,407,149 B · sha256 `d8990649b8e3…` |
+| new | `youtube__h3Q_tAFWY5g__06ab279dcb13.mp4` · **H.264 + AAC + yuv420p + faststart** · 19,977,430 B · sha256 `06ab279dcb13…` |
+| geometry | 1080×1920 · 30/1 fps · **40.641 s** (unchanged) |
+| re-download | **no** — the existing local file was normalized in place |
+
+DB row (same row id, **1 row for the video**), `storage_url`, job `asset_provenance` (`delivery_format`, `normalized_from`) and the **Discord card updated in place** — `🎬 ACQUISITION · ACQUIRED`, new filename/hash, `Local acquisition · $0 provider cost`, `Open in Reaction Library` → new hash URL. A poster frame was extracted as reference data.
+
+### Verification
+- `ffprobe`: h264 / aac / yuv420p / 1080×1920 / 30/1 / 40.641 s / 19,977,430 B / faststart true.
+- **macOS metadata (QuickTime-facing):** `kMDItemCodecs = ("H.264", "MPEG-4 AAC")`, `kMDItemContentType = public.mpeg-4`.
+- Routes: gallery **200** (lists the new asset), detail **200**, media **206 video/mp4** (Range), poster **200**; the retired hash correctly **404**s.
+- Consistency: DB filename == file on disk, DB hash == file hash, size matches, canonical URL strict, no duplicate row, **ceiling untouched (7,200 micro / 2)**, tmp **0 files**.
+- Suites: acquisition **392** · discord-review **134** · local-helper **76** — all passing.
+
+---
+
 ## STOP STATE — 2026-09-18 ~19:15 EDT — YOUTUBE ADAPTER **RUNTIME-PROVEN** (bounded local yt-dlp acquisition succeeded)
 
 ### Accepted milestone

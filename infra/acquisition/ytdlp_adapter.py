@@ -22,6 +22,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
+import media_normalize as mn
+
 PROVIDER_LOCAL = "local"
 ADAPTER_LOCAL_YTDLP = "local:yt-dlp"
 
@@ -33,7 +35,10 @@ MAX_ATTEMPTS = 1
 MIB = 1024 * 1024
 
 # Bounded, compatible selection: best video+audio, falling back to best combined.
-FORMAT_SELECTOR = "bv*+ba/b"
+# Prefer a delivery-ready stream set; normalization is the fallback.
+FORMAT_SELECTOR = ("bv*[vcodec^=avc1]+ba[acodec^=mp4a]"
+                   "/b[ext=mp4]"
+                   "/bv*+ba/b")
 
 # Flags that must NEVER appear in a generated command.
 FORBIDDEN_FLAGS = (
@@ -240,6 +245,7 @@ def acquire_local(*, url: str, expected_id: str, tmp_dir: Path, library_dir: Pat
                   run_probe: Callable[[list[str]], dict],
                   run_download: Callable[[list[str]], str],
                   run_ffprobe: Callable[[str], dict],
+                  run_ffmpeg: Callable[[list[str]], Any] | None = None,
                   cleanup: Callable[[Path], None] | None = None,
                   ytdlp: str = "yt-dlp") -> dict[str, Any]:
     """One bounded attempt; returns the finalized library record or raises."""
@@ -266,9 +272,27 @@ def acquire_local(*, url: str, expected_id: str, tmp_dir: Path, library_dir: Pat
         probe = run_ffprobe(str(tmp_path))
         media = validate_media(probe, path=tmp_path, expected_id=expected_id,
                                video_id_from_meta=checked["video_id"])
-        filename = filename_for(expected_id, media["sha256"])
+        # Shared delivery contract: MP4 / H.264 / AAC / yuv420p / fast-start.
+        # Compatible media is moved untouched; anything else is normalized once.
+        staged = tmp_dir / f"{stem}.compat.mp4"
+        delivered = mn.normalize_and_finalize(
+            src=tmp_path, dst=staged, probe=probe,
+            run_ffmpeg=run_ffmpeg or mn.run_ffmpeg_command,
+            run_ffprobe=run_ffprobe)
+        digest = sha256_file(staged)              # hash what we actually ship
+        filename = filename_for(expected_id, digest)
         final_path = library_dir / filename
-        os.replace(tmp_path, final_path)          # atomic finalize
+        os.replace(staged, final_path)            # atomic finalize
+
+        # No debris on success: the download (and any staging leftovers) go away
+        # once the delivered asset is in the library. The media pipeline is the
+        # only writer here, so this cannot touch another attempt's files.
+        for leftover in [tmp_path, *tmp_dir.glob(f"{stem}.*")]:
+            try:
+                if Path(leftover).is_file():
+                    Path(leftover).unlink()
+            except OSError:
+                pass
     except Exception:
         # never leave partial debris behind
         try:
@@ -289,14 +313,18 @@ def acquire_local(*, url: str, expected_id: str, tmp_dir: Path, library_dir: Pat
         "path": str(final_path),
         "video_id": expected_id,
         "canonical_url": url,
-        "duration_seconds": media["duration_seconds"],
-        "size_bytes": media["size_bytes"],
-        "video_codec": media["video_codec"],
-        "audio_codec": media["audio_codec"],
-        "width": media["width"],
-        "height": media["height"],
-        "sha256": media["sha256"],
-        "container": media["container"],
+        "duration_seconds": delivered["duration_seconds"],
+        "size_bytes": delivered["size_bytes"],
+        "video_codec": delivered["video_codec"],
+        "audio_codec": delivered["audio_codec"],
+        "pix_fmt": delivered["pix_fmt"],
+        "normalized": delivered["normalized"],
+        "source_video_codec": media["video_codec"],
+        "source_audio_codec": media["audio_codec"],
+        "width": delivered.get("width") or media["width"],
+        "height": delivered.get("height") or media["height"],
+        "sha256": digest,
+        "container": delivered["container"],
         "provider": PROVIDER_LOCAL,
         "adapter": ADAPTER_LOCAL_YTDLP,
         "provider_cost_micro": 0,
