@@ -9,7 +9,35 @@
 ---
 
 ## Last Updated
-2026-09-17 21:00 EDT (America/Detroit) — END-OF-DAY CLOSEOUT (Snapchat resolved; corrections applied)
+2026-09-18 18:30 EDT (America/Detroit) — INSTAGRAM MILESTONE CLOSED (runtime-proven; committed + pushed)
+
+## HANDOFF — Instagram acquisition milestone closed (2026-09-18)
+
+Instagram acquisition is **runtime-proven** end to end from a real Discord click (Gate 2 → one bounded
+Apify run → bounded download → ffprobe → SHA-256 → atomic finalize → library row → card updated in
+place). The cost baseline is now the provider's own **$0.0036** per single-result run (re-baselined
+from the old pinned $0.0026; `cost.REEL_SCRAPER_RESULT_MICRO = 3_600`, earlier ledger row corrected
+idempotently, ceiling 7,200 micro / 2 successes).
+
+**Two assets** are in the Reaction Library: `instagram__DdZS1QRhrXE__9b22f887b2ff.mp4` (23.7 MB,
+55.26 s) and `instagram__DdQE_RUS0GJ__06e1da6120df.mp4` (16.7 MB, 77.65 s). The library moved to the
+visible **`~/Movies/LOOM-Reaction-Library`** with a browsable gallery at
+`http://127.0.0.1:8787/library` (poster, platform, duration, size, status, acquired date; detail +
+Range-capable media + poster routes). The root resolves through `infra/acquisition/library_root.py`
+(`LOOM_REACTION_LIBRARY_ROOT` override); the old hidden directory is preserved as
+`~/.openclaw/loom-reaction-library.backup-2026-09-18` — nothing was deleted.
+
+Discord interactions are **ACK-first** (acknowledged before any store read; private notes via webhook
+follow-up; context failures fail closed with no writes). Assets above the server's real upload limit
+attach a **poster frame and the exact reason** rather than claiming playback — this guild is premium
+tier 0, so 10 MiB is the cap and the 15.9 MiB reel plays through the library page instead.
+
+Services healthy: adapter `route AQ · durable store · live_runner enabled · token present`; helper
+`/health` ok. Tests: acquisition 324 · discord-review 134 · local-helper 76.
+
+Limitations: no inline playback for the oversized reel; the ≤10 MiB native-attach path is implemented
+and unit-tested but untested live; Hold has not been clicked live; the library link is loopback-only.
+**Next adapter: YouTube via local `yt-dlp`** (no paid provider, deterministic).
 
 ## HANDOFF — end-of-day closeout
 

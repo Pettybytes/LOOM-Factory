@@ -6,6 +6,32 @@
 
 ---
 
+## STOP STATE — 2026-09-18 ~18:30 EDT — INSTAGRAM ACQUISITION MILESTONE **RUNTIME-PROVEN** (accepted)
+
+### Accepted milestone
+- **Instagram acquisition is runtime-proven end to end**: a real Discord click → Gate 2 authorization → one bounded Apify run → bounded download → ffprobe validation → SHA-256 → atomic finalize → Reaction Library row → card updated in place. The envelope, actor-addressing and settlement defects found along the way are fixed and covered by regression tests.
+- **Actual cost baseline: $0.0036 per single-result run** (Apify `usageTotalUsd`). Re-baselined from the old pinned $0.0026 → `cost.REEL_SCRAPER_RESULT_MICRO = 3_600`; the earlier successful run row was corrected with an idempotent, evidence-backed update; ceiling now 7,200 micro / 2 successes.
+- **Two successful assets** in the library:
+  - `instagram__DdZS1QRhrXE__9b22f887b2ff.mp4` — 23,721,338 B · 55.26 s · sha256 `9b22f887b2ff…`
+  - `instagram__DdQE_RUS0GJ__06e1da6120df.mp4` — 16,689,411 B · 77.65 s · sha256 `06e1da6120df…`
+- **Visible Reaction Library + gallery**: root is `~/Movies/LOOM-Reaction-Library`, centralised in `infra/acquisition/library_root.py` with a `LOOM_REACTION_LIBRARY_ROOT` override. `GET http://127.0.0.1:8787/library` renders a browsable gallery (poster, platform, duration, size, status, acquired date; each card opens its detail/player page), with `/library/<sha256>` detail, Range-capable `/media` and `/poster`. Desktop shortcut `~/Desktop/LOOM-Factory/Reaction-Library` → the real root. The old hidden dir is preserved as `~/.openclaw/loom-reaction-library.backup-2026-09-18` (nothing deleted).
+- **ACK-first Discord behaviour**: every interaction is acknowledged before any store read, private notes go out as webhook follow-ups, and a failed context resolution fails closed (`CONTEXT_UNAVAILABLE`) with no writes.
+- **10 MiB Discord fallback**: the guild's real upload limit is queried per click; an oversized asset attaches a poster frame (single frame, no transcoding, asset hash re-verified) and states the exact reason, with the library page as the playable route. The card never claims playback it does not have.
+- **Health**: adapter `route AQ · durable store · live_runner enabled · token present · 100 MiB / 300 s / 1 result / 1 attempt / fallback false`; helper `/health` → `{"ok": true}`; `LOOM_ACQUISITION_LIVE=1`.
+- **Suites**: acquisition 324 · discord-review 134 · local-helper 76 — all passing.
+
+### Honest limitations (unchanged)
+- The 15.9 MiB reel **cannot** play inline in Discord (tier-0 10 MiB limit); the ≤10 MiB native-attachment path is implemented and unit-tested but has not been exercised by a real acquisition.
+- Hold has not been clicked live (proven by tests and the acceptance matrix only).
+- The library link is loopback-only — valid from this Mac, not from another machine.
+- The earlier successful ledger row keeps its historical `cost_estimate_micro` (2,600) while `cost_actual_micro` is now the provider's 3,600.
+- Job `updated_at` is stamped by our code (the table has no trigger).
+
+### Next adapter
+**YouTube via local `yt-dlp`** — no paid provider, deterministic, no usage charge. Not started in this task.
+
+---
+
 ## STOP STATE — 2026-09-17 ~20:55 EDT — SNAPCHAT + UNIVERSAL INVESTIGATION (read-only, $0)
 
 ### Universal + Snapchat (final read-only)
@@ -53,7 +79,7 @@
 - Output: exactly 1 result, content id `DdZS1QRhrXE`, field `videoUrl`.
 - Media: h264 + aac (muxed, has_audio=true), 720x1280, 30 fps, 55.26s, 23.7 MB.
 - **Actual billed cost: $0.0026** (2600 microdollars) — estimate == actual.
-- Local: `~/.openclaw/loom-reaction-library/library/instagram__DdZS1QRhrXE__9b22f887b2ff.mp4` (sha256 `9b22f887b2ff…`).
+- Local: `~/Movies/LOOM-Reaction-Library/library/instagram__DdZS1QRhrXE__9b22f887b2ff.mp4` (sha256 `9b22f887b2ff…`).
 - IDs: job `4bc99e59` (acquired) · library `acb7aa0f` · provider run `ef8c57e8`.
 - Circuit breaker: lifetime_spent=2600 micro, succeeded=1 (ceiling $1.00 / max 10).
 - Hygiene: signed URL volatile (not persisted); temp files removed; source_host redacted.

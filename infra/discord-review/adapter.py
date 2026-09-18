@@ -56,6 +56,8 @@ import source_review  # noqa: E402  (same-dir module; Source Review Inbox)
 import manual_intake  # noqa: E402  (same-dir module; Manual Source Intake)
 import tenant_routing  # noqa: E402  (same-dir module; tenant assignment/reassignment)
 import intake_card  # noqa: E402  (same-dir module; card-based intake wizard)
+import acquisition_ops  # noqa: E402
+import library_root as _library_root  # noqa: E402  (approved acquisition lane operator surface)
 
 # ---------------------------------------------------------------------------
 # Config (from env)
@@ -1528,6 +1530,64 @@ def forward_to_n8n(normalized_event: dict):
 # HTTP handler
 # ---------------------------------------------------------------------------
 
+_ACQ_STORE = None
+
+
+def _acquisition_store():
+    """Durable acquisition store, opt-in; process-local by default.
+
+    Creating jobs in the production database is enabled ONLY by an explicit
+    ``LOOM_ACQUISITION_DURABLE_STORE=1``; the default keeps qualification local so
+    no production row is written without an authorized decision.
+    """
+    global _ACQ_STORE
+    if _ACQ_STORE is None:
+        if (SUPABASE_URL and SUPABASE_KEY
+                and os.environ.get("LOOM_ACQUISITION_DURABLE_STORE") == "1"):
+            _ACQ_STORE = acquisition_ops.SupabaseLaneStore(SUPABASE_URL, SUPABASE_KEY)
+        else:
+            _ACQ_STORE = acquisition_ops.default_store()
+    return _ACQ_STORE
+
+
+def _acquisition_live_runner():
+    """The paid spend path — built only when explicitly switched on.
+
+    Returns ``None`` unless ``LOOM_ACQUISITION_LIVE=1`` AND every prerequisite is
+    present; no runner means an Acquire click authorizes nothing and spends
+    nothing. The runner itself re-checks all gates before dispatching.
+    """
+    return acquisition_ops.build_live_runner_from_env(
+        store=_acquisition_store(),
+        url=SUPABASE_URL, key=SUPABASE_KEY,
+        library_dir=str(_library_root.library_dir()),
+        tmp_dir=str(_library_root.tmp_dir()),
+    )
+
+
+def acquisition_route(custom_id: str):
+    """Pure routing decision for approved-acquisition card buttons.
+
+    Returns the parsed action/ref for an ``AQ:<code>:<ref>`` id, else None — so
+    the route can be asserted without an HTTP server.
+    """
+    return acquisition_ops.parse_custom_id(custom_id)
+
+
+def acquisition_health():
+    """Readiness block surfaced by GET /health (never exposes secrets).
+
+    Defensive: a liveness probe must never be taken down by a lane error, so a
+    failure degrades to an honest ``route_active: false`` block instead of
+    raising and closing the connection.
+    """
+    try:
+        return acquisition_ops.acquisition_health(store=_acquisition_store())
+    except Exception as e:  # noqa: BLE001
+        print(f"[acquisition] health probe failed: {type(e).__name__}", flush=True)
+        return {"route": "AQ", "route_active": False, "error": type(e).__name__}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "LOOMReviewAdapter/1.0"
 
@@ -1578,7 +1638,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._log_request()
         if self.path == "/health":
-            self._send_json(200, {"status": "ok"})
+            self._send_json(200, {"status": "ok", "acquisition": acquisition_health()})
             return
         # Authenticated editor API (read endpoints).
         if self.path.startswith("/api/"):
@@ -1942,6 +2002,12 @@ class Handler(BaseHTTPRequestHandler):
         if src is not None:
             self._handle_source_button(interaction, src)
             return
+
+        # Approved acquisition lane — distinct AQ: prefix (Instagram, gate 1/2).
+        acq = acquisition_route(custom_id)
+        if acq is not None:
+            self._handle_acquisition_button(interaction, acq)
+            return
         parsed = parse_custom_id(custom_id)
         if not parsed:
             self._send_json(200, {"type": 4, "data": {"content": "Invalid button.", "flags": 64}})
@@ -2001,6 +2067,38 @@ class Handler(BaseHTTPRequestHandler):
         # approve / hold: persist, then update the card to "decided".
         self._decide_and_update(interaction, identity, token_hash, decision, reviewer,
                                 category=None, instructions=None)
+
+    def _acquisition_context(self, parsed, store):
+        """Resolve the lane context — called AFTER the ACK has been sent.
+
+        A resolution failure must never crash the interaction and never guess:
+        the lane falls back to a REVIEW context carrying an explicit error, so the
+        guard refuses the click and the operator is told why.
+        """
+        try:
+            return acquisition_ops.context_for(parsed, store=store)
+        except Exception as e:  # noqa: BLE001
+            print(f"[acquisition] context failed: {type(e).__name__}", flush=True)
+            return acquisition_ops.LaneContext(
+                ref=parsed.get("ref", ""),
+                state=acquisition_ops.card.STATE_REVIEW,
+                error={"code": "CONTEXT_UNAVAILABLE",
+                       "message": "Source context could not be resolved."})
+
+    def _handle_acquisition_button(self, interaction, parsed):
+        """Approved acquisition lane: acknowledge FIRST, then work, then update.
+
+        Store: durable when explicitly enabled, else process-local. The SPEND path
+        returns None until an authorized transport is wired, so a click on this
+        surface can never spend money on its own.
+        """
+        store = _acquisition_store()
+        acquisition_ops.handle_adapter_interaction(
+            self, interaction, parsed, http_json=http_json,
+            context_provider=lambda: self._acquisition_context(parsed, store),
+            actor=self._reviewer_name(interaction),
+            runner=_acquisition_live_runner(), store=store,
+        )
 
     def _handle_details(self, interaction, identity):
         """Details is informational: return full metadata as an EPHEMERAL

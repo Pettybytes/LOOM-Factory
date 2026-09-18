@@ -14,8 +14,11 @@ MICRO_PER_DOLLAR = 1_000_000
 DEFAULT_CEILING_MICRO = 1_000_000          # $1.00 lifetime across all Apify charges
 DEFAULT_MAX_SUCCESS = 10
 
-# apify/instagram-reel-scraper metadata result = $0.0026 = 2600 microdollars.
-REEL_SCRAPER_RESULT_MICRO = 2_600
+# apify/instagram-reel-scraper result cost. Re-baselined to the provider's own
+# reported charge: Apify reports usageTotalUsd = 0.0036 for a single-result run
+# (observed on runs 0DPOKk2bEwxqVTS0i and gpsMyaQqiBVs8Ardo). The earlier pinned
+# $0.0026 was the actor's advertised price and under-stated the real charge.
+REEL_SCRAPER_RESULT_MICRO = 3_600
 
 
 class CostError(ValueError):

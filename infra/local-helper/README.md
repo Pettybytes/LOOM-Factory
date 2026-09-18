@@ -54,7 +54,7 @@ Response (JSON, redacted — never the signed CDN URL):
 ## Output directory (Reaction Library cache)
 
 ```
-~/.openclaw/loom-reaction-library/
+~/Movies/LOOM-Reaction-Library/
   .tmp/     # partial downloads (cleaned on every failure)
   library/  # finalized, checksummed assets (atomic rename)
 ```

@@ -15,7 +15,7 @@ Rules:
 
 Storage destination (PROPOSAL — requires Bryan review before any download):
   files -> GHL Media Storage (Bryan's primary location, dedicated
-  'loom-reaction-library' folder / filesafe CDN); metadata + provenance ->
+  '~/Movies/LOOM-Reaction-Library' folder / filesafe CDN); metadata + provenance ->
   Supabase ``loom_reaction_library``. Reuses the approved canonical storage
   (GHL for media, Supabase for ledger); no new cloud vendor.
 """

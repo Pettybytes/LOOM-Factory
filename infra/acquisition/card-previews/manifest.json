@@ -1,0 +1,105 @@
+{
+  "local_asset": "/Users/user/Movies/LOOM-Reaction-Library/library/instagram__DdZS1QRhrXE__9b22f887b2ff.mp4",
+  "local_asset_untouched": true,
+  "renders": [
+    {
+      "state": "review",
+      "viewport_width": 520,
+      "file": "card-review.png",
+      "buttons": [
+        "Approve",
+        "Deny",
+        "Hold",
+        "View Source"
+      ],
+      "video_element_decoded": null,
+      "embed_has_video": false
+    },
+    {
+      "state": "approved",
+      "viewport_width": 520,
+      "file": "card-approved.png",
+      "buttons": [
+        "Acquire for Reaction",
+        "Hold",
+        "Deny",
+        "View Source"
+      ],
+      "video_element_decoded": null,
+      "embed_has_video": false
+    },
+    {
+      "state": "acquiring",
+      "viewport_width": 520,
+      "file": "card-acquiring.png",
+      "buttons": [
+        "Acquiring\u2026 (disabled)",
+        "Hold (disabled)"
+      ],
+      "video_element_decoded": null,
+      "embed_has_video": false
+    },
+    {
+      "state": "acquired",
+      "viewport_width": 520,
+      "file": "card-acquired.png",
+      "buttons": [
+        "Preview / Play",
+        "Open in Reaction Library",
+        "Hold"
+      ],
+      "video_element_decoded": null,
+      "embed_has_video": false
+    },
+    {
+      "state": "failed",
+      "viewport_width": 520,
+      "file": "card-failed.png",
+      "buttons": [
+        "\u26a0\ufe0f Retry Manually",
+        "Hold",
+        "View Error",
+        "View Source"
+      ],
+      "video_element_decoded": null,
+      "embed_has_video": false
+    },
+    {
+      "state": "review",
+      "viewport_width": 340,
+      "file": "card-review-narrow.png",
+      "buttons": [
+        "Approve",
+        "Deny",
+        "Hold",
+        "View Source"
+      ],
+      "video_element_decoded": null,
+      "embed_has_video": false
+    },
+    {
+      "state": "acquired",
+      "viewport_width": 340,
+      "file": "card-acquired-narrow.png",
+      "buttons": [
+        "Preview / Play",
+        "Open in Reaction Library",
+        "Hold"
+      ],
+      "video_element_decoded": null,
+      "embed_has_video": false
+    },
+    {
+      "state": "acquired",
+      "viewport_width": 520,
+      "file": "card-acquired-NoPosterFallback.png",
+      "buttons": [
+        "Preview / Play",
+        "Open in Reaction Library",
+        "Hold"
+      ],
+      "video_element_decoded": null,
+      "embed_has_video": false
+    }
+  ]
+}

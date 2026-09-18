@@ -37,6 +37,19 @@ def load_token(environ=None) -> str:
     return token
 
 
+def _unwrap(payload):
+    """Unwrap the Apify v2 response envelope.
+
+    Single resources come back as ``{"data": {...}}`` (so ``run["id"]`` lives at
+    ``run["data"]["id"]``), while list endpoints return a bare array or
+    ``{"data": [...]}``. Callers get the resource itself either way, which is why
+    reading ``run["defaultDatasetId"]`` at the top level raised ``KeyError``.
+    """
+    if isinstance(payload, dict) and isinstance(payload.get("data"), (dict, list)):
+        return payload["data"]
+    return payload
+
+
 class Transport:
     """Apify transport interface (mocked in deterministic tests)."""
 
@@ -68,7 +81,7 @@ class HttpTransport(Transport):
             return json.loads(r.read().decode() or "{}")
 
     def start_run(self, actor: str, input_: dict) -> dict:
-        return self._post(f"/acts/{actor}/runs", input_)
+        return _unwrap(self._post(f"/acts/{actor}/runs", input_))
 
     def get_run_status(self, actor: str, run_id: str) -> dict:
         req = urllib.request.Request(
@@ -76,7 +89,7 @@ class HttpTransport(Transport):
             headers={"Authorization": f"Bearer {self._token}"},
         )
         with urllib.request.urlopen(req, timeout=60) as r:
-            return json.loads(r.read().decode() or "{}")
+            return _unwrap(json.loads(r.read().decode() or "{}"))
 
     def get_dataset_items(self, dataset_id: str) -> list:
         req = urllib.request.Request(
@@ -84,4 +97,4 @@ class HttpTransport(Transport):
             headers={"Authorization": f"Bearer {self._token}"},
         )
         with urllib.request.urlopen(req, timeout=60) as r:
-            return json.loads(r.read().decode() or "[]")
+            return _unwrap(json.loads(r.read().decode() or "[]"))

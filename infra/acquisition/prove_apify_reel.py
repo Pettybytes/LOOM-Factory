@@ -20,6 +20,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import library_root  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 for d in ("acquisition", "local-helper", "discord-review"):
     sys.path.insert(0, str(REPO / "infra" / d))
@@ -38,7 +40,7 @@ REEL_URL = "https://www.instagram.com/reel/DdZS1QRhrXE/"
 ACTOR = provider.ACTOR_REEL_SCRAPER
 MAX_BYTES = 100 * 1024 * 1024
 MAX_DURATION = 300
-LIBRARY_DIR = os.path.expanduser("~/.openclaw/loom-reaction-library/library")
+LIBRARY_DIR = str(library_root.library_dir())
 
 
 def _env(name: str) -> str:

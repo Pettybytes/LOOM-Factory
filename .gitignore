@@ -24,3 +24,18 @@ venv/
 # Logs, backups, temp
 *.log
 *.bak
+
+# Relocated Reaction Library (large media; real root is ~/Movies/LOOM-Reaction-Library)
+Reaction-Library
+
+# Acquisition run artifacts / runtime state (reproducible; never commit)
+infra/discord-review/.live-proof-state.json
+infra/discord-review/.gate1-proof-state.json
+infra/discord-review/*-result.json
+infra/discord-review/acquire-failure-forensics.json
+infra/discord-review/apify-runs-readonly.json
+infra/discord-review/attempt2-completion.json
+infra/discord-review/failed-attempt-repair.json
+infra/discord-review/failed-card-update.json
+infra/discord-review/live-proof-preparation.json
+infra/discord-review/verify-approve-click.json
