@@ -2677,25 +2677,72 @@ class Handler(BaseHTTPRequestHandler):
         })
         is_fixture = bool(src_rows and src_rows[0].get("storage_status") == "fixture")
 
-        try:
-            card = send_review_card({
-                "clip_id": clip_id,
-                "job_id": job_id,
-                "tenant_id": tenant_id,
-                "asset_version": target_version,
-                "review_stage": "final_publication",
-                "ready_file": ready_file,
-                "proposed_shorts_title": body.get("proposed_title") or "",
-                "hook": body.get("hook") or "",
-                "caption": body.get("caption") or "",
-                "overall_score": body.get("overall_score"),
-                "duration_seconds": body.get("duration_seconds"),
-                "lineage": f"{_short_version(source_version)} → {_short_version(target_version)}",
-                "corrections": corrections,
-                "is_fixture": is_fixture,
+        # Card delivery is the LAST step and the only one that leaves the host.
+        # A transient upload failure here must not be reported as success, and
+        # must not be retried blindly: send_review_card() is not idempotent
+        # (it registers a fresh token per call), so a retry is guarded by a
+        # re-check for an already-delivered card for this exact version. That
+        # keeps "retry" from ever becoming "duplicate card".
+        attempts = max(1, int(_env("LOOM_CARD_SEND_ATTEMPTS", "3")))
+        card = None
+        card_error = None
+        for attempt in range(attempts):
+            try:
+                card = send_review_card({
+                    "clip_id": clip_id,
+                    "job_id": job_id,
+                    "tenant_id": tenant_id,
+                    "asset_version": target_version,
+                    "review_stage": "final_publication",
+                    "ready_file": ready_file,
+                    "proposed_shorts_title": body.get("proposed_title") or "",
+                    "hook": body.get("hook") or "",
+                    "caption": body.get("caption") or "",
+                    "overall_score": body.get("overall_score"),
+                    "duration_seconds": body.get("duration_seconds"),
+                    "lineage": f"{_short_version(source_version)} → {_short_version(target_version)}",
+                    "corrections": corrections,
+                    "is_fixture": is_fixture,
+                })
+                card_error = None
+                break
+            except Exception as e:  # noqa: BLE001
+                card_error = f"{type(e).__name__}: {e}"
+                # Guard against a duplicate: a previous attempt (or a lost
+                # response) may already have delivered the card for this exact
+                # clip@version.
+                try:
+                    already = check_existing_card(tenant_id, clip_id, target_version)
+                    delivered = [c for c in (already or [])
+                                 if isinstance(c, dict) and c.get("discord_message_id")]
+                except Exception:  # noqa: BLE001 - the guard must never mask the real error
+                    delivered = []
+                if delivered:
+                    card = {"already_delivered": True,
+                            "message_id": delivered[0].get("discord_message_id")}
+                    card_error = None
+                    break
+                if attempt < attempts - 1:
+                    backoff = min(8.0, 1.5 ** attempt)
+                    print(f"[card] attempt {attempt + 1}/{attempts} failed for "
+                          f"{clip_id}@{target_version}: {card_error} - retrying in {backoff:.1f}s",
+                          flush=True)
+                    time.sleep(backoff)
+
+        if card is None:
+            # The asset_version IS registered (see `result`) but the re-review
+            # card did NOT reach Discord. Report that truthfully: non-2xx and
+            # ok:false, so no caller can mistake a failed delivery for a
+            # delivered card (the old contract answered 200 + ok:true with the
+            # reason buried in card_error, and the UI claimed "card sent").
+            print(f"[card] GAVE UP for {clip_id}@{target_version}: {card_error}", flush=True)
+            self._send_json(502, {
+                "ok": False,
+                "error": "card_delivery_failed",
+                "detail": card_error,
+                "asset_registered": True,
+                "result": result,
             })
-        except Exception as e:
-            self._send_json(200, {"ok": True, "result": result, "card_error": str(e)})
             return
 
         self._send_json(200, {"ok": True, "result": result, "card": card})
@@ -2906,7 +2953,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"success": False, "error": str(e)})
 
     def log_message(self, fmt, *args):
-        print(f"[adapter] {self.address_string()} - {fmt % args}")
+        # flush=True is REQUIRED: stdout is block-buffered when redirected to
+        # adapter.log, so without it a response line sits in the buffer until a
+        # LATER request flushes it. That makes a completed request look like one
+        # that never responded (it cost real diagnosis time on the editor
+        # completion path, which returned 200 while appearing silent).
+        print(f"[adapter] {self.address_string()} - {fmt % args}", flush=True)
 
 
 def main():
