@@ -106,11 +106,31 @@ loom_reviews                        terminal decisions
 
 ## 5. Editor implementation — IMPLEMENTED, HEADER ACCEPTANCE PENDING
 
-**`EDITOR_IMPLEMENTATION = IMPLEMENTED`** (openshorts repo commits `416e12e`
-Hook rich text + one authoritative preview, then `8895050` Header parity).
+**`EDITOR_IMPLEMENTATION = IMPLEMENTED`** (openshorts commits `416e12e`
+Hook rich text + one authoritative preview, `8895050` Header parity, `eef684b`
+Header defect fixes).
 **`HOOK_VISUAL_ACCEPTANCE = PASS`** (Bryan reported: Hook renders in the primary
 preview, including multiple colours).
-**`HEADER_VISUAL_ACCEPTANCE = PENDING_HUMAN`.**
+**`HEADER_VISUAL_ACCEPTANCE = FAILED → FIXED, PENDING_HUMAN RE-TEST`.**
+
+Bryan's first Header acceptance failed on two counts, both root-caused:
+1. **Selective Header styling did not work.** `HeaderModal` re-synced the
+   selection from `onBlur`; clicking a swatch blurs the textarea and browsers
+   (WebKit) then report `selectionStart/End` as `0/0`, so the live range was
+   wiped and the patch fell through to the BASE style — the panel said "no
+   selection" while the whole header changed colour. Fixed with
+   `lib/rangeSelection.js` (sticky `keepSelection`), `preventDefault` on swatch
+   mousedown so controls cannot steal focus, no blur sync at all, and the inline
+   header field's selection is now carried into the modal.
+2. **Header geometry regressed into the video region.** There was no placement
+   contract — two independent frame percentages with nothing confining the
+   Header. Fixed with `lib/overlayLayout.js`: HEADER_REGION 0-14% (clipped band),
+   HOOK_REGION 16-100%, separate anchors per element. The Header box takes no Hook
+   input and vice versa, so neither can move the other.
+
+**Architecture rule now enforced:** rich text model, normalization, styling
+controls and per-run rendering are SHARED; placement/geometry and visibility
+semantics are SEPARATE per element.
 
 Editor scope now covers BOTH visual text elements on one model:
 `lib/richText.js` (was `hookRichText.js`; the model was always generic),
