@@ -1,3 +1,9 @@
+> **⚠️ READ `NEXT_SESSION_HANDOFF.md` FIRST.**
+> It is the authoritative resume point as of commit `10ac46f` and supersedes anything below
+> that contradicts it. It carries the current repo/test/runtime state, the asset-lineage and
+> editor state contracts, the Discord ingress state, the Twitch EventSub status, the full
+> remaining Segment 5 sequence, and a single starting point.
+
 # LOOM — HANDOFF
 
 > **Primary execution authority:** `CURRENT_STATE.md`. If this file and
