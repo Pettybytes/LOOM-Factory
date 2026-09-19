@@ -143,6 +143,22 @@ def plan_library_entry(
     }
 
 
+def durable_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Sanitize a record for persistence and drop empty uuid-typed columns.
+
+    ``acquisition_job_id`` is a uuid column, and an empty string is NOT a valid
+    uuid — PostgREST answers 400 ``22P02``. A record with no job row must therefore
+    OMIT the key rather than send ``""``. Shared by every acquisition path so the
+    rule cannot drift between them.
+    """
+    import approved_lane as lane
+    safe = lane.safe_record(record)
+    for key in ("acquisition_job_id",):
+        if not str(safe.get(key) or "").strip():
+            safe.pop(key, None)
+    return safe
+
+
 TITLE_FIELDS = ("source_title", "display_title", "creator_name", "creator_handle")
 
 

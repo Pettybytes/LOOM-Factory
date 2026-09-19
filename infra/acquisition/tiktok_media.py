@@ -79,17 +79,8 @@ def _already_acquired(library_rows: list[dict[str, Any]] | None, *,
 
 
 def _durable_record(record: dict[str, Any]) -> dict[str, Any]:
-    """Sanitize for persistence and drop empty uuid-typed columns.
-
-    ``acquisition_job_id`` is a uuid column, and an empty string is NOT a valid
-    uuid — PostgREST answers 400 ``22P02``. An acquisition with no job row must
-    therefore OMIT the key rather than send ``""``.
-    """
-    safe = lane.safe_record(record)
-    for key in ("acquisition_job_id",):
-        if not str(safe.get(key) or "").strip():
-            safe.pop(key, None)
-    return safe
+    """Kept as a thin alias of the shared helper (single source of truth)."""
+    return reaction_library.durable_record(record)
 
 
 def _download(io: TikTokMediaIO, url: str, *, max_bytes: int) -> tuple[str, int, int, str]:

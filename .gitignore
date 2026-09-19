@@ -46,3 +46,4 @@ infra/discord-review/youtube-cards-fixed.json
 # Library filenames are deterministic: <platform>__<content_id>__<hash12>.mp4
 *__*__*.mp4
 *__*__*.part
+infra/discord-review/.reddit-acceptance-state.json

@@ -77,8 +77,13 @@ def rotation_degrees(probe: dict[str, Any]) -> int:
     return 0
 
 
-def compatibility_gaps(probe: dict[str, Any]) -> list[str]:
-    """Why this media is not delivery-ready (empty list == already compatible)."""
+def compatibility_gaps(probe: dict[str, Any], *, require_audio: bool = True) -> list[str]:
+    """Why this media is not delivery-ready (empty list == already compatible).
+
+    ``require_audio=False`` is for a source that has been PROBED and found
+    legitimately silent: the absence of an audio stream is then not a gap, and
+    neither is a missing audio codec. Everything else is unchanged.
+    """
     gaps: list[str] = []
     fmt = (probe or {}).get("format") or {}
     names = str(fmt.get("format_name") or "")
@@ -87,7 +92,7 @@ def compatibility_gaps(probe: dict[str, Any]) -> list[str]:
     video, audio = _streams(probe)
     if len(video) != 1:
         gaps.append(f"video_streams:{len(video)}")
-    if not audio:
+    if not audio and require_audio:
         gaps.append("no_audio")
     if video:
         vcodec = str(video[0].get("codec_name") or "").lower()
@@ -103,8 +108,8 @@ def compatibility_gaps(probe: dict[str, Any]) -> list[str]:
     return gaps
 
 
-def needs_normalization(probe: dict[str, Any]) -> bool:
-    return bool(compatibility_gaps(probe))
+def needs_normalization(probe: dict[str, Any], *, require_audio: bool = True) -> bool:
+    return bool(compatibility_gaps(probe, require_audio=require_audio))
 
 
 # ---------------------------------------------------------------------------
@@ -115,21 +120,26 @@ def build_normalize_command(src: str | Path, dst: str | Path, *,
                             crf: int = DEFAULT_CRF,
                             preset: str = DEFAULT_PRESET,
                             audio_bitrate: str = DEFAULT_AUDIO_BITRATE,
+                            with_audio: bool = True,
                             ffmpeg: str = "ffmpeg") -> list[str]:
     """One-pass H.264/AAC/yuv420p transcode that mirrors the source geometry.
 
     No scaling or fps filters are used, so dimensions, aspect ratio, orientation
     and frame rate carry over, and both streams are encoded in the same pass so
-    audio/video sync is preserved.
+    audio/video sync is preserved. ``with_audio=False`` produces a video-only MP4
+    for a source that was PROBED and found legitimately silent — mapping an absent
+    audio stream would otherwise fail the whole encode.
     """
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
            "-i", str(src),
-           "-map", "0:v:0", "-map", "0:a:0",
-           "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-           "-pix_fmt", COMPAT_PIX_FMT,
-           "-c:a", COMPAT_AUDIO_CODEC, "-b:a", audio_bitrate, "-ac", "2",
-           "-movflags", FASTSTART_FLAG,
-           "-map_metadata", "-1"]
+           "-map", "0:v:0"]
+    if with_audio:
+        cmd += ["-map", "0:a:0"]
+    cmd += ["-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-pix_fmt", COMPAT_PIX_FMT]
+    if with_audio:
+        cmd += ["-c:a", COMPAT_AUDIO_CODEC, "-b:a", audio_bitrate, "-ac", "2"]
+    cmd += ["-movflags", FASTSTART_FLAG, "-map_metadata", "-1"]
     rotation = rotation_degrees(probe or {})
     if rotation:
         cmd += ["-metadata:s:v:0", f"rotate={rotation}"]
@@ -151,16 +161,21 @@ def is_faststart(path: str | Path, *, window: int = 400_000) -> bool:
 
 
 def build_remux_command(src: str | Path, dst: str | Path, *,
+                        with_audio: bool = True,
                         ffmpeg: str = "ffmpeg") -> list[str]:
     """Stream-copy remux that only moves the moov atom (no quality loss)."""
-    return [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
-            "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
-            "-movflags", FASTSTART_FLAG, "-f", "mp4", str(dst)]
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
+           "-map", "0:v:0"]
+    if with_audio:
+        cmd += ["-map", "0:a:0"]
+    cmd += ["-c", "copy", "-movflags", FASTSTART_FLAG, "-f", "mp4", str(dst)]
+    return cmd
 
 
 def validate_finalized(probe: dict[str, Any], *, path: str | Path,
                        max_bytes: int = MAX_BYTES,
-                       max_duration: float = MAX_DURATION_SECONDS) -> dict[str, Any]:
+                       max_duration: float = MAX_DURATION_SECONDS,
+                       require_audio: bool = True) -> dict[str, Any]:
     """The delivery gate. Raises NormalizeError; never returns a doubtful result."""
     p = Path(path)
     if not p.is_file():
@@ -172,7 +187,7 @@ def validate_finalized(probe: dict[str, Any], *, path: str | Path,
         raise NormalizeError("TOO_LARGE",
                              f"{size} bytes exceeds the {max_bytes}-byte limit")
 
-    gaps = compatibility_gaps(probe)
+    gaps = compatibility_gaps(probe, require_audio=require_audio)
     if gaps:
         raise NormalizeError("INCOMPATIBLE", "not delivery-ready: " + ", ".join(gaps))
 
@@ -192,7 +207,8 @@ def validate_finalized(probe: dict[str, Any], *, path: str | Path,
         "size_bytes": size,
         "duration_seconds": duration,
         "video_codec": str(video[0].get("codec_name") or "").lower(),
-        "audio_codec": str(audio[0].get("codec_name") or "").lower(),
+        "audio_codec": str(audio[0].get("codec_name") or "").lower() if audio else "",
+        "has_audio": bool(audio),
         "pix_fmt": str(video[0].get("pix_fmt") or "").lower(),
         "width": video[0].get("width"),
         "height": video[0].get("height"),
@@ -211,7 +227,8 @@ def normalize_and_finalize(*, src: str | Path, dst: str | Path,
                            run_ffprobe: Callable[[str], dict],
                            max_bytes: int = MAX_BYTES,
                            max_duration: float = MAX_DURATION_SECONDS,
-                           keep_compatible: bool = True) -> dict[str, Any]:
+                           keep_compatible: bool = True,
+                           require_audio: bool = True) -> dict[str, Any]:
     """Deliver `src` as a compatible asset at `dst`.
 
     * already compatible (and ``keep_compatible``) -> the source file is moved, so
@@ -219,14 +236,20 @@ def normalize_and_finalize(*, src: str | Path, dst: str | Path,
     * otherwise -> normalize to a temporary file beside the destination, validate
       it, and only then move it into place atomically;
     * on any failure the destination is untouched and the temp file is removed.
+
+    ``require_audio=False`` is only for a source PROBED and found legitimately
+    silent; the audio mapping is then dropped instead of failing the encode.
     """
     src_path, dst_path = Path(src), Path(dst)
-    src_gaps = compatibility_gaps(probe)
+    _video, _audio = _streams(probe)
+    with_audio = bool(_audio) and require_audio
+    src_gaps = compatibility_gaps(probe, require_audio=require_audio)
     tmp = dst_path.with_name(dst_path.name + ".normalizing.mp4")
 
     if not src_gaps and keep_compatible and is_faststart(src_path):
-        report = validate_finalized(probe, path=src_path,
-                                    max_bytes=max_bytes, max_duration=max_duration)
+        report = validate_finalized(probe, path=src_path, max_bytes=max_bytes,
+                                    max_duration=max_duration,
+                                    require_audio=require_audio)
         os.replace(src_path, dst_path)                  # nothing re-encoded
         return {**report, "normalized": False, "gaps": [], "remuxed": False,
                 "temp_removed": True}
@@ -235,11 +258,12 @@ def normalize_and_finalize(*, src: str | Path, dst: str | Path,
         # Correct codecs but not streamable: remux (stream copy, no quality loss)
         # so the delivery contract is met without a needless re-encode.
         try:
-            run_ffmpeg(build_remux_command(src_path, tmp))
+            run_ffmpeg(build_remux_command(src_path, tmp, with_audio=with_audio))
             if not tmp.is_file():
                 raise NormalizeError("NO_OUTPUT", "remux produced no file")
             report = validate_finalized(run_ffprobe(str(tmp)), path=tmp,
-                                        max_bytes=max_bytes, max_duration=max_duration)
+                                        max_bytes=max_bytes, max_duration=max_duration,
+                                        require_audio=require_audio)
             if not is_faststart(tmp):
                 raise NormalizeError("NOT_FASTSTART",
                                      "remux did not produce fast-start metadata")
@@ -255,12 +279,14 @@ def normalize_and_finalize(*, src: str | Path, dst: str | Path,
                 "temp_removed": True}
 
     try:
-        run_ffmpeg(build_normalize_command(src_path, tmp, probe=probe))
+        run_ffmpeg(build_normalize_command(src_path, tmp, probe=probe,
+                                          with_audio=with_audio))
         if not tmp.is_file():
             raise NormalizeError("NO_OUTPUT", "ffmpeg produced no normalized file")
         out_probe = run_ffprobe(str(tmp))
         report = validate_finalized(out_probe, path=tmp,
-                                    max_bytes=max_bytes, max_duration=max_duration)
+                                    max_bytes=max_bytes, max_duration=max_duration,
+                                    require_audio=require_audio)
         if not is_faststart(tmp):
             raise NormalizeError("NOT_FASTSTART",
                                  "normalized output lacks fast-start metadata")

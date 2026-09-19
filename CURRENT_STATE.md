@@ -1417,3 +1417,91 @@ suites (519 acquisition · 86 local-helper · 168 discord).
   DB at request time and reads the same library dir), but the new gallery/detail markup
   only appears after that process is restarted.
 * `migration 036` is written but **not applied** (no DDL access from this host).
+
+---
+
+## 11. Reddit exact-URL acquisition (2026-09-18)
+
+**Status: RUNTIME-PROVEN, $0, public path. Age-gated handling implemented but not exercised.**
+
+### Layers
+
+| Layer | Module | Owns |
+|---|---|---|
+| 1 — identity | `reddit_url.py` | one canonical Reddit post, or a classified refusal |
+| 2 — context | `reddit_context.py` | classification + stream selection, from runtime evidence |
+| 3A — media | `reddit_media.py` | native acquisition: bounded download → mux → shared normalization → library |
+| 3B — delegation | `reddit_media.delegate_external` | external-host posts route to the platform adapter |
+| session | `reddit_session.py` | value-safe authorized session (public first) |
+
+**Identity.** Supported: `www.`/`old.`/`np.`/`new.`/`m.`/bare `reddit.com` post URLs,
+`redd.it/<id>`, and `/r/<sub>/s/<code>` share links. Share codes are OPAQUE and are
+never treated as identity: share links must RESOLVE (strict hop limit, Reddit hosts
+ONLY, loop rejection) and the post id is taken from the FINAL destination. Tracking
+parameters and the slug never change identity. The `v.redd.it` media id is NOT the
+post id (post `1l6m106` = media `61i3p09gjr5f1`).
+
+**Unsupported, refused with a classified error:** subreddit listings, profiles,
+search, credentials-bearing URLs, foreign hosts, `reddit.com.evil.com` lookalikes.
+
+**Classification** is evidence-driven. A generic `403 Forbidden` is NEVER translated
+into `AGE_GATE_REQUIRED` — only specific evidence (`age-restricted`, `over 18`,
+`only available for registered users`, `login required`, …) does that. Deleted /
+removed / private / quarantined / unavailable / rate-limited are each typed.
+
+**Media.** Reddit serves video and audio as SEPARATE streams (20 formats on the proof
+post: 16 video-only + 2 audio-only `mp4a.40.2`), so a local mux is mandatory. Direct
+`https` streams are preferred over segmented protocols so the bounded single-file
+downloader keeps its byte ceiling. Audio presence is decided by PROBING the bytes —
+the proof post is titled "(no music)" and still carried AAC. A source probed and found
+legitimately silent is finalized video-only through the same contract
+(`media_normalize` gained `require_audio`, default unchanged). An audio stream that
+downloads but yields no audio is a FAILURE, not silence.
+
+### Runtime proof (real, $0, public path)
+
+`prove_reddit_acquire.py` on the supplied share link:
+
+* share link → **1 hop** → `https://www.reddit.com/r/TheCapitalLink/comments/1l6m106/`
+* post id `1l6m106` (taken from the destination, not from `rPHdJGq2A2`)
+* public probe, **no authentication**; classification `native_reddit_video`
+* streams `dash-5` (video, `https`, v.redd.it) + `dash-7` (audio, `https`, v.redd.it)
+* acquired: **muxed**, 6,490,643 B, 21.474 s, 720×1044, H.264/AAC, audio present,
+  gaps `[]`; library row `e9684a06-ed40-4499-918e-4dc0733de2cb`
+* filename `reddit__deleted__now-why-they-do-officer-fine-shit-like-that__1l6m106__4a2f10f48e14.mp4`
+  (the author is `[deleted]`, recorded verbatim — no creator is fabricated)
+
+### Discord acceptance + idempotent repeat
+
+Card `1550705331930398831` in Clippy Factory: state `ACQUISITION · ACQUIRED`,
+description = the real title, media `0:21 · 720×1044 · 9:16 vertical · 6.2 MB ·
+Audio present (AAC)`, Library field with filename + sha256, **video attached and
+playable** (live 10 MiB tier-0 limit). A repeat request: **idempotent, no download,
+no new library row (10 → 10), asset hash unchanged**, no paid provider call.
+
+### Authorized session (value-safe)
+
+Bryan's Chrome `Default` profile is the only one holding Reddit host keys
+(`.reddit.com`, `.www.reddit.com`, `www.reddit.com`). Discovery reads **host keys and
+row counts only — never a cookie name or value**, and it works while Chrome is
+running (read-only `immutable=1`). Cookies are handed to `yt-dlp` in-process via
+`--cookies-from-browser chrome:<profile>`; LOOM never writes a cookie file, never
+prints cookie values, never requests/stores/logs a password, and
+`assert_no_cookie_material()` refuses any outbound payload containing cookie
+material. **Public posts are attempted first**; the session is used only when the
+classified evidence is an age/auth gate, and human approval inside LOOM is still
+required before acquiring age-gated content. On the proof post: **no auth used, zero
+cookie arguments passed**.
+
+### Tests
+
+`infra/acquisition/tests/test_reddit_acquisition.py` — 54 cases covering identity
+mapping, canonicalization, tracking removal, slug-independence, share resolution with
+hop limits, loop and foreign-host rejection, rate-limit typing, post-id drift,
+crosspost behaviour, deleted/removed/private/quarantined/age-gate classification,
+generic-403 restraint, native video, real-byte validation, HTML rejection, silent
+probing, external delegation, deterministic filenames, and the value-safe session
+(including a sentinel proving cookie values can never surface).
+
+**Not exercised:** an actual age-gated acquisition (would need the live Keychain
+prompt and human approval).
