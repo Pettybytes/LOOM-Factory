@@ -111,9 +111,33 @@ Hook rich text + one authoritative preview, `8895050` Header parity, `eef684b`
 Header defect fixes).
 **`HOOK_VISUAL_ACCEPTANCE = PASS`** (Bryan reported: Hook renders in the primary
 preview, including multiple colours).
-**`HEADER_VISUAL_ACCEPTANCE = ROUND 3: PENDING_HUMAN`** — selective styling PASS,
-region separation PASS, Hook regression NONE (rounds 1-2); round-3 preview
-geometry parity fixed in `PreviewSurface` (see below).
+**`HEADER_VISUAL_ACCEPTANCE = ROUND 4: PENDING_HUMAN`** — rounds 1-3 fixes stand
+(selection works, region/padding accepted, preview geometry parity). Round 4
+adds the optional dedicated black Header region.
+
+**"What previously controlled the black region" (asked, answered): nothing.**
+No field or layout semantic ever existed — `black_region`, `top_region`,
+`header_region`, `region_mode`, `headerRegion` return zero hits in source, and
+nothing in git history. The old black band above the video was an EMERGENT
+artifact: the main preview box had no aspect ratio (`lg:aspect-auto lg:h-auto`)
+and took its height from the taller sidebar, so the 9:16 video was letterboxed
+inside it and the header band (a % of that taller container) landed in the
+letterbox. `41c8d9c` pinned the frame to the video to fix geometry parity, which
+removed the letterbox and with it the accidental band. **No prior state existed,
+so nothing was restored — the mode is a new, explicit, persisted replacement.**
+Contract: `title_overlay.region = 'overlay' | 'dedicated'` in
+`lib/overlayLayout.js`; `'overlay'` is the default and is bit-identical to the
+accepted geometry; the Hook is positioned relative to the VIDEO AREA in both
+modes, which is what makes collision structurally impossible.
+
+**NEXT (after this re-test passes): FINAL RENDER PARITY.** The Editor is NOT
+complete until the actual rendered MP4 is proven to contain the same Header/Hook
+text, ranges, colours, fonts, relative sizes and placement seen in the preview:
+editor state -> draft/EDL -> render -> MP4 -> new asset_version -> GHL canonical
+-> Discord re-review card. **`dedicated` mode additionally changes the render
+composition** (the canvas becomes taller than the video), so the renderer must
+honour the mode rather than assuming a 9:16 frame. Preview-only success is not
+final acceptance. Do not start Segment 5B until render parity is runtime-proven.
 
 **Round-3 root cause — preview geometry parity (measured, not guessed).** The
 media is 720x1280 (exactly 9:16), but the two preview containers were different
