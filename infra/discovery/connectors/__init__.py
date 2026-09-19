@@ -6,6 +6,7 @@ from typing import Any
 
 from ..connector import Connector
 from .reddit import RedditConnector
+from .twitch import TwitchConnector
 from .youtube import YouTubeConnector
 
 
@@ -14,6 +15,7 @@ def available_connectors() -> dict[str, Connector]:
     return {
         "youtube": YouTubeConnector(),
         "reddit": RedditConnector(),
+        "twitch": TwitchConnector(),
     }
 
 
