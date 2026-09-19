@@ -141,9 +141,47 @@ class _UnimplementedLongFormAdapter:
             f"[ADAPTER_NOT_IMPLEMENTED] {self.platform} has no adapter yet")
 
 
-class TwitchAdapter(_UnimplementedLongFormAdapter):
+class TwitchAdapter:
+    """Twitch through the SHARED long-form lane.
+
+    This class owns only Twitch-specific concerns: URL canonicalization, content-ID
+    extraction, metadata probing, the ranged acquisition transport, platform
+    availability classification and Twitch provenance. Timestamp validation,
+    windows, range identity, authorization, card states, durable jobs, $0
+    accounting, normalization and library persistence stay in shared code.
+    """
+
     platform = "twitch"
-    adapter_id = "twitch:unimplemented"
+    adapter_id = "local:yt-dlp"        # the same vetted local tool, Twitch transport
+    runtime_proven = False             # flipped ONLY by a genuine bounded proof
+    long_form = True
+    cost_model = {"kind": "local", "provider_cost_micro": 0, "paid": False}
+    #: VODs may be many hours; only the EXCERPT is bounded (shared clip limit).
+    requires_window_for_long_source = True
+
+    def canonicalize(self, url: str, *, expected_content_id: str = "") -> dict[str, str]:
+        import twitch_url as tu
+        parsed = tu.parse(url, expected_content_id=expected_content_id)
+        return {"platform": self.platform,
+                "canonical_url": parsed["canonical_url"],
+                "content_id": parsed["content_id"],
+                "kind": parsed["kind"]}
+
+    def classify_availability(self, meta: dict) -> str:
+        """Platform-specific availability classification (shared lane codes)."""
+        if not isinstance(meta, dict):
+            return "UNAVAILABLE"
+        if meta.get("is_live"):
+            return "LIVE_WITHOUT_IMMUTABLE_ID"
+        if meta.get("availability") in ("subscriber_only", "premium_only"):
+            return "SUBSCRIBER_ONLY"
+        if meta.get("availability") in ("deleted", "unavailable"):
+            return "UNAVAILABLE"
+        if meta.get("is_private") or meta.get("availability") == "private":
+            return "PRIVATE"
+        if meta.get("duration") is None:
+            return "UNAVAILABLE"
+        return "AVAILABLE"
 
 
 class KickAdapter(_UnimplementedLongFormAdapter):

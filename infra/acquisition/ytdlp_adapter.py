@@ -29,7 +29,9 @@ PROVIDER_LOCAL = "local"
 ADAPTER_LOCAL_YTDLP = "local:yt-dlp"
 
 MAX_DURATION_SECONDS = 300
-MAX_SOURCE_DURATION_SECONDS = 4 * 60 * 60   # 4 h source cap (range mode)
+# Ranged mode imposes NO arbitrary source ceiling: a Twitch/Kick VOD may be many
+# hours and only the AUTHORIZED EXCERPT is bounded (shared clip limit).
+MAX_SOURCE_DURATION_SECONDS = None
 MAX_BYTES = 100 * 1024 * 1024
 MAX_RESULTS = 1
 MAX_ATTEMPTS = 1
@@ -165,7 +167,9 @@ def validate_metadata(meta: dict[str, Any], *, expected_id: str,
     except (TypeError, ValueError):
         raise YtDlpError("BAD_DURATION", f"unusable duration {duration!r}")
     source_limit = MAX_SOURCE_DURATION_SECONDS if allow_long_source else MAX_DURATION_SECONDS
-    if duration_f > source_limit:
+    if source_limit is not None and duration_f > source_limit:
+        # Ranged mode (source_limit None) is bounded by the WINDOW and the finalized
+        # asset checks instead of an arbitrary source ceiling.
         raise YtDlpError("TOO_LONG",
                          f"{duration_f:.1f}s exceeds the {source_limit}s "
                          f"{'source' if allow_long_source else 'clip'} limit")

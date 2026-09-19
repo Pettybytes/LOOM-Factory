@@ -6,6 +6,36 @@
 
 ---
 
+## INCREMENT — 2026-09-18 ~21:00 EDT — TWITCH ADAPTER IMPLEMENTED (NOT YET RUNTIME-PROVEN)
+
+Twitch now plugs into the **existing platform-neutral lane** through a registered adapter — no fork, no
+duplicate Discord workflow:
+
+- **`twitch_url.py`** — strict contract for one immutable identity: VODs (`/videos/<numeric id>`), clips
+  (`clips.twitch.tv/<Slug>` and `/<channel>/clip/<Slug>`, both canonicalising to the clips host). Tracking
+  parameters never change identity (`?t=` is kept only as a non-identity start hint). Stable rejections:
+  `CHANNEL_PAGE`, `NOT_A_MEDIA_URL` (directories/search/collections), `BAD_VOD_ID`, `BAD_CLIP_ID`,
+  `FOREIGN_HOST`, `CREDENTIALS`, `BAD_SCHEME`, `EMPTY_URL`, `SOURCE_ID_DRIFT`.
+- **`source_adapters.TwitchAdapter`** (replaces the `unimplemented` stub) — `adapter_id local:yt-dlp`,
+  `long_form`, `cost_model {local, $0}`, `runtime_proven **False**`, plus Twitch availability
+  classification (`LIVE_WITHOUT_IMMUTABLE_ID`, `SUBSCRIBER_ONLY`, `PRIVATE`, `UNAVAILABLE`).
+- **Shared code unchanged**: windows, range identity, authorization, card states/actions, durable jobs, $0
+  accounting, normalization and library persistence stay platform-neutral (asserted by test).
+- **Clips vs VODs:** a whole clip is whole-item when ≤300 s; a VOD requires an approved range
+  (`LONG_FORM_REQUIRES_RANGE`). The **arbitrary 4-hour source ceiling is gone** for ranged mode — only the
+  excerpt (≤300 s) and the finalized asset (≤100 MiB) are bounded.
+- **Tooling:** installed `yt-dlp 2026.08.19` already provides `twitch:clips`, `twitch:vod`, `twitch:videos`,
+  so the existing local abstraction carries it. No new dependency, no cookies, no account, no credentials.
+- **Tests:** `test_twitch_adapter.py` (16) — normalization/variants, tracking-parameter identity, every
+  rejection code, drift, clip-vs-VOD identity separation, cross-platform collision, multi-hour acceptance,
+  VOD-without-window refusal, ranged transport flags with command hygiene (no cookie/apify/credentials),
+  filename conventions, range-aware duplicate identity, availability classification, platform neutrality.
+
+**Blocked on the one genuine stop:** there is **no Twitch URL anywhere in Bryan's durable data** (0 rows
+across submissions, library and jobs), so per the brief the runtime proof waits for **one exact public
+Twitch clip or VOD URL** (plus a preferred window for a VOD). `runtime_proven` stays **False** until a real
+bounded proof succeeds.
+
 ## STOP STATE — 2026-09-18 ~20:45 EDT — RANGED WINDOW 01:05–01:35 ACQUIRED (both ranges coexist)
 
 ### Accepted outcome

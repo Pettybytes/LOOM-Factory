@@ -9,7 +9,24 @@
 ---
 
 ## Last Updated
-2026-09-18 20:45 EDT (America/Detroit) — RANGED WINDOW 01:05–01:35 ACQUIRED (both ranges coexist)
+2026-09-18 21:00 EDT (America/Detroit) — TWITCH ADAPTER IMPLEMENTED (awaiting one proof URL)
+
+## HANDOFF — Twitch adapter implemented, awaiting one proof URL (2026-09-18)
+
+Twitch is registered behind the shared long-form interface: `twitch_url.py` (strict VOD/clip identity with
+stable rejection codes, tracking parameters excluded from identity) plus a real `TwitchAdapter`
+(`local:yt-dlp`, `long_form`, $0 local cost model, `runtime_proven: False`). The arbitrary four-hour source
+ceiling was removed for ranged mode, so multi-hour VODs are acquirable through an approved ≤300 s window
+while clips remain whole-item when ≤300 s. Installed `yt-dlp 2026.08.19` already supports `twitch:vod` and
+`twitch:clips`, so no new dependency is needed. 16 deterministic tests pin the contract; the shared lane is
+asserted platform-neutral.
+
+**Next:** one exact public Twitch **clip** URL, or a **VOD** URL plus a preferred window. Then: probe
+metadata only, post one premium REVIEW card (a deterministic 30 s window labelled an acceptance-proof
+suggestion, never an AI virality claim), stop once for the genuine Approve & Acquire, acquire one bounded
+asset at $0, verify codecs/duration/size/hash/filename/fast-start and that no VOD is retained, check the
+Discord/Library/OpenShorts behaviour, flip `runtime_proven` only on genuine success, then update the docs
+and commit. Kick follows the same lane afterwards.
 
 ## HANDOFF — Ranged window 01:05–01:35 acquired (2026-09-18)
 
