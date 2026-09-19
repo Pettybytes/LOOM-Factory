@@ -173,17 +173,17 @@ def main() -> None:
         preview={"kind": "video_attachment" if fits else "local_asset",
                  "local_filename": asset.name},
         provenance={"adapter": "local:yt-dlp", "provider": "none"},
-        tenant_id="dreemzy", profile_id="reddit-acceptance",
+        tenant_id="loom", profile_id="reddit-acceptance",
         library_url=library_url, local_acquisition=True)
     embed = card.format_acquisition_embed(vm)
     components = card.format_acquisition_buttons(vm, library_url=library_url)
 
     prior = _load_accept_state()
-    if prior.get("channel_id") == channel_id and prior.get("message_id"):
+    resumed = bool(prior.get("channel_id") == channel_id and prior.get("message_id"))
+    if resumed:
         message_id = str(prior["message_id"])
         status, _ = _discord("PATCH", f"/channels/{channel_id}/messages/{message_id}",
                              token, {"embeds": [embed], "components": components})
-        out["4_message"]["resumed_existing_card"] = True
     else:
         status, posted = _discord("POST", f"/channels/{channel_id}/messages", token,
                                   {"embeds": [embed], "components": components})
@@ -192,7 +192,6 @@ def main() -> None:
         message_id = str(posted["id"])
         _save_accept_state({"channel_id": channel_id, "message_id": message_id,
                             "post_id": POST_ID})
-        out["4_message"]["resumed_existing_card"] = False
     if status != 200:
         raise SystemExit(f"[fatal] card write failed: {status}")
 
@@ -206,6 +205,8 @@ def main() -> None:
     fields = {f.get("name"): f.get("value") for f in e.get("fields", [])}
     out["4_message"] = {
         "message_id": message_id,
+        "resumed_existing_card": resumed,
+        "patched_in_place": True,
         "message_url": f"https://discord.com/channels/{GUILD_ID}/{channel_id}/{message_id}",
         "read_back_status": st2, "state_title": e.get("title"),
         "description": e.get("description"), "media_field": fields.get("Media"),

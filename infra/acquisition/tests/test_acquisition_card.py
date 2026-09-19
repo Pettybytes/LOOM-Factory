@@ -216,6 +216,42 @@ class TestPresentation(unittest.TestCase):
         self.assertIn("22.6 MB", s)
         self.assertIn("Audio present (AAC)", s)
 
+    def test_aspect_label_uses_the_exact_reduced_ratio(self):
+        """Only media that genuinely IS 9:16 may say 9:16."""
+        self.assertEqual(card.aspect_label(720, 1280), "9:16 vertical")
+        self.assertEqual(card.aspect_label(1080, 1920), "9:16 vertical")
+        # The live Reddit asset: 720x1044 (ratio 1.45) is NOT 9:16.
+        self.assertEqual(card.aspect_label(720, 1044), "20:29 vertical")
+        self.assertEqual(card.aspect_label(1080, 1350), "4:5 vertical")
+        self.assertEqual(card.aspect_label(1920, 1080), "16:9 landscape")
+        self.assertEqual(card.aspect_label(1080, 1080), "square")
+        self.assertEqual(card.aspect_label(None, 1080), "unknown")
+        self.assertEqual(card.aspect_label(0, 0), "unknown")
+
+    def test_a_non_9_16_vertical_is_never_labelled_9_16(self):
+        s = card.media_summary(vm(card.STATE_REVIEW, width=720, height=1044))
+        self.assertIn("20:29 vertical", s)
+        self.assertNotIn("9:16", s)
+
+    def test_landscape_is_not_mislabelled_as_portrait(self):
+        s = card.media_summary(vm(card.STATE_REVIEW, width=1920, height=1080))
+        self.assertIn("16:9 landscape", s)
+        self.assertNotIn("vertical", s)
+
+    def test_the_system_label_is_loom_not_a_draft_tenant_name(self):
+        """The visible provenance label must be the real system label."""
+        self.assertEqual(card.SYSTEM_LABEL, "loom")
+        v = card.fixture_view_model(card.STATE_ACQUIRED)
+        footer = card.format_acquisition_embed(v)["footer"]["text"]
+        self.assertIn(card.SYSTEM_LABEL, footer)
+        self.assertNotIn("dreemzy", footer)
+
+    def test_a_real_tenant_id_still_supplied_by_the_caller_is_rendered(self):
+        """Real tenant metadata is not rewritten: it is echoed when supplied."""
+        v = vm(card.STATE_ACQUIRED, tenant_id="bryan-face-reaction")
+        self.assertIn("bryan-face-reaction",
+                      card.format_acquisition_embed(v)["footer"]["text"])
+
     def test_no_audio_and_unknown_audio(self):
         self.assertIn("No audio", card.media_summary(vm(card.STATE_REVIEW, has_audio=False)))
         self.assertIn("Audio unknown", card.media_summary(vm(card.STATE_REVIEW, has_audio=None)))

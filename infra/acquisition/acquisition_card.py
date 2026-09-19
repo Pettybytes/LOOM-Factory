@@ -26,6 +26,7 @@ outcome colours, button-click custom_ids. Nothing new is invented here.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -44,6 +45,10 @@ CARD_STATES = (STATE_REVIEW, STATE_APPROVED, STATE_ACQUIRING, STATE_ACQUIRED, ST
 # rendered by `source_review.decided_embed` (existing pattern — reused, not
 # reinvented); the card only needs to know the lane is no longer active.
 STATE_DENIED = "denied"
+
+#: The real SYSTEM label for LOOM's own surfaces. It is not a tenant: when a real
+#: tenant exists the caller passes that tenant id instead of this label.
+SYSTEM_LABEL = "loom"
 
 # ---------------------------------------------------------------------------
 # State palette (Discord embed colour)
@@ -363,14 +368,25 @@ def fmt_micro(micro: int | None) -> str:
 
 
 def aspect_label(width: int | None, height: int | None) -> str:
+    """Truthful aspect label from the EXACT reduced ratio (width:height).
+
+    A loose tolerance previously mislabelled 720×1044 (ratio 1.45) as "9:16",
+    which is simply wrong. The label is now the real reduced ratio, so only media
+    that genuinely is 9:16 says 9:16: 720×1280 -> "9:16 vertical",
+    720×1044 -> "20:29 vertical", 1920×1080 -> "16:9 landscape".
+    """
     if not width or not height:
         return "unknown"
-    if height > width:
-        ratio = height / width
-        return "9:16 vertical" if abs(ratio - 16 / 9) < 0.35 else "vertical"
-    if width > height:
-        return "16:9 landscape" if abs(width / height - 16 / 9) < 0.35 else "landscape"
-    return "square"
+    w, h = int(width), int(height)
+    if w == h:
+        return "square"
+    g = math.gcd(w, h) or 1
+    rw, rh = w // g, h // g
+    if max(rw, rh) > 100:
+        # An exact ratio too noisy to read is still shown truthfully, in its raw
+        # form, rather than rounded into something the media is not.
+        rw, rh = w, h
+    return f"{rw}:{rh} " + ("vertical" if h > w else "landscape")
 
 
 def fmt_resolution(width: int | None, height: int | None) -> str:
@@ -891,7 +907,9 @@ def fixture_view_model(state: str, *, local_path: str = "",
                  "thumbnail_url": poster_url or thumbnail_url},
         provenance={"actor": f["actor"], "run_id": f["run_id"]},
         error=error or {},
-        tenant_id="dreemzy",
+        # The SYSTEM label for LOOM's own plumbing. A real tenant id is supplied by
+        # the caller when one genuinely exists; "loom" is not a draft tenant name.
+        tenant_id=SYSTEM_LABEL,
         profile_id="acquisition-card-proof",
         fixture=fixture,
     )

@@ -178,7 +178,7 @@ def main() -> None:
         library={"status": "acquired", "asset_filename": asset.name, "sha256": digest},
         preview={"kind": "video_attachment" if fits else "local_asset",
                  "local_filename": asset.name},
-        provenance={"actor": provider.ACTOR_TIKTOK_VIDEO}, tenant_id="dreemzy",
+        provenance={"actor": provider.ACTOR_TIKTOK_VIDEO}, tenant_id="loom",
         profile_id="tiktok-ui-acceptance", library_url=library_url)
     embed = card.format_acquisition_embed(vm)
     components = card.format_acquisition_buttons(vm, library_url=library_url)

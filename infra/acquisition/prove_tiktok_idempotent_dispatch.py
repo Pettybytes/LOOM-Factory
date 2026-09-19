@@ -225,7 +225,7 @@ def main() -> None:
                  "sha256": row.get("asset_hash"), "path": str(asset)},
         preview={"kind": "local_asset", "local_path": str(asset),
                  "local_filename": row.get("asset_filename")},
-        provenance={"actor": actor}, tenant_id="dreemzy", profile_id="tiktok-acceptance",
+        provenance={"actor": actor}, tenant_id="loom", profile_id="tiktok-acceptance",
         library_url=library_url)
     rendered = card.format_acquisition_card(vm)
     tiers = {}
