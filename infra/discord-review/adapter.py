@@ -49,6 +49,8 @@ import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import discord_media  # tier-aware upload limit + poster fallback (shared with the acquisition path)
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
@@ -1276,6 +1278,24 @@ def rehydrate_edit_job(edit_session_id, tenant_id, clip_id, source_asset_version
     return temp_job_id, 0
 
 
+def _card_upload_limit(channel_id: str) -> tuple[int, int]:
+    """(limit_bytes, tier) for the guild that owns the review channel.
+
+    Falls back to the tier-0 limit when the lookup fails — the conservative
+    (smaller) limit, so an unknown guild can never license an oversized upload.
+    """
+    try:
+        _status, ch = http_json("GET", f"{DISCORD_API}/channels/{channel_id}", token=DISCORD_BOT_TOKEN)
+        guild_id = (ch or {}).get("guild_id")
+        if guild_id:
+            info = discord_media.guild_upload_limit(DISCORD_BOT_TOKEN, str(guild_id))
+            return (int(info.get("limit_bytes") or discord_media.TIER_LIMITS[0]),
+                    int(info.get("premium_tier") or 0))
+    except Exception as e:  # noqa: BLE001 - never block a card on this lookup
+        print(f"[card] upload-limit lookup failed ({type(e).__name__}: {e}) — assuming tier 0", flush=True)
+    return discord_media.TIER_LIMITS[0], 0
+
+
 def send_review_card(payload: dict):
     """payload: clip_id, job_id, ready_file, master_asset, source_title,
     proposed_shorts_title, caption, hook, overall_score, decision,
@@ -1345,6 +1365,30 @@ def send_review_card(payload: dict):
         proxy_name = f"review_{clip_id.replace(':', '_')}.mp4"
         proxy_size = os.path.getsize(proxy_path)
 
+        # Tier-aware oversize guard. Discord aborts an over-limit multipart POST
+        # mid-flight, surfacing as a bare "Broken pipe" that loses the ENTIRE
+        # review transaction (token stranded with no message, Edit unreachable).
+        # Resolve the guild's real per-file limit BEFORE uploading and, when the
+        # proxy does not fit, attach a single poster frame instead of the video —
+        # the same shared primitive the acquisition path uses. The card still
+        # posts, the token stays linked, Edit stays available when a clean source
+        # exists, and the card states the real numbers. Never a silent failure.
+        upload_limit, tier = _card_upload_limit(channel_id)
+        attach_path, attach_name, attach_type = proxy_path, proxy_name, "video/mp4"
+        fallback_reason = ""
+        if proxy_size > upload_limit:
+            try:
+                poster_path = os.path.join(tmpdir, discord_media.POSTER_NAME)
+                discord_media.extract_poster(master_path, poster_path, at_seconds=0.5)
+                attach_path = poster_path
+                attach_name = discord_media.POSTER_NAME
+                attach_type = "image/jpeg"
+                fallback_reason = discord_media.oversize_reason(proxy_size, upload_limit, tier)
+                print(f"[card] oversize fallback for {clip_id}@{asset_version}: {fallback_reason}", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[card] poster fallback failed for {clip_id}: {type(e).__name__}: {e} "
+                      f"— attempting the video anyway", flush=True)
+
         # 2) Upload as Discord attachment + post message with buttons.
         approve_id = make_custom_id(token, "approve")
         reject_id  = make_custom_id(token, "reject")
@@ -1399,6 +1443,10 @@ def send_review_card(payload: dict):
         # source. Omit the Edit control and say so explicitly on the card.
         if not edit_ready:
             fields.append({"name": "⚠️ Editor source unavailable", "value": "Clean pre-hook source not persisted/reachable — editing (hook replacement) is disabled for this clip.", "inline": False})
+        # Oversize fallback: say exactly what the card shows and why, with the
+        # real numbers, instead of implying a playable preview that is not there.
+        if fallback_reason:
+            fields.append({"name": "⚠️ Preview not attached", "value": fallback_reason + ". A poster frame is attached instead.", "inline": False})
 
         # Footer: tenant · lineage · fixture badge · publication state.
         footer = []
@@ -1447,9 +1495,9 @@ def send_review_card(payload: dict):
         body += json.dumps(message_payload).encode()
         body += b"\r\n"
         body += f"--{boundary}\r\n".encode()
-        body += f'Content-Disposition: form-data; name="files[0]"; filename="{proxy_name}"\r\n'.encode()
-        body += b"Content-Type: video/mp4\r\n\r\n"
-        with open(proxy_path, "rb") as f:
+        body += f'Content-Disposition: form-data; name="files[0]"; filename="{attach_name}"\r\n'.encode()
+        body += f"Content-Type: {attach_type}\r\n\r\n".encode()
+        with open(attach_path, "rb") as f:
             body += f.read()
         body += f"\r\n--{boundary}--\r\n".encode()
 
