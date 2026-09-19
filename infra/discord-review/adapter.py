@@ -987,38 +987,71 @@ def _strip_clean_filename(filename: str) -> str:
     return name
 
 
+# Ingest-time media registration uploads the burned final AND the clean
+# pre-hook source. A single multipart POST is not reliable enough: the CDN has
+# been observed closing the connection mid-flight ("Broken pipe") on an
+# otherwise healthy link, and because register_clip_media() is all-or-nothing
+# a single flake loses the clean source — which silently disables Edit for that
+# clip. Retry with bounded exponential backoff instead.
+GHL_UPLOAD_ATTEMPTS = int(_env("LOOM_GHL_UPLOAD_ATTEMPTS", "3"))
+
+
 def ghl_upload_file(path: str, name: str):
     """Upload a local file to GHL Media Storage (filesafe CDN). Returns
-    {'fileId': ..., 'url': ...} or None on failure (never raises)."""
+    {'fileId': ..., 'url': ...} or None on failure (never raises).
+
+    Retries a bounded number of times with exponential backoff. Non-retryable
+    preconditions (no token, missing file) fail immediately without retrying.
+    The file is read once and re-framed per attempt so a retry never re-reads
+    from disk and each attempt gets a fresh multipart boundary.
+    """
     if not GHL_TOKEN or not os.path.exists(path):
         return None
-    boundary = f"----loom{uuid.uuid4().hex}"
-    body = b""
-    body += f"--{boundary}\r\n".encode()
-    body += f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'.encode()
-    body += b"Content-Type: video/mp4\r\n\r\n"
+
     with open(path, "rb") as f:
-        body += f.read()
-    body += b"\r\n"
-    body += f"--{boundary}\r\n".encode()
-    body += b'Content-Disposition: form-data; name="name"\r\n\r\n'
-    body += name.encode()
-    body += b"\r\n"
-    body += f"--{boundary}\r\n".encode()
-    body += b'Content-Disposition: form-data; name="hosted"\r\n\r\nfalse\r\n'
-    body += f"--{boundary}--\r\n".encode()
-    req = Request(f"{GHL_MEDIA_API}/medias/upload-file", data=body, method="POST")
-    req.add_header("Authorization", f"Bearer {GHL_TOKEN}")
-    req.add_header("Version", "v3")
-    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-    req.add_header("User-Agent", "LOOMReviewAdapter/1.0")
-    try:
-        with urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode() or "{}")
-            return data if data.get("url") else None
-    except Exception as e:
-        print(f"[media] GHL upload failed for {name}: {e}", flush=True)
-        return None
+        payload = f.read()
+
+    last_error = "unknown"
+    attempts = max(1, GHL_UPLOAD_ATTEMPTS)
+    for attempt in range(attempts):
+        boundary = f"----loom{uuid.uuid4().hex}"
+        body = b""
+        body += f"--{boundary}\r\n".encode()
+        body += f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'.encode()
+        body += b"Content-Type: video/mp4\r\n\r\n"
+        body += payload
+        body += b"\r\n"
+        body += f"--{boundary}\r\n".encode()
+        body += b'Content-Disposition: form-data; name="name"\r\n\r\n'
+        body += name.encode()
+        body += b"\r\n"
+        body += f"--{boundary}\r\n".encode()
+        body += b'Content-Disposition: form-data; name="hosted"\r\n\r\nfalse\r\n'
+        body += f"--{boundary}--\r\n".encode()
+        req = Request(f"{GHL_MEDIA_API}/medias/upload-file", data=body, method="POST")
+        req.add_header("Authorization", f"Bearer {GHL_TOKEN}")
+        req.add_header("Version", "v3")
+        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        req.add_header("User-Agent", "LOOMReviewAdapter/1.0")
+        try:
+            with urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode() or "{}")
+                if data.get("url"):
+                    if attempt:
+                        print(f"[media] GHL upload ok for {name} on attempt {attempt + 1}", flush=True)
+                    return data
+                last_error = "response carried no url"
+        except Exception as e:
+            last_error = e
+
+        if attempt < attempts - 1:
+            backoff = min(8.0, 1.5 ** attempt)
+            print(f"[media] GHL upload attempt {attempt + 1}/{attempts} failed for {name}: "
+                  f"{last_error} - retrying in {backoff:.1f}s", flush=True)
+            time.sleep(backoff)
+
+    print(f"[media] GHL upload gave up for {name} after {attempts} attempts: {last_error}", flush=True)
+    return None
 
 
 def register_clip_media(tenant_id, clip_id, asset_version, job_id, ready_file, master_asset=None, duration_seconds=None):
