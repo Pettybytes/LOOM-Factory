@@ -2006,6 +2006,21 @@ class Handler(BaseHTTPRequestHandler):
         # Approved acquisition lane — distinct AQ: prefix (Instagram, gate 1/2).
         acq = acquisition_route(custom_id)
         if acq is not None:
+            action = acq.get("action")
+            if action == "adjust_window":
+                # Respond with the modal IMMEDIATELY — inside Discord's 3-second
+                # deadline. No store read, no Supabase, no network work first.
+                message_id = str((interaction.get("message") or {}).get("id") or "")
+                self._send_json(200, acquisition_ops.window_modal_payload(
+                    acq["ref"], message_id=message_id))
+                return
+            if action == "approve_acquire":
+                # ACK + flush first, then acquire on a worker (same discipline).
+                self._send_json(200, {"type": 6})
+                threading.Thread(target=self._one_click_worker,
+                                 args=(interaction, acq, self._card_ref(interaction)),
+                                 daemon=True).start()
+                return
             self._handle_acquisition_button(interaction, acq)
             return
         parsed = parse_custom_id(custom_id)
@@ -2652,9 +2667,70 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send_json(200, {"ok": True, "result": result, "card": card})
 
+    def _card_ref(self, interaction):
+        """Detached, serializable identity for post-ACK outbound calls.
+
+        Captured while the request is still in scope, so background work never
+        needs the handler, its wfile, or the connection closing behind the ACK.
+        """
+        return {
+            "channel_id": str((interaction.get("channel") or {}).get("id") or ""),
+            "message_id": str((interaction.get("message") or {}).get("id") or ""),
+            "application_id": str(interaction.get("application_id") or ""),
+            "interaction_token": str(interaction.get("token") or ""),
+            "bot_token": DISCORD_BOT_TOKEN,
+            "actor": self._reviewer_name(interaction),
+        }
+
+    def _window_modal_worker(self, interaction, window_ref, card_ref):
+        """Post-ACK work for an Adjust Window submission. Never raises."""
+        try:
+            acquisition_ops.handle_window_modal_adapter(
+                interaction, window_ref, http_json=http_json,
+                store=_acquisition_store(), actor=card_ref.get("actor") or "unknown",
+                bot_token=card_ref.get("bot_token") or DISCORD_BOT_TOKEN)
+        except Exception as e:  # noqa: BLE001 — a worker must never kill the adapter
+            acquisition_ops.notify_private(
+                http_json, interaction,
+                f"❌ Window adjustment failed: {type(e).__name__}: "
+                f"{getattr(e, 'message', str(e))[:300]}")
+
+    def _one_click_worker(self, interaction, acq, card_ref):
+        """Post-ACK work for Approve & Acquire. Never raises.
+
+        Receives DETACHED data and durable services only: no handler, no socket, no
+        response callback. Every later Discord call is an independent outbound one.
+        """
+        try:
+            store = _acquisition_store()
+            acquisition_ops.handle_one_click_adapter(
+                interaction, acq, http_json=http_json, store=store,
+                detached=card_ref, actor=card_ref.get("actor") or "unknown",
+                ctx=self._acquisition_context(acq, store),
+                runner=_acquisition_live_runner(),
+                required_fingerprint=(acq.get("fingerprint") or ""))
+        except Exception as e:  # noqa: BLE001
+            acquisition_ops.notify_private(
+                http_json, interaction,
+                f"❌ Acquisition failed: {type(e).__name__}: "
+                f"{getattr(e, 'message', str(e))[:300]}")
+
     def _handle_modal_submit(self, interaction):
         data = interaction.get("data", {})
         custom_id = data.get("custom_id", "")
+
+        # Adjust Window: the message id travelled in the custom_id, so the SAME
+        # card can be updated in place after the slow work.
+        window_ref = acquisition_ops.parse_window_modal_custom_id(custom_id)
+        if window_ref is not None:
+            # WIRE-LEVEL ACK: write + FLUSH HTTP 200 (type 6) and return from this
+            # request handler. Nothing slow may run before this line: no store, no
+            # Supabase, no Discord call. Everything else happens on the worker.
+            self._send_json(200, {"type": 6})
+            threading.Thread(target=self._window_modal_worker,
+                             args=(interaction, window_ref,
+                                   self._card_ref(interaction)), daemon=True).start()
+            return
         intake = intake_card.parse_cid(custom_id)
         if intake is not None and intake[0] == "details":
             self._intake_details_submit(interaction, intake[1], data)

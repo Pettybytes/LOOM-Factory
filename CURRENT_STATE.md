@@ -6,6 +6,29 @@
 
 ---
 
+## STOP STATE — 2026-09-18 ~20:45 EDT — RANGED WINDOW 01:05–01:35 ACQUIRED (both ranges coexist)
+
+### Accepted outcome
+- The authorized **01:05–01:35** window was completed **programmatically** (resuming the already-granted authorization — no new click): job `ca0de4d6-b97b-4fa4-a342-14f33e1c2f36` is `acquired`, `bounded_segment`, provider `local`, **$0**, run `local:ca0de4d6-…:1`.
+- **Asset:** `youtube__ClhBXVygWbc__65-95__ab7603b460c3.mp4` · 2,614,107 B · **30.000 s** · 640×480 · H.264/AAC/yuv420p/**fast-start** · sha256 `ab7603b460c3…`.
+- **Two assets now coexist for one source** — `…__30-60__3a891cb35f99.mp4` (fp `929e4e72…`) and `…__65-95__ab7603b460c3.mp4` (fp `fad6787e…`) — which is the whole point of range-aware identity.
+- **No full-source download** (only the 30 s clip), tmp clean, ceiling **untouched at 7,200 micro / 2**, provider runs 8 → 9 (one local $0 attempt).
+- **Card** (same message, in place): `🎬 ACQUISITION · ACQUIRED` with `Window range 01:05–01:35 · clip 30.0 s · origin operator_adjusted`, real media facts (`0:30 · 640×480 · landscape · 2.5 MB · Audio present (AAC)`), `Local acquisition · $0 provider cost`, the **video attached natively**, `Open in Reaction Library` link, and **no Retry**.
+
+### Defects found and fixed this round
+1. **State/action mismatch (the “not available in this state” refusal).** `context_for` resolved state from the FIRST `acquire_for_reaction` row regardless of range, so the stale **30–60** row's `failed` status decided the **65–95** card: it resolved FAILED while the card displayed REVIEW → `actions_for_state(FAILED)` excluded `aa` → the click was refused. State is now **range-scoped** (`store.jobs_for()` + `lane.row_matches_range()`); rows for another window can neither mark nor block it.
+2. **A terminal Gate 1 no longer reads as APPROVED** — only a live (`queued`/`running`) row does, so the card and the click agree.
+3. **False `ALREADY_ACQUIRED` in the runner.** `live_runner` section 4 checked the library by **content id only**, so the existing 30–60 asset blocked a newly authorized window. It now delegates to the range-aware `lane.already_acquired()` (window fingerprint when bounded, content id when whole-item).
+4. **Duplicate `ACQUIRE` is now an idempotent no-op** — never a second provider call (one provider call per authorization); a failed attempt is re-run through the explicit, separately-authorized Retry action.
+5. **One-click re-authorises the active range** before the guarded acquire, so a terminal Gate 1 for that range cannot silently block it (rows for other ranges are untouched).
+6. Carried over and still in force: **`DetachedTransport`** (no handler/socket after the ACK — the Errno 9 fix), range-bound `custom_id` (`AQ:aa:<ref>#<fp16>`) with the `RANGE_STALE` refusal, and durable-submission precedence for the window under review.
+
+### Verification
+- Suites: acquisition **414** · discord-review **168** · local-helper **76** — all passing.
+- New: `test_range_identity_regression.py` (the exact false-refusal case, same-window idempotency, a further window after another exists, whole-item semantics, and the runner delegating to the range-aware helper) plus the production-shaped range-state and wire-level ACK/one-click proofs.
+
+---
+
 ## STOP STATE — 2026-09-18 ~19:55 EDT — RANGED ACQUISITION **RUNTIME-PROVEN** (00:30–01:00 clip acquired + card repaired)
 
 ### Accepted milestone

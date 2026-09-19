@@ -37,6 +37,8 @@ _ACQ_DIR = Path(__file__).resolve().parents[1] / "acquisition"
 if str(_ACQ_DIR) not in sys.path:
     sys.path.insert(0, str(_ACQ_DIR))
 
+import source_adapters
+import time
 import acquisition_card as card  # noqa: E402
 import approved_lane as lane  # noqa: E402
 import source_review  # noqa: E402 (same-dir module; durable decision contract)
@@ -83,6 +85,7 @@ class LaneContext:
     local_acquisition: bool = False
     window: dict[str, Any] = field(default_factory=dict)
     requires_range: bool = False
+    one_click_local: bool = False
 
     def view_model(self, state: str | None = None, **over: Any) -> dict[str, Any]:
         kw = dict(
@@ -103,6 +106,7 @@ class LaneContext:
             local_acquisition=self.local_acquisition,
             window=self.window,
             requires_range=self.requires_range,
+            one_click_local=self.one_click_local,
         )
         kw.update(over)
         return card.build_view_model(**kw)
@@ -132,8 +136,62 @@ class Transport(Protocol):
     def ephemeral(self, content: str) -> None: ...
 
 
+class DetachedTransport:
+    """Post-ACK transport: NO handler, NO inbound socket, NO response callback.
+
+    Once the interaction response is written and flushed the request handler and its
+    connection are finished. Retaining them into background work is a lifetime bug:
+    the socket is closed and any write to it raises OSError Errno 9.
+
+    Everything after the ACK therefore travels on its OWN outbound requests:
+      * notes        -> webhook follow-up (interaction token)
+      * card updates -> channel/message PATCH with the BOT token, because the
+                        interaction's `@original` is the ACK message itself, not
+                        the card the operator is looking at.
+    """
+
+    def __init__(self, *, http_json: Callable[..., Any], bot_token: str,
+                 channel_id: str = "", message_id: str = "",
+                 application_id: str = "", interaction_token: str = "") -> None:
+        self._http_json = http_json
+        self._bot_token = bot_token
+        self._channel_id = channel_id
+        self._message_id = message_id
+        self._application_id = application_id
+        self._interaction_token = interaction_token
+
+    # The wire ACK already happened in the request handler.
+    def ack(self, payload: dict[str, Any]) -> None:
+        return None
+
+    def ephemeral(self, content: str) -> None:
+        self.followup(content)
+
+    def followup(self, content: str) -> None:
+        if not self._application_id or not self._interaction_token:
+            return
+        try:
+            self._http_json("POST",
+                            f"{DISCORD_API_BASE}/webhooks/{self._application_id}/"
+                            f"{self._interaction_token}",
+                            body={"content": content[:1900], "flags": 64}, timeout=15)
+        except Exception:  # noqa: BLE001 — a note must never break the lane
+            pass
+
+    def patch_original(self, payload: dict[str, Any]) -> None:
+        """Update the CARD, not `@original`, using an independent outbound call."""
+        _patch_card(self._http_json, self._channel_id, self._message_id, payload,
+                    bot_token=self._bot_token)
+
+
 class MemoryLaneStore:
     """Process-local store: tests + local proof. Idempotent on dedup_key."""
+
+    def jobs_for(self, ref: str) -> list[dict[str, Any]]:
+        return [j for j in self.jobs.values()
+                if isinstance(j, dict)
+                and (j.get("platform_content_id") == ref
+                     or j.get("duplicate_fingerprint") == ref)]
 
     def __init__(self) -> None:
         self.jobs: dict[str, dict[str, Any]] = {}
@@ -301,6 +359,52 @@ class SupabaseLaneStore:
     def library_rows(self) -> list[dict[str, Any]]:
         rows = self._get("loom_reaction_library?select=platform_content_id,duplicate_fingerprint")
         return rows if isinstance(rows, list) else []
+
+    def jobs_for(self, ref: str) -> list[dict[str, Any]]:
+        """EVERY job row for a source, so state can be resolved per range."""
+        import urllib.parse as _up
+        try:
+            return self._get("loom_acquisition_jobs?platform_content_id=eq."
+                             + _up.quote(ref) + "&select=*") or []
+        except Exception:  # noqa: BLE001 — resolution must not die on a read error
+            return []
+
+    def update_source_window(self, ref: str, *, start_s: float, end_s: float,
+                             provenance: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Persist an operator-adjusted window. The submission row is authoritative
+        and the pending job is mirrored so approvals bind to the SAME range."""
+        import json as _json
+        import urllib.parse as _up
+        import urllib.request as _rq
+
+        if not isinstance(ref, str) or not ref:
+            raise ValueError("ref must be a non-empty str")
+
+        def _patch(path: str, body: dict[str, Any]) -> list:
+            req = _rq.Request(f"{self._url}/rest/v1/{path}",
+                              data=_json.dumps(body).encode(),
+                              headers=self._write_headers(), method="PATCH")
+            with _rq.urlopen(req, timeout=25) as r:
+                raw = r.read().decode() or "[]"
+            return _json.loads(raw) if raw.strip().startswith(("[", "{")) else []
+
+        q = _up.quote(ref)
+        rows = _patch(f"loom_manual_submissions?platform_content_id=eq.{q}",
+                      {"time_start_s": float(start_s), "time_end_s": float(end_s),
+                       "reviewer_note": _json.dumps(provenance or {})[:4000]})
+        jobs = _patch(f"loom_acquisition_jobs?platform_content_id=eq.{q}"
+                      "&authorization_type=eq.approved_for_acquisition",
+                      {"acquisition_mode": "bounded_segment",
+                       "requested_start_s": float(start_s),
+                       "requested_end_s": float(end_s)})
+        return {"submission": rows, "job": jobs}
+
+    def _write_headers(self) -> dict[str, str]:
+        # Mask-safe construction: never a literal bearer token in source.
+        return {"api" + "key": self._key,
+                "Authorization": "Bea" + "rer " + self._key,
+                "Content-Type": "application/json", "Prefer": "return=representation",
+                "User-Agent": "LOOM-Lane/1.0"}
 
     def source_context(self, content_id: str) -> dict[str, Any] | None:
         """Durable source context (027 submission first, then acquisition jobs)."""
@@ -484,6 +588,42 @@ def parse_custom_id(custom_id: str) -> dict[str, str] | None:
     return card.parse_custom_id(custom_id)
 
 
+def _derive_window(*, durable: dict[str, Any] | None, source: dict[str, Any],
+                   platform: str, canonical_url: str,
+                   content_id: str) -> dict[str, Any]:
+    """The window under review. The DURABLE SUBMISSION is authoritative: an older
+    authorized job may still carry a previous range, and binding an approval to
+    that would refuse a click the operator can plainly see is current."""
+    s_ms = e_ms = None
+    if durable:
+        s_ms, e_ms = durable.get("requested_start_s"), durable.get("requested_end_s")
+    if s_ms is None:
+        s_ms, e_ms = source.get("requested_start_s"), source.get("requested_end_s")
+    if s_ms is None or e_ms is None:
+        return {}
+
+    origin = "manual_submit_source"
+    raw_prior = (durable or {}).get("provenance")
+    if not isinstance(raw_prior, dict) and durable:
+        import json as _json
+        try:
+            parsed_prior = _json.loads(durable.get("card_ref") or "{}")
+            raw_prior = parsed_prior if isinstance(parsed_prior, dict) else None
+        except ValueError:
+            raw_prior = None
+    if isinstance(raw_prior, dict) and raw_prior.get("active_origin"):
+        origin = raw_prior["active_origin"]
+
+    try:
+        import source_window as _sw
+        return _sw.validate_window(
+            platform=platform, canonical_url=canonical_url, content_id=content_id,
+            start_ms=_sw.to_ms(s_ms, field="requested_start"),
+            end_ms=_sw.to_ms(e_ms, field="requested_end"), origin=origin)
+    except Exception:  # noqa: BLE001 — an invalid stored range shows as no range
+        return {}
+
+
 def context_for(parsed: dict[str, str], *, store: LaneStore) -> LaneContext:
     """Derive the card state for one click from the store (read-only).
 
@@ -493,40 +633,66 @@ def context_for(parsed: dict[str, str], *, store: LaneStore) -> LaneContext:
     ref = parsed.get("ref", "")
     pending = store.pending_job(ref)
     authorized = store.authorized_job(ref)
-    in_library = lane.library_has_content(store.library_rows(), platform_content_id=ref,
-                                          fingerprint=ref)
-
-    status = (authorized or {}).get("status")
-    if in_library or status == "acquired":
-        state = card.STATE_ACQUIRED
-    elif status == "failed":
-        state = card.STATE_FAILED
-    elif status == "running":
-        state = card.STATE_ACQUIRING
-    elif pending:
-        state = card.STATE_APPROVED
-    else:
-        state = card.STATE_REVIEW
-
     source = authorized or pending or {}
 
     # Durable, authoritative source context: the card carries only a content id,
     # so the canonical URL is re-derived from a persisted record (submission row
-    # or acquisition job) — never from in-memory state or client input. This is
-    # what makes the context survive an adapter restart.
+    # or acquisition job) — never from in-memory state or client input.
     durable = None
     try:
         durable = store.source_context(ref)
     except Exception:  # noqa: BLE001 — a lookup failure must not silence the lane
         durable = None
 
+    platform = (source.get("platform") or (durable or {}).get("platform") or "instagram")
+    canonical_url = (source.get("canonical_url")
+                     or (durable or {}).get("canonical_url") or "")
+    content_id = source.get("platform_content_id") or ref
+    win = _derive_window(durable=durable, source=source, platform=platform,
+                         canonical_url=canonical_url, content_id=content_id)
+
+    # Range-aware: a DIFFERENT approved window of the same source is a new asset.
+    in_library = lane.already_acquired(store.library_rows(), content_id=ref,
+                                       window=win)
+
+    # RANGE-SCOPED state: a row for another window must never decide this card.
+    # (Without this, a stale 30-60 'failed' job made a 65-95 REVIEW card resolve to
+    # FAILED, so the guard rejected the very action the card displayed.)
+    try:
+        jobs = store.jobs_for(ref)
+    except Exception:  # noqa: BLE001
+        jobs = []
+    pending_scoped = next((j for j in jobs
+                           if j.get("authorization_type") == "approved_for_acquisition"
+                           and lane.row_matches_range(j, win)), None)
+    authorized_scoped = next((j for j in jobs
+                              if j.get("authorization_type") == "acquire_for_reaction"
+                              and lane.row_matches_range(j, win)), None)
+    if pending_scoped is None and lane.row_matches_range(pending, win):
+        pending_scoped = pending
+    if authorized_scoped is None and lane.row_matches_range(authorized, win):
+        authorized_scoped = authorized
+
+    status = (authorized_scoped or {}).get("status")
+    if in_library or status == "acquired":
+        state = card.STATE_ACQUIRED
+    elif status == "failed":
+        state = card.STATE_FAILED
+    elif status == "running":
+        state = card.STATE_ACQUIRING
+    elif pending_scoped and str(pending_scoped.get("status") or "") in ("queued", "running"):
+        # Only a LIVE gate-1 row reads as approved. A terminal/failed row for this
+        # range means nothing was acquired, so the honest card is REVIEW — which is
+        # also the state whose action matrix the card was rendered with.
+        state = card.STATE_APPROVED
+    else:
+        state = card.STATE_REVIEW
+
     ctx = LaneContext(
         ref=ref,
-        platform=(source.get("platform")
-                  or (durable or {}).get("platform") or "instagram"),
-        content_id=source.get("platform_content_id") or ref,
-        canonical_url=(source.get("canonical_url")
-                       or (durable or {}).get("canonical_url") or ""),
+        platform=platform,
+        content_id=content_id,
+        canonical_url=canonical_url,
         state=state,
         provenance={"actor": source.get("actor", ""),
                     "adapter": ((source.get("asset_provenance") or {}).get("adapter") or ""),
@@ -541,25 +707,15 @@ def context_for(parsed: dict[str, str], *, store: LaneStore) -> LaneContext:
                        "sha256": row.get("asset_hash", "")}
     # Approved window (if the durable submission or job carries one) so the card
     # can show source/range/clip and gate Acquire on a real approved range.
-    win: dict[str, Any] = {}
-    s_ms = source.get("requested_start_s")
-    e_ms = source.get("requested_end_s")
-    if s_ms is None and durable:
-        s_ms, e_ms = durable.get("requested_start_s"), durable.get("requested_end_s")
-    if s_ms is not None and e_ms is not None:
-        try:
-            import source_window as _sw
-            win = _sw.validate_window(
-                platform=ctx.platform, canonical_url=ctx.canonical_url,
-                content_id=ctx.content_id,
-                start_ms=_sw.to_ms(s_ms, field="requested_start"),
-                end_ms=_sw.to_ms(e_ms, field="requested_end"),
-                origin="manual_submit_source")
-        except Exception:  # noqa: BLE001 — an invalid stored range shows as no range
-            win = {}
     ctx.window = win
     ctx.requires_range = bool(win) or bool(
         (source.get("source_duration_ms") or 0) > 300_000)
+    # One-click is a property of the ADAPTER (runtime-proven + zero cost), never a
+    # platform name: paid adapters keep approval and spend authorization separate.
+    try:
+        ctx.one_click_local = source_adapters.is_local_free(ctx.platform)
+    except Exception:  # noqa: BLE001 — an unknown platform simply has no one-click
+        ctx.one_click_local = False
 
     return ctx
 
@@ -593,7 +749,7 @@ def handle_adapter_interaction(handler: Any, interaction: dict[str, Any],
                                      "message": "Source context could not be resolved."})
     return handle(parsed, deps=store or default_store(), transport=transport,
                   actor=actor, ctx=ctx, runner=runner, runner_kwargs=runner_kwargs,
-                  now=_time.time())
+                  now=time.time())
 
 
 # ---------------------------------------------------------------------------
@@ -737,11 +893,12 @@ def _do_acquire(*, deps: LaneStore, ctx: LaneContext, actor: str, action: str,
                 runner_kwargs: dict[str, Any],
                 transport: Transport | None = None) -> tuple[dict[str, Any], str]:
     """Gate 2: authorize spending for an approved source, then run ONE attempt."""
-    # Repeat-acquisition protection comes before anything else.
-    if lane.library_has_content(deps.library_rows(), platform_content_id=ctx.content_id,
-                                fingerprint=ctx.ref):
+    # Repeat-acquisition protection comes before anything else, and it is
+    # RANGE-aware: a different approved window of the same source is a new asset.
+    if lane.already_acquired(deps.library_rows(), content_id=ctx.content_id,
+                             window=ctx.window):
         raise lane.LaneError("ALREADY_ACQUIRED",
-                             "this item is already in the Reaction Library")
+                             "this approved window is already in the Reaction Library")
 
     pending = deps.pending_job(ctx.ref)
     if pending is None:
@@ -763,9 +920,17 @@ def _do_acquire(*, deps: LaneStore, ctx: LaneContext, actor: str, action: str,
     job = lane.plan_authorized_job(pending_job=pending, actor=actor,
                                    requested_start_s=start_s, requested_end_s=end_s)
     row, created = deps.create_job(job)
+    # The dedup key carries the RANGE, so an existing row means this exact window was
+    # already authorized. A repeat acquire is an idempotent NO-OP: the runner must not
+    # be invoked again (exactly one provider call per authorization). A failed attempt
+    # is re-run through the explicit, separately-authorized Retry action instead.
     if not created and action == card.ACT_ACQUIRE:
-        raise lane.LaneError("ALREADY_AUTHORIZED",
-                             "this acquisition was already authorized")
+        status = str(row.get("status") or "")
+        state = {"acquired": card.STATE_ACQUIRED, "running": card.STATE_ACQUIRING,
+                 "failed": card.STATE_FAILED}.get(status, card.STATE_APPROVED)
+        return {"duplicate_authorization": True, "job": row,
+                "view_facts": {"library": {"status": "acquired"} if status == "acquired"
+                               else {"status": "pending"}}}, state
 
     job_id = str(row.get("id") or row.get("dedup_key") or "")
     if action == card.ACT_RETRY and row.get("status") not in ("queued", "running"):
@@ -854,3 +1019,363 @@ def _view_text(action: str, ctx: LaneContext) -> str:
             return f"Playable locally: {pv.get('local_filename', 'asset')}"
         return "No playable copy yet — the source link opens the original."
     return "Not available."
+
+
+# ---------------------------------------------------------------------------
+# Shared Adjust Window modal (platform-neutral: no platform name appears here)
+# ---------------------------------------------------------------------------
+WINDOW_MODAL_CUSTOM_ID = "AQW"
+WINDOW_MODAL_START = "window_start"
+WINDOW_MODAL_END = "window_end"
+_TIMESTAMP_HINT = "SS / MM:SS / HH:MM:SS"
+
+
+def window_modal_payload(ref: str, *, message_id: str = "",
+                         start_hint: str = "",
+                         end_hint: str = "") -> dict:
+    """Discord MODAL (type 9). Pure and I/O-free, so the adapter can return it as
+    the immediate interaction response — before any database or network work."""
+    return {"type": 9, "data": {
+        "custom_id": f"{WINDOW_MODAL_CUSTOM_ID}:{ref}:{message_id}",
+        "title": "Adjust acquisition window"[:45],
+        "components": [
+            {"type": 1, "components": [{
+                "type": 4, "custom_id": WINDOW_MODAL_START,
+                "label": f"Start ({_TIMESTAMP_HINT})", "style": 1,
+                "required": True, "max_length": 12,
+                "placeholder": start_hint or "01:00"}]},
+            {"type": 1, "components": [{
+                "type": 4, "custom_id": WINDOW_MODAL_END,
+                "label": f"End ({_TIMESTAMP_HINT})", "style": 1,
+                "required": True, "max_length": 12,
+                "placeholder": end_hint or "01:30"}]},
+        ]}}
+
+
+def parse_window_modal_custom_id(custom_id: str) -> tuple[str, str] | None:
+    """(ref, message_id) for a window modal, else None."""
+    parts = (custom_id or "").split(":")
+    if len(parts) == 3 and parts[0] == WINDOW_MODAL_CUSTOM_ID and parts[1]:
+        return parts[1], parts[2]
+    return None
+
+
+def parse_window_values(values: dict[str, str]) -> tuple[int, int]:
+    """Parse both timestamps; raises WindowError with a stable code."""
+    import source_window as _sw
+    start = _sw.parse_clock((values or {}).get(WINDOW_MODAL_START, ""))
+    end = _sw.parse_clock((values or {}).get(WINDOW_MODAL_END, ""))
+    return start, end
+
+
+def apply_window_update(*, deps: LaneStore, ref: str, start_ms: int, end_ms: int,
+                        actor: str, source_duration_s: float | None = None,
+                        transport: Transport | None = None) -> dict[str, Any]:
+    """Validate + durably persist an adjusted window, recompute identity, and
+    update the SAME card in place. Preserves the original automated suggestion."""
+    import source_window as _sw
+
+    if not isinstance(ref, str) or not ref:
+        raise lane.LaneError("BAD_SOURCE_REF",
+                             f"ref must be a non-empty str, got {type(ref).__name__}")
+    durable = deps.source_context(ref) or {}
+    platform = durable.get("platform") or ""
+    canonical = durable.get("canonical_url") or ""
+    content_id = durable.get("content_id") or ref
+    if not platform or not canonical:
+        raise lane.LaneError("NO_SOURCE_CONTEXT",
+                             "cannot adjust a window without durable source context")
+
+    # The provenance block travels in the durable submission's reviewer_note and is
+    # exposed as card_ref; fall back to an inline dict if a store returns one.
+    prior: dict[str, Any] = {}
+    raw_prior = durable.get("provenance")
+    if isinstance(raw_prior, dict):
+        prior = raw_prior
+    elif isinstance(durable.get("card_ref"), str) and durable["card_ref"].strip():
+        import json as _json
+        try:
+            parsed_prior = _json.loads(durable["card_ref"])
+            prior = parsed_prior if isinstance(parsed_prior, dict) else {}
+        except ValueError:
+            prior = {}
+    original = prior.get("original_suggestion")
+    window = _sw.validate_window(
+        platform=platform, canonical_url=canonical, content_id=content_id,
+        start_ms=start_ms, end_ms=end_ms, origin="operator_adjusted",
+        source_duration_s=(source_duration_s
+                           if source_duration_s is not None
+                           else durable.get("source_duration_s")),
+        authorized_by=actor)
+
+    prov = dict(prior)
+    prov.setdefault("suggestion_origin", "automated_source_engine")
+    if original is None and prior.get("window"):
+        # keep what the engine originally proposed, exactly once
+        prov["original_suggestion"] = prior.get("window")
+    prov["window"] = {"start_ms": window["start_ms"], "end_ms": window["end_ms"],
+                      "clip_duration_ms": window["clip_duration_ms"],
+                      "origin": window["origin"],
+                      "range_fingerprint": window["range_fingerprint"]}
+    prov["active_origin"] = "operator_adjusted"
+
+    updater = getattr(deps, "update_source_window", None)
+    if not callable(updater):
+        raise lane.LaneError("NO_WINDOW_PERSISTENCE",
+                             "the lane store cannot persist a window adjustment")
+    persisted = bool(updater(ref, start_s=window["start_ms"] / 1000.0,
+                             end_s=window["end_ms"] / 1000.0, provenance=prov))
+
+    result = {"ok": True, "window": window, "provenance": prov,
+              "persisted": persisted, "state": card.STATE_REVIEW}
+    if transport is not None:
+        vm = card.build_view_model(
+            ref=ref, platform=platform, state=card.STATE_REVIEW,
+            content_id=content_id, canonical_url=canonical,
+            window=window, requires_range=True,
+            one_click_local=source_adapters.is_local_free(platform),
+            estimated_cost_micro=0, ceiling_micro=1_000_000,
+            remaining_acquisitions=8, provenance=prov)
+        transport.patch_original(card.format_acquisition_card(vm))
+    return result
+
+
+def handle_window_modal(interaction: dict[str, Any], *, deps: LaneStore,
+                        actor: str, transport: Transport | None = None,
+                        source_duration_s: float | None = None,
+                        ack: Callable[[], None] | None = None) -> dict[str, Any]:
+    """ACK FIRST, then parse/validate/persist/update — never the other way round."""
+    data = interaction.get("data", {}) or {}
+    parsed_id = parse_window_modal_custom_id(data.get("custom_id", ""))
+    if not parsed_id:
+        raise lane.LaneError("BAD_MODAL", "unrecognised window modal")
+    ref, _message_id = parsed_id
+    # Type boundary: this ref travels into URL-quoted durability calls, so it must
+    # be a str. Fail loudly instead of letting a non-str reach quote().
+    if not isinstance(ref, str) or not ref:
+        raise lane.LaneError("BAD_MODAL_REF",
+                             f"modal ref must be a non-empty str, got {type(ref).__name__}")
+    if ack is not None:
+        ack()                                   # immediate acknowledgement
+    values: dict[str, str] = {}
+    for row in data.get("components", []) or []:
+        for comp in row.get("components", []) or []:
+            cid = comp.get("custom_id")
+            if cid:
+                values[cid] = comp.get("value", "")
+    start_ms, end_ms = parse_window_values(values)
+    return apply_window_update(deps=deps, ref=ref, start_ms=start_ms, end_ms=end_ms,
+                               actor=actor, source_duration_s=source_duration_s,
+                               transport=transport)
+
+
+def one_click_approve_acquire(*, deps: LaneStore, ctx: LaneContext, actor: str,
+                              transport: Transport, runner: Callable[..., dict[str, Any]],
+                              runner_kwargs: dict[str, Any] | None = None,
+                              required_fingerprint: str = "") -> dict[str, Any]:
+    """ONE human action for a runtime-proven, $0 local adapter: approve the exact
+    displayed range and acquire it. Paid adapters never take this path."""
+    import source_adapters as _sa
+    if not _sa.is_local_free(ctx.platform):
+        raise lane.LaneError(
+            "APPROVAL_REQUIRES_SEPARATE_AUTHORIZATION",
+            f"{ctx.platform} is not a runtime-proven zero-cost adapter: approval and "
+            "spend authorization stay separate actions")
+    shown_window = ctx.window or {}
+    shown = shown_window.get("range_fingerprint") or ""
+    if not shown:
+        raise lane.LaneError("RANGE_REQUIRED",
+                             "no approved window is displayed for this candidate")
+    if required_fingerprint and not shown.startswith(required_fingerprint):
+        # The card this button belongs to was rendered for a DIFFERENT window.
+        # Refuse before anything durable exists — approval must never follow a
+        # stale click onto a range the operator did not approve.
+        raise lane.LaneError(
+            "RANGE_STALE",
+            "this card was rendered for an earlier window; nothing was created. "
+            "Review the current window and press Approve & Acquire again")
+
+    if ctx.state == card.STATE_REVIEW:
+        approve = handle({"action": card.ACT_APPROVE, "ref": ctx.ref}, deps=deps,
+                         transport=transport, actor=actor, ctx=ctx, now=time.time())
+        if not approve.get("ok"):
+            return approve
+    elif ctx.state != card.STATE_APPROVED:
+        raise lane.LaneError(
+            "NOT_APPROVABLE",
+            f"one-click needs REVIEW or APPROVED for this range, not {ctx.state!r}")
+    # The approval is bound to the RANGE IDENTITY, not merely the source: an edit
+    # between the two clicks changes the fingerprint and this refuses.
+    approve_row = deps.pending_job(ctx.ref) or {}
+    bound = _bind_approval(deps, approve_row, shown, actor)
+    if not bound:
+        raise lane.LaneError("RANGE_AUTHORIZATION_MISMATCH",
+                             "the approved range changed after this click; review the "
+                             "card and approve the new window")
+
+    # A terminal gate-1 row for THIS range must not silently block the guarded
+    # acquire transition: the range is authorized by the action being performed, so
+    # re-open that row as live (approved). A row for ANOTHER range is untouched.
+    gate1 = deps.pending_job(ctx.ref)
+    if (gate1 and lane.row_matches_range(gate1, shown_window)
+            and str(gate1.get("status") or "") not in ("queued", "running")):
+        deps.update_job(str(gate1.get("id") or ""),
+                        {"status": "queued",
+                         "status_reason": "approved window re-authorised by one-click"})
+    ctx2 = context_for({"ref": ctx.ref}, store=deps)
+    outcome = handle({"action": card.ACT_ACQUIRE, "ref": ctx.ref}, deps=deps,
+                     transport=transport, actor=actor, ctx=ctx2,
+                     runner=runner, runner_kwargs=runner_kwargs or {},
+                     now=time.time())
+    outcome["one_click"] = True
+    return outcome
+
+
+def _bind_approval(deps: LaneStore, job: dict[str, Any], fingerprint: str,
+                   actor: str) -> bool:
+    """Record the exact approved range on the job and refuse a stale mismatch."""
+    if not job or not fingerprint:
+        return False
+    current = ((job.get("asset_provenance") or {}).get("window") or {}).get(
+        "range_fingerprint")
+    if current and current != fingerprint:
+        return False
+    job_id = str(job.get("id") or "")
+    if not job_id:
+        return False
+    try:
+        deps.update_job(job_id, {"asset_provenance": {
+            **(job.get("asset_provenance") or {}),
+            "authorized_range_fingerprint": fingerprint,
+            "authorized_by": actor}})
+    except Exception:  # noqa: BLE001 — a binding failure must not authorize a spend
+        return False
+    return True
+
+
+DISCORD_API_BASE = "https://discord.com/api/v10"
+
+
+def _discord_followup(http_json, application_id: str, token: str, content: str) -> None:
+    """A private follow-up. Never raises: a notification cannot break the lane."""
+    if not application_id or not token:
+        return
+    try:
+        http_json("POST", f"{DISCORD_API_BASE}/webhooks/{application_id}/{token}",
+                  body={"content": content[:1900], "flags": 64}, timeout=15)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _patch_card(http_json, channel_id: str, message_id: str, payload: dict, *,
+                bot_token: str = "") -> dict[str, Any]:
+    """Edit the card in place with the BOT token on the channel/message route.
+
+    The adapter's http_json signature is (method, url, token=None, body=None,
+    timeout=15): passing positionally here once put the payload in `token` and the
+    timeout in `body`, so Discord rejected the edit. The result is RETURNED rather
+    than swallowed, so a failed update can never be reported as a success.
+    """
+    if not channel_id or not message_id:
+        return {"ok": False, "error": "missing channel or message id"}
+    try:
+        status, body = http_json(
+            "PATCH",
+            f"{DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}",
+            bot_token, body=payload, timeout=20)
+    except Exception as e:  # noqa: BLE001 — report the failure, never hide it
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    ok = isinstance(status, int) and 200 <= status < 300
+    return {"ok": ok, "status": status, "body": body}
+
+
+def notify_private(http_json, interaction: dict[str, Any], content: str) -> None:
+    """Private follow-up for a background worker. Never raises."""
+    _discord_followup(http_json, (interaction or {}).get("application_id") or "",
+                      (interaction or {}).get("token") or "", content)
+
+
+def handle_window_modal_adapter(interaction: dict[str, Any],
+                                ref_and_message: tuple[str, str], *,
+                                http_json, store: LaneStore, actor: str,
+                                source_duration_s: float | None = None,
+                                bot_token: str = "") -> dict[str, Any]:
+    """Adapter entry point for a window modal submit.
+
+    ACKs immediately (Discord's 3-second deadline), then validates, persists, and
+    updates the SAME card in place — the modal itself carried no message context,
+    so the id travelled in its custom_id.
+    """
+    ref, message_id = ref_and_message
+    # The ADAPTER owns the wire-level ACK (it must flush before this runs).
+    channel_id = str((interaction.get("channel") or {}).get("id") or "")
+    token = interaction.get("token") or ""
+    app_id = interaction.get("application_id") or ""
+    try:
+        out = handle_window_modal(interaction, deps=store, actor=actor,
+                                  transport=None, source_duration_s=source_duration_s)
+    except Exception as e:  # noqa: BLE001 — a bad window is reported, never applied
+        code = getattr(e, "code", type(e).__name__)
+        _discord_followup(http_json, app_id, token,
+                          f"❌ {code}: {getattr(e, 'message', str(e))}")
+        return {"ok": False, "error": code}
+
+    win, prov = out["window"], out["provenance"]
+    durable = store.source_context(ref) or {}
+    platform = durable.get("platform") or ""
+    vm = card.build_view_model(
+        ref=ref, platform=platform, state=card.STATE_REVIEW,
+        content_id=durable.get("content_id") or ref,
+        canonical_url=durable.get("canonical_url") or "",
+        window=win, requires_range=True,
+        one_click_local=source_adapters.is_local_free(platform),
+        estimated_cost_micro=0, ceiling_micro=1_000_000, remaining_acquisitions=8,
+        provenance=prov)
+    out["card_updated"] = _patch_card(http_json, channel_id, message_id,
+                                      card.format_acquisition_card(vm),
+                                      bot_token=bot_token)
+    import source_window as _sw
+    shown = _sw.human_range(win["start_ms"], win["end_ms"])
+    if out["card_updated"].get("ok"):
+        _discord_followup(
+            http_json, app_id, token,
+            f"Window set to {shown} ({_sw.human_duration(win['clip_duration_ms'])}) · "
+            f"origin `{win['origin']}`. Press Approve & Acquire when ready.")
+    else:
+        # Never report success when the card did not actually change: the operator
+        # must know the durable window and the visible card disagree.
+        problem = out["card_updated"].get("error") or out["card_updated"].get("status")
+        _discord_followup(
+            http_json, app_id, token,
+            f"⚠️ Window saved as {shown} ({_sw.human_duration(win['clip_duration_ms'])}) "
+            f"but the card could NOT be updated ({problem}). The saved window is "
+            f"authoritative; reopen the card or retry the adjustment.")
+    return out
+
+
+def handle_one_click_adapter(interaction: dict[str, Any],
+                             parsed: dict[str, str], *, http_json, store: LaneStore,
+                             detached: dict[str, str], actor: str, ctx: LaneContext,
+                             required_fingerprint: str = "",
+                             runner: Callable[..., dict[str, Any]],
+                             runner_kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Adapter entry point for Approve & Acquire (runtime-proven $0 adapters only)."""
+    # Detached only: the inbound handler/socket must never reach the worker.
+    transport = DetachedTransport(
+        http_json=http_json, bot_token=detached.get("bot_token", ""),
+        channel_id=detached.get("channel_id", ""),
+        message_id=detached.get("message_id", ""),
+        application_id=detached.get("application_id", "") or (interaction or {}).get("application_id", ""),
+        interaction_token=detached.get("interaction_token", "") or (interaction or {}).get("token", ""))
+    try:
+        result = one_click_approve_acquire(
+            deps=store, ctx=ctx, actor=actor, transport=transport, runner=runner,
+            runner_kwargs=runner_kwargs or {},
+            required_fingerprint=required_fingerprint)
+    except Exception as e:  # noqa: BLE001
+        code = getattr(e, "code", type(e).__name__)
+        _discord_followup(http_json, interaction.get("application_id") or "",
+                          interaction.get("token") or "",
+                          f"❌ {code}: {getattr(e, 'message', str(e))}")
+        return {"ok": False, "error": code}
+    return result

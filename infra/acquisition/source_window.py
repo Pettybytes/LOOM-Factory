@@ -140,26 +140,47 @@ def filename_stem(platform: str, content_id: str, window: dict | None,
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+def _canonicalize_for(platform: str, canonical_url: str, content_id: str) -> dict:
+    """Ask the PLATFORM REGISTRY to canonicalize. No platform name appears here."""
+    try:
+        import source_adapters as _sa
+    except ImportError:
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        import source_adapters as _sa
+    try:
+        return _sa.canonicalize(platform, canonical_url,
+                                expected_content_id=content_id)
+    except _sa.NoAdapterError as e:
+        _reject("NO_ADAPTER", f"no adapter registered for {e.platform!r}")
+    except Exception as e:  # noqa: BLE001 — an adapter refusal is a drift refusal
+        _reject("SOURCE_URL_DRIFT", f"{getattr(e, 'code', type(e).__name__)}: {e}")
+
+
 def _drift_guard(*, platform: str, canonical_url: str, content_id: str,
                  expected_content_id: str = "") -> None:
     if expected_content_id and expected_content_id != content_id:
         _reject("CONTENT_ID_DRIFT",
                 f"content id {content_id!r} != expected {expected_content_id!r}")
-    if platform == "youtube":
-        try:
-            import youtube_url as yt
-        except ImportError:  # keep working standalone
-            import os as _os
-            import sys as _sys
-            _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-            import youtube_url as yt
-        try:
-            parsed = yt.parse(canonical_url)
-        except yt.YouTubeUrlError as e:
-            _reject("SOURCE_URL_DRIFT", f"{e.code}: {e.message}")
-        if parsed["video_id"] != content_id or parsed["canonical_url"] != canonical_url:
-            _reject("SOURCE_URL_DRIFT",
-                    "canonical URL and content id disagree with the approved source")
+    resolved = _canonicalize_for(platform, canonical_url, content_id)
+    if resolved["canonical_url"] != canonical_url:
+        _reject("SOURCE_URL_DRIFT",
+                "canonical URL and content id disagree with the approved source")
+
+
+def validate_source_identity(*, platform: str, canonical_url: str, content_id: str,
+                             expected_content_id: str = "") -> dict[str, str]:
+    """Validate source identity (URL/ID agreement) WITHOUT requiring a window.
+
+    Used by the automated-candidate contract: a candidate with no usable window is
+    still reviewable, but its identity must already be sound.
+    """
+    if not platform or not content_id or not canonical_url:
+        _reject("MISSING_SOURCE", "platform, content id and canonical URL are required")
+    _drift_guard(platform=platform, canonical_url=canonical_url,
+                 content_id=content_id, expected_content_id=expected_content_id)
+    return _canonicalize_for(platform, canonical_url, content_id)
 
 
 def validate_window(*, platform: str, canonical_url: str, content_id: str,

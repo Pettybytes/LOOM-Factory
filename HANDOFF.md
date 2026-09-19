@@ -9,7 +9,40 @@
 ---
 
 ## Last Updated
-2026-09-18 19:55 EDT (America/Detroit) — RANGED ACQUISITION RUNTIME-PROVEN (00:30–01:00 clip + repaired card)
+2026-09-18 20:45 EDT (America/Detroit) — RANGED WINDOW 01:05–01:35 ACQUIRED (both ranges coexist)
+
+## HANDOFF — Ranged window 01:05–01:35 acquired (2026-09-18)
+
+The second window of `ClhBXVygWbc` was completed **programmatically** by resuming the already-granted
+authorization (no new click, no new authorization): job `ca0de4d6-b97b-4fa4-a342-14f33e1c2f36` is
+`acquired`, `bounded_segment`, provider `local`, **$0**.
+
+**Asset:** `youtube__ClhBXVygWbc__65-95__ab7603b460c3.mp4` · 2,614,107 B · 30.000 s · 640×480 ·
+H.264/AAC/yuv420p/fast-start · sha256 `ab7603b460c3…`. One source now holds **two** library assets
+(`…__30-60__3a891cb35f99.mp4` fp `929e4e72…` and `…__65-95__ab7603b460c3.mp4` fp `fad6787e…`).
+No full-source download, tmp clean, ceiling untouched at **7,200 micro / 2**.
+
+**Card** (same message, in place): `🎬 ACQUISITION · ACQUIRED`, `range 01:05–01:35 · clip 30.0 s ·
+operator_adjusted`, media `0:30 · 640×480 · landscape · 2.5 MB · Audio present (AAC)`, `Local
+acquisition · $0 provider cost`, video **attached natively**, `Open in Reaction Library` link, no Retry.
+
+**Fixed this round:**
+1. `context_for` resolved state from the first `acquire_for_reaction` row regardless of range — the stale
+   30–60 row made a 65–95 card resolve FAILED while displaying REVIEW, so the guard refused the very
+   action shown (“not available in this state”). State is now range-scoped (`store.jobs_for()` +
+   `lane.row_matches_range()`).
+2. A terminal Gate 1 no longer reads as APPROVED (only live `queued`/`running` does).
+3. `live_runner`'s already-acquired check was **content-id-only** → false `ALREADY_ACQUIRED` for a new
+   window; it now delegates to the range-aware `lane.already_acquired()`.
+4. Duplicate `ACQUIRE` is an idempotent **no-op** (one provider call per authorization); a failed
+   attempt is re-run through the explicit Retry action.
+5. The one-click re-authorises the active range before the guarded acquire (other ranges untouched).
+6. Still in force: `DetachedTransport` (no handler/socket after the ACK — the Errno 9 fix), range-bound
+   `custom_id` (`AQ:aa:<ref>#<fp16>`) with `RANGE_STALE`, durable-submission window precedence.
+
+**Suites:** acquisition **414** · discord-review **168** · local-helper **76**. New coverage:
+`test_range_identity_regression.py` (exact false-refusal case, same-window idempotency, a further window
+after another exists), plus the production-shaped range-state and wire-level ACK/one-click proofs.
 
 ## HANDOFF — Ranged acquisition milestone (2026-09-18)
 

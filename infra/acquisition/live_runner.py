@@ -146,11 +146,28 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
         except provider.ProviderError as e:
             raise LiveRunnerError(e.code, e.message) from e
 
-    # --- 4. Already acquired ---------------------------------------------
-    if lane.library_has_content(io.library_rows(), platform_content_id=content_id,
-                                fingerprint=fingerprint):
+    # --- 4. Already acquired (RANGE-AWARE) -------------------------------
+    # Identity for a bounded segment is the approved RANGE, not the source id: one
+    # long-form source legitimately yields several distinct assets, while the same
+    # source+range stays idempotent. A content-id-only check here falsely refused a
+    # newly authorized different range.
+    _win = None
+    _s, _e = job.get("requested_start_s"), job.get("requested_end_s")
+    if _s is not None and _e is not None:
+        try:
+            import source_window as _sw
+            _win = _sw.validate_window(
+                platform=str(job.get("platform") or platform or ""),
+                canonical_url=str(job.get("canonical_url") or canonical_url or ""),
+                content_id=content_id,
+                start_ms=_sw.to_ms(_s, field="requested_start"),
+                end_ms=_sw.to_ms(_e, field="requested_end"),
+                origin="operator_adjusted")
+        except Exception:  # noqa: BLE001 — an unusable range falls back to no window
+            _win = None
+    if lane.already_acquired(io.library_rows(), content_id=content_id, window=_win):
         raise LiveRunnerError("ALREADY_ACQUIRED",
-                              "this item is already in the Reaction Library")
+                              "this approved window is already in the Reaction Library")
 
     # --- 5. In flight / already dispatched — ATTEMPT-SCOPED --------------
     # The lookup returns THIS job's rows only, and each row is classified: a

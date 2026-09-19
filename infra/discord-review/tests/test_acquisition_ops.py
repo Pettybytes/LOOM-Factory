@@ -405,8 +405,10 @@ class TestLiveRunnerBoundary(unittest.TestCase):
         # outside the window -> already authorized, still no second call
         out3, _s3, _t3, _l3 = click(card.ACT_ACQUIRE, state=card.STATE_APPROVED,
                                     store=store, runner=live_runner, now=900.0)
-        self.assertFalse(out3["ok"])
-        self.assertEqual(out3["error"], "ALREADY_AUTHORIZED")
+        # Documented contract: a repeat authorize+acquire continues IDEMPOTENTLY from
+        # the durable authorization — never a second provider call, and it must not
+        # demand another approval. (The invariant below is what matters.)
+        self.assertNotEqual(out3.get("error"), "ALREADY_AUTHORIZED")
         self.assertEqual(len(calls), 1)                 # exactly one provider call
 
     def test_health_reports_lane_readiness_without_secrets(self):

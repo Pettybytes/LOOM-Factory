@@ -52,9 +52,11 @@ class TestStates(unittest.TestCase):
 
     def test_action_matrix_by_state(self):
         self.assertEqual(card.actions_for_state(card.STATE_REVIEW),
-                         ("approve", "deny", "hold"))
+                         ("approve", "deny", "hold",
+                          "adjust_window", "approve_acquire"))
         self.assertEqual(card.actions_for_state(card.STATE_APPROVED),
-                         ("acquire", "hold", "deny"))
+                         ("acquire", "hold", "deny",
+                          "adjust_window", "approve_acquire"))
         self.assertEqual(card.actions_for_state(card.STATE_ACQUIRING),
                          ("acquire", "hold"))
         self.assertEqual(card.actions_for_state(card.STATE_ACQUIRED),
@@ -106,7 +108,8 @@ class TestSpendGuards(unittest.TestCase):
 
     def test_only_spend_actions_cost_money(self):
         spending = sorted(a for a in card.ACTION_CODES if card.requires_spend(a))
-        self.assertEqual(spending, sorted([card.ACT_ACQUIRE, card.ACT_RETRY]))
+        self.assertEqual(spending, sorted([card.ACT_ACQUIRE, card.ACT_RETRY,
+                                             card.ACT_APPROVE_ACQUIRE]))
         for a in card.ACTION_CODES:
             if a not in card.SPEND_ACTIONS:
                 self.assertTrue(card.is_safe_without_spend(a), a)

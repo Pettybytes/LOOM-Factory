@@ -102,10 +102,13 @@ ACT_LIBRARY = "library"
 ACT_RETRY = "retry"
 ACT_ERROR = "error"
 ACT_SOURCE = "source"
+ACT_APPROVE_ACQUIRE = "approve_acquire"   # one-click, $0 local lanes only
+ACT_ADJUST = "adjust_window"              # opens the window modal
 
 ACTION_CODES: dict[str, str] = {
     ACT_APPROVE: "ap", ACT_DENY: "dn", ACT_HOLD: "hd", ACT_ACQUIRE: "aq",
     ACT_PLAY: "py", ACT_LIBRARY: "lb", ACT_RETRY: "rt", ACT_ERROR: "er",
+    ACT_APPROVE_ACQUIRE: "aa", ACT_ADJUST: "aw",
 }
 CODE_BY_ACTION: dict[str, str] = {v: k for k, v in ACTION_CODES.items()}
 
@@ -128,6 +131,22 @@ _REF_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 # (action, label, style) per state. Positive=approve/acquire/preview,
 # neutral=hold/library/view-error, destructive=deny, warning=retry.
+# Automated-candidate REVIEW actions. A $0 local adapter gets ONE human action
+# ("Approve & Acquire"); paid adapters keep approve -> spend authorization.
+ONE_CLICK_REVIEW_BUTTONS: tuple[tuple[str, str, int], ...] = (
+    (ACT_APPROVE_ACQUIRE, "Approve & Acquire", STYLE_SUCCESS),
+    (ACT_ADJUST, "Adjust Window", STYLE_SECONDARY),
+    (ACT_DENY, "Deny", STYLE_DANGER),
+    (ACT_HOLD, "Hold", STYLE_SECONDARY),
+)
+
+# No usable window: reviewable, adjustable, but nothing may be acquired.
+NO_WINDOW_REVIEW_BUTTONS: tuple[tuple[str, str, int], ...] = (
+    (ACT_ADJUST, "Adjust Window", STYLE_SECONDARY),
+    (ACT_DENY, "Deny", STYLE_DANGER),
+    (ACT_HOLD, "Hold", STYLE_SECONDARY),
+)
+
 STATE_BUTTONS: dict[str, tuple[tuple[str, str, int], ...]] = {
     STATE_REVIEW: (
         (ACT_APPROVE, "Approve", STYLE_SUCCESS),
@@ -162,16 +181,24 @@ LOCKED_STATES = frozenset({STATE_ACQUIRING})
 
 # Actions that spend money or download media: acquire, and an explicit manual
 # retry (a retry is a NEW paid attempt — never automatic, never a loop).
-SPEND_ACTIONS = frozenset({ACT_ACQUIRE, ACT_RETRY})
+SPEND_ACTIONS = frozenset({ACT_ACQUIRE, ACT_RETRY, ACT_APPROVE_ACQUIRE})
 
 SPEND_FREE_ACTIONS = frozenset({
     ACT_APPROVE, ACT_DENY, ACT_HOLD, ACT_PLAY, ACT_LIBRARY, ACT_SOURCE, ACT_ERROR,
+    ACT_ADJUST,          # opens the window modal: reviews, acquires nothing
 })
 
 
 def actions_for_state(state: str) -> tuple[str, ...]:
     """Interactive actions available in a state (link actions excluded)."""
-    return tuple(a for (a, _l, _s) in STATE_BUTTONS.get(state, ()))
+    base = tuple(a for (a, _l, _s) in STATE_BUTTONS.get(state, ()))
+    if state == STATE_REVIEW:
+        # The automated lane adds an adjustment action and a one-click local action.
+        return base + (ACT_ADJUST, ACT_APPROVE_ACQUIRE)
+    if state == STATE_APPROVED:
+        # Already authorised for this range: the one-click continues idempotently.
+        return base + (ACT_ADJUST, ACT_APPROVE_ACQUIRE)
+    return base
 
 
 def requires_spend(action: str) -> bool:
@@ -194,13 +221,27 @@ class CardIdError(ValueError):
     pass
 
 
-def make_custom_id(action: str, ref: str) -> str:
+_FP16_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def make_custom_id(action: str, ref: str, *, fingerprint: str = "") -> str:
+    """``AQ:<code>:<ref>[#<fp16>]``.
+
+    A range-bound action carries the first 16 hex of the range fingerprint it was
+    rendered for, so a card left over from an earlier window cannot authorize the
+    current one.
+    """
     code = ACTION_CODES.get(action)
     if not code:
         raise CardIdError(f"unknown action {action!r}")
     if not _REF_RE.match(ref or ""):
         raise CardIdError(f"unsafe ref {ref!r}")
     cid = f"{CUSTOM_ID_PREFIX}:{code}:{ref}"
+    if fingerprint:
+        fp16 = str(fingerprint)[:16]
+        if not _FP16_RE.match(fp16):
+            raise CardIdError("unsafe fingerprint")
+        cid = f"{cid}#{fp16}"
     if len(cid) > _CUSTOM_ID_MAX:
         raise CardIdError("custom_id too long")
     return cid
@@ -210,10 +251,18 @@ def parse_custom_id(custom_id: str) -> dict[str, str] | None:
     parts = (custom_id or "").split(":")
     if len(parts) != 3 or parts[0] != CUSTOM_ID_PREFIX:
         return None
-    code, ref = parts[1], parts[2]
-    if code not in CODE_BY_ACTION or not _REF_RE.match(ref):
+    code, rest = parts[1], parts[2]
+    if code not in CODE_BY_ACTION:
         return None
-    return {"action": CODE_BY_ACTION[code], "ref": ref}
+    ref, _, fp16 = rest.partition("#")
+    if not _REF_RE.match(ref):
+        return None
+    if fp16 and not _FP16_RE.match(fp16):
+        return None
+    parsed = {"action": CODE_BY_ACTION[code], "ref": ref}
+    if fp16:
+        parsed["fingerprint"] = fp16
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +481,7 @@ def build_view_model(
     local_acquisition: bool = False,
     window: dict[str, Any] | None = None,
     requires_range: bool = False,
+    one_click_local: bool = False,
 ) -> dict[str, Any]:
     """Assemble the presentation view model (no I/O, no validation of media)."""
     if state not in CARD_STATES:
@@ -469,6 +519,7 @@ def build_view_model(
         "local_acquisition": bool(local_acquisition),
         "window": window or {},
         "requires_range": bool(requires_range),
+        "one_click_local": bool(one_click_local),
     }
 
 
@@ -490,7 +541,8 @@ def media_summary(vm: dict[str, Any]) -> str:
 
 
 def cost_line(vm: dict[str, Any]) -> str:
-    if vm.get("local_acquisition"):
+    if vm.get("local_acquisition") or vm.get("one_click_local"):
+        # A runtime-proven zero-cost adapter: no estimate, no ceiling, no breaker.
         return "Local acquisition · $0 provider cost"
     """Estimated cost before spending; actual cost after.
 
@@ -643,7 +695,11 @@ def format_acquisition_embed(vm: dict[str, Any]) -> dict[str, Any]:
         footer.append(str(vm["tenant_id"]))
     if vm.get("profile_id"):
         footer.append(str(vm["profile_id"]))
-    footer.append("1 URL · 1 item · ≤5 min · ≤100 MiB · breaker $1.00 / 10")
+    if vm.get("local_acquisition") or vm.get("one_click_local"):
+        # Local adapter: the paid-provider breaker is irrelevant, so it is absent.
+        footer.append("1 URL · 1 item · ≤5 min · ≤100 MiB · local adapter · $0")
+    else:
+        footer.append("1 URL · 1 item · ≤5 min · ≤100 MiB · breaker $1.00 / 10")
     if vm.get("fixture"):
         footer.append("🧪 FIXTURE — downstream locked")
     embed["footer"] = {"text": _clip(" · ".join(footer), _EMBED_FOOTER_MAX)}
@@ -671,6 +727,20 @@ def _is_valid_http_url(url: str) -> bool:
     return (u.startswith("http://") or u.startswith("https://")) and " " not in u
 
 
+def _buttons_for(vm: dict[str, Any]) -> tuple[tuple[str, str, int], ...]:
+    """Automated-candidate REVIEW cards swap in the one-click action set.
+
+    A valid window offers Approve & Acquire; without a usable window the card is
+    still reviewable and adjustable but exposes NO acquisition action.
+    """
+    state = vm.get("state")
+    if state == STATE_REVIEW and vm.get("one_click_local"):
+        window = vm.get("window") or {}
+        return (ONE_CLICK_REVIEW_BUTTONS if window.get("start_ms") is not None
+                else NO_WINDOW_REVIEW_BUTTONS)
+    return STATE_BUTTONS.get(state, ())
+
+
 def format_acquisition_buttons(vm: dict[str, Any], *,
                                disabled: bool | None = None,
                                library_url: str = "") -> list[dict[str, Any]]:
@@ -686,7 +756,7 @@ def format_acquisition_buttons(vm: dict[str, Any], *,
     locked = state in LOCKED_STATES if disabled is None else disabled
     url = library_url or (vm.get("library_url") or "")
     buttons: list[dict[str, Any]] = []
-    for action, label, style in STATE_BUTTONS.get(state, ()):
+    for action, label, style in _buttons_for(vm):
         if state == STATE_ACQUIRED and action == ACT_PLAY:
             continue
         if (action == ACT_ACQUIRE and vm.get("requires_range")
@@ -705,7 +775,10 @@ def format_acquisition_buttons(vm: dict[str, Any], *,
             "type": 2,
             "style": style,
             "label": _clip(label, _BUTTON_LABEL_MAX),
-            "custom_id": make_custom_id(action, vm["ref"]),
+            "custom_id": make_custom_id(
+                action, vm["ref"],
+                fingerprint=((vm.get("window") or {}).get("range_fingerprint") or "")
+                if action == ACT_APPROVE_ACQUIRE else ""),
             "disabled": bool(locked),
         })
     src = vm.get("canonical_url") or ""

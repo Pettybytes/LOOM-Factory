@@ -247,6 +247,42 @@ def next_status_after_result(ok: bool) -> str:
 # ---------------------------------------------------------------------------
 # Already-acquired protection
 # ---------------------------------------------------------------------------
+RANGE_MATCH_TOLERANCE_MS = 500
+
+
+def row_matches_range(row: dict[str, Any] | None,
+                      window: dict[str, Any] | None) -> bool:
+    """True when a job row belongs to the ACTIVE range.
+
+    With an active window, only a row carrying the same bounds qualifies; with no
+    window, only an unranged row does. This is what stops an older range's status
+    from deciding the current card's state.
+    """
+    if not isinstance(row, dict):
+        return False
+    s, e = row.get("requested_start_s"), row.get("requested_end_s")
+    if not window:
+        return s is None and e is None
+    if s is None or e is None or window.get("start_ms") is None:
+        return False
+    return (abs(float(s) * 1000.0 - float(window["start_ms"])) <= RANGE_MATCH_TOLERANCE_MS
+            and abs(float(e) * 1000.0 - float(window["end_ms"])) <= RANGE_MATCH_TOLERANCE_MS)
+
+
+def already_acquired(library_rows: list[dict[str, Any]] | None, *,
+                     content_id: str, window: dict[str, Any] | None = None) -> bool:
+    """Range-aware repeat-acquisition test.
+
+    When a window is approved, identity is the RANGE fingerprint: one long-form
+    source may legitimately yield several distinct library assets, while the same
+    source+range stays idempotent. Without a window, the whole item is the unit.
+    """
+    fingerprint = str(((window or {}).get("range_fingerprint")) or "")
+    if fingerprint:
+        return library_has_content(library_rows, fingerprint=fingerprint)
+    return library_has_content(library_rows, platform_content_id=content_id)
+
+
 def library_has_content(library_rows: list[dict[str, Any]] | None, *,
                         platform_content_id: str = "",
                         fingerprint: str = "") -> bool:
