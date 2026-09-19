@@ -104,10 +104,31 @@ loom_reviews                        terminal decisions
 
 ---
 
-## 5. Editor implementation — IMPLEMENTED, VISUAL ACCEPTANCE PENDING
+## 5. Editor implementation — IMPLEMENTED, HEADER ACCEPTANCE PENDING
 
-**`EDITOR_IMPLEMENTATION = IMPLEMENTED`** (openshorts repo commit `416e12e`).
-**`EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN`.**
+**`EDITOR_IMPLEMENTATION = IMPLEMENTED`** (openshorts repo commits `416e12e`
+Hook rich text + one authoritative preview, then `8895050` Header parity).
+**`HOOK_VISUAL_ACCEPTANCE = PASS`** (Bryan reported: Hook renders in the primary
+preview, including multiple colours).
+**`HEADER_VISUAL_ACCEPTANCE = PENDING_HUMAN`.**
+
+Editor scope now covers BOTH visual text elements on one model:
+`lib/richText.js` (was `hookRichText.js`; the model was always generic),
+`RangeStyleControls.jsx` (the ONE range-styling UI, shared by the Hook modal and
+the new `HeaderModal.jsx`), and `TextOverlayPreview.jsx` rendering per-run style
+for each element. A span `size` is a MULTIPLIER of the element's base size, so
+the Header's px targets and the Hook's S/M/L both work off one field; legacy
+`'S'/'M'/'L'` spans still normalize. `hooks.py` gained `_size_multiplier` —
+without it a numeric span size hit a dict keyed by `'S'/'M'/'L'`, fell back to
+1.0, and silently no-op'd (styled in preview, unstyled in the burn).
+
+**Known gap (stated, not hidden):** the Header has **no server-side (ffmpeg)
+burn path at all** — `title_overlay` appears in no Python file. The Header is a
+preview/Remotion-layer concept, and its range styling is carried on the durable
+record (`edl_metadata.header_rich`) so nothing is lost, but the Remotion
+`TitleOverlay.tsx` / `TitleOverlayConfig` were **not** extended with runs, and no
+caller feeds a header through a render today. If a burned Header is ever wanted,
+that is new work, not a regression.
 
 ⚠️ **Where the editor code actually lives:** `openshorts/` is a **separate nested
 git repo** (own remote `mutonby/openshorts`) and is **gitignored by LOOM-Factory**.
