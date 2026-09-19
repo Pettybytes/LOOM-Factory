@@ -273,8 +273,13 @@ class KickAdapter:
     implemented = True
     platform = "kick"
     adapter_id = "local:yt-dlp"          # the same vetted local tool, Kick transport
-    runtime_proven = False               # flipped only by a real clip proof
-    proven_modes: frozenset = frozenset()  # e.g. {"clip"} after a successful proof
+    # PROVEN 2026-09-18 for CLIP mode only: the supplied clip was acquired live through
+    # this adapter ($0, H.264/AAC/yuv420p/fast-start, hash verified against its library
+    # row, terminal card hydrated). VOD mode has NO successful proof — its supplied
+    # proof URL is externally unavailable (HTTP 404) — so readiness is mode-scoped and
+    # Kick never claims full clip+VOD proof.
+    runtime_proven = True
+    proven_modes: frozenset = frozenset({"clip"})
     long_form = True
     requires_window_for_long_source = True
     cost_model = {"kind": "local", "provider_cost_micro": 0, "paid": False}
