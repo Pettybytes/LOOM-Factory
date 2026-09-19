@@ -68,8 +68,18 @@ _CAPABILITY: dict[str, dict] = {
         "candidates": ["yt-dlp", "streamlink"],
     },
     "tiktok": {
-        "state": CAP_EVALUATED_NOT_PROVEN,
-        "reason": "Provider evaluated (read-only, 2026-09-17): memo23/tiktok-video-downloader (id pQGdDfhFC35QToTxZ, single-URL, $2/1k, no cookies) recommended; clockworks/tiktok-scraper (id GdWCkxBtKWOsKjdch, 286K users) established fallback. NOT runtime-proven — no bounded live media proof yet.",
+        "state": CAP_RUNTIME_PROVEN_PROVIDER,
+        "reason": ("Provider actor acquisition RUNTIME-PROVEN 2026-09-18 via "
+                   "apidojo~tiktok-scraper (build 0.0.1098, run wqL0eJXuT1HLhlEZj): one "
+                   "exact video translated from `video.url`, downloaded (HTTP 200, "
+                   "video/mp4, 1,405,272 B), normalized to MP4/H.264/AAC/yuv420p/"
+                   "fast-start (sha256 0e9af235dacf…), finalized into the Reaction "
+                   "Library with a durable row; $0 charged (reservation released). "
+                   "NOT YET WIRED into the shared lane: no pinned provider actor in "
+                   "DEFAULT_PROVIDER_ACTORS (fail-closed NO_PROVIDER_ACTOR). The "
+                   "other evaluated actor, clockworks~tiktok-scraper, is NOT proven: "
+                   "its base result carries no downloadable video (mediaUrls: []) — "
+                   "the paid shouldDownloadVideos add-on would be required."),
         "candidates": ["apify", "yt-dlp", "cobalt"],
     },
     "instagram": {

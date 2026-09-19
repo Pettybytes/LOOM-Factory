@@ -43,10 +43,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _DEFAULT_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-def _follow_redirects(url: str, timeout: float, max_redirects: int, opener):
+def _follow_redirects(url: str, timeout: float, max_redirects: int, opener,
+                     host_check=None):
     current = url
     for _ in range(max_redirects + 1):
-        validate_media_url(current)
+        # EVERY hop is re-checked against the same platform predicate, so a
+        # redirect can never move the download onto a host the platform refused.
+        validate_media_url(current, host_check=host_check)
         req = urllib.request.Request(current, headers={"User-Agent": UA})
         try:
             return opener.open(req, timeout=timeout)
@@ -70,13 +73,15 @@ def cleanup_temp(path: str) -> None:
 
 
 def download_one_video(candidate_url, tmp_dir, *, max_bytes, timeout,
-                       max_redirects=5, opener=None):
+                       max_redirects=5, opener=None, host_check=None):
     """Download exactly one MP4 to a temp file, validating every redirect and
     the byte ceiling. Returns (temp_path, bytes_written, http_status, content_type).
-    The caller validates status/signature, computes the checksum, derives the final
-    filename, then atomically finalizes (see finalize()). The temp file is cleaned
-    on ANY download failure."""
-    validate_media_url(candidate_url)
+
+    ``host_check`` scopes the CDN allowlist to the acquiring platform (default:
+    Meta/Instagram). The caller validates status/signature, computes the checksum,
+    derives the final filename, then atomically finalizes (see finalize()). The
+    temp file is cleaned on ANY download failure."""
+    validate_media_url(candidate_url, host_check=host_check)
     op = opener or _DEFAULT_OPENER
     os.makedirs(tmp_dir, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, suffix=".mp4.part")
@@ -85,7 +90,8 @@ def download_one_video(candidate_url, tmp_dir, *, max_bytes, timeout,
     http_status = 200
     content_type = ""
     try:
-        resp = _follow_redirects(candidate_url, timeout, max_redirects, op)
+        resp = _follow_redirects(candidate_url, timeout, max_redirects, op,
+                                 host_check=host_check)
         http_status = getattr(resp, "status", 200) or 200
         if hasattr(resp, "headers") and hasattr(resp.headers, "get"):
             content_type = resp.headers.get("Content-Type") or ""

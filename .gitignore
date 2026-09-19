@@ -41,3 +41,8 @@ infra/discord-review/live-proof-preparation.json
 infra/discord-review/verify-approve-click.json
 infra/discord-review/youtube-cards.json
 infra/discord-review/youtube-cards-fixed.json
+
+# Acquired media must never land in the repo (real root: ~/Movies/LOOM-Reaction-Library)
+# Library filenames are deterministic: <platform>__<content_id>__<hash12>.mp4
+*__*__*.mp4
+*__*__*.part

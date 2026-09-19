@@ -80,8 +80,20 @@ class HttpTransport(Transport):
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.loads(r.read().decode() or "{}")
 
-    def start_run(self, actor: str, input_: dict) -> dict:
-        return _unwrap(self._post(f"/acts/{actor}/runs", input_))
+    def start_run(self, actor: str, input_: dict, *,
+                  max_total_charge_usd: float | None = None) -> dict:
+        """Start a run.
+
+        `maxTotalChargeUsd` is a RUN PARAMETER, never actor input: putting it in the
+        payload would make it an input field that caps nothing. It is carried here in
+        the query string so Apify's billing layer enforces it.
+        """
+        path = f"/acts/{actor}/runs"
+        if max_total_charge_usd is not None:
+            if max_total_charge_usd <= 0:
+                raise ApifyError("BAD_CHARGE_CAP", "maxTotalChargeUsd must be > 0")
+            path += f"?maxTotalChargeUsd={max_total_charge_usd:g}"
+        return _unwrap(self._post(path, input_))
 
     def get_run_status(self, actor: str, run_id: str) -> dict:
         req = urllib.request.Request(

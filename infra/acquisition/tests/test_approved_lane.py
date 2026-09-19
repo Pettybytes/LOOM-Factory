@@ -126,9 +126,19 @@ class TestRuntimeProvenAndAttempts(unittest.TestCase):
         lane.require_runtime_proven({"platform": "instagram"})
 
     def test_unproven_platform_is_refused(self):
+        # tiktok became runtime-proven on 2026-09-18 (apidojo provider proof), so a
+        # platform without a bounded proof exercises this gate instead.
         with self.assertRaises(lane.LaneError) as e:
-            lane.require_runtime_proven({"platform": "tiktok"})
+            lane.require_runtime_proven({"platform": "reddit"})
         self.assertEqual(e.exception.code, "NOT_RUNTIME_PROVEN")
+
+    def test_tiktok_is_dispatchable_at_the_readiness_gate(self):
+        # Readiness is honest per platform; the LANE wiring is a separate step, so
+        # the pinned-actor lookup below still fails closed.
+        lane.require_runtime_proven({"platform": "tiktok"})
+        with self.assertRaises(lane.LaneError) as e:
+            lane.default_provider_actor("tiktok")
+        self.assertEqual(e.exception.code, "NO_PROVIDER_ACTOR")
 
     def test_one_attempt_then_explicit_retry(self):
         self.assertTrue(lane.attempts_allowed({"retry_count": 0}))

@@ -1177,3 +1177,69 @@ ingest only approved-for-acquisition candidates (and optionally wire accepted
 YouTube/Reddit submissions into qualification) — still requires explicit
 authorization before any download/publish. **Pass 2 (bounded media)** deferred
 (separate approval). No automatic download/processing/publication at any point.
+
+---
+
+## 8. TikTok acquisition segment (2026-09-18)
+
+**Status: provider actor path RUNTIME-PROVEN for video; shared-lane wiring NOT done.**
+
+Two INDEPENDENT TikTok actor adapters (`infra/acquisition/tiktok_actors.py`), each
+with its own identity, cost, input shape and response translation — neither inherits
+the other's proof, allowance or field names:
+
+| Actor | Input shape (live-verified) | Cost/result | Media | Ready |
+|---|---|---|---|---|
+| `apidojo~tiktok-scraper` | `startUrls` + `maxItems: 1` | 300 micro | **`video.url`** ✅ | **proven (video)** |
+| `clockworks~tiktok-scraper` | `postURLs` (no `startUrls`/`maxItems`) | 1,700 micro | none in base result ❌ | **not proven** |
+
+Ceilings (`infra/acquisition/tiktok_ceiling.py`) are three SEPARATE records —
+Clockworks 10,000 · Apidojo 10,000 · combined 20,000 micro-dollars — isolated from
+the Instagram breaker (`loom_provider_ceiling` row 1 is never read or written).
+Reservations reserve the full remaining allowance, so neither actor can breach
+$0.01 nor the pair $0.02. Reconciliation is exactly-once on the Apify run id;
+a missing `usageTotalUsd` retains the reservation as `cost_unverified`, with an
+explicit settle-once repair path when the charge later becomes known.
+
+Media travels the SHARED pipeline (`infra/acquisition/tiktok_media.py`): download →
+HTML/format gate → ffprobe → normalize to MP4/H.264/AAC/yuv420p/fast-start →
+size gate → hash the finalized asset → atomic finalize → durable Reaction Library
+row, with idempotency on repeat acquisition of the same canonical source.
+
+### Live receipts (real money)
+
+| Run | Actor | Outcome | Charge |
+|---|---|---|---|
+| `plG9LgcSeTxD8eYWV` | Clockworks | FAILED — wrong input (`startUrls` unsupported) | $0.0037 |
+| `1yp9focLtM6ZyC391` | Clockworks | SUCCEEDED — no downloadable media in base result | $0.0010 |
+| `wqL0eJXuT1HLhlEZj` | **Apidojo** | **SUCCEEDED — full video acquired end-to-end** | $0.0000 |
+
+Apidojo receipt: content id `7598767615980408095`, `video.url` → HTTP 200
+`video/mp4`, 1,405,272 B, 8.868 s, 720×1280, H.264/AAC/yuv420p, fast-start, sha256
+`0e9af235dacf129a93f64ef40b89eab3512c65d63f1f870f1c7cbc58cddf1d6c`, library row
+`542ef5cf-2681-4ef7-96b1-4ae3f925e55c`. **TikTok spend: $0.0053 of $0.02**;
+nothing unresolved. Readiness is flipped only where a receipt exists — Clockworks
+stays unproven because its base result carries no video (the paid
+`shouldDownloadVideos ($)` add-on would be required, and paid add-ons are never sent).
+
+### Defects found and fixed on the way
+
+1. `maxTotalChargeUsd` below **$0.50** is rejected by Apify
+   (`max-total-charge-usd-below-minimum`) — the $0.01 bound is therefore enforced by
+   the ledger reservation + `maxItems: 1`, and both numbers are reported.
+2. Apify `~`-slug actors reject a `KeyError`-prone CAS patch: the REST store assumed
+   every patch carried `status`, which broke the run-id bind **after** a run existed.
+3. An empty `acquisition_job_id` is invalid for a uuid column (400 `22P02`); the
+   durable row now omits the key instead of sending `""`.
+4. The local downloader hardcoded the Meta/Instagram CDN allowlist; it is now
+   platform-scoped (TikTok passes its own predicate, Instagram's is unchanged).
+5. `tiktok_media` silently fell back to the CWD when no library root was configured;
+   it now refuses (`NO_LIBRARY_DIR`) rather than writing assets into the repo.
+
+### Remaining (explicit)
+
+* TikTok is NOT wired into the shared lane: there is no pinned provider actor in
+  `approved_lane.DEFAULT_PROVIDER_ACTORS`, so a paid TikTok dispatch still fails
+  closed with `NO_PROVIDER_ACTOR`.
+* Slideshow/photo posts are refused by contract and are NOT a proven mode.
+* Apidojo's `song` carries no audio URL; audio came from the video's own stream.

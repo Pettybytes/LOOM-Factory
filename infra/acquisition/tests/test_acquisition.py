@@ -111,7 +111,10 @@ class TestCapabilities(unittest.TestCase):
         self.assertTrue(caps.can_acquire("instagram"))
         # YouTube joined the proven set on 2026-09-18 (bounded local yt-dlp proof).
         self.assertTrue(caps.can_acquire("youtube"))
-        self.assertFalse(any(caps.can_acquire(p) for p in ("reddit", "tiktok", "twitch", "kick")))
+        # TikTok joined on 2026-09-18 via a paid provider actor proof
+        # (apidojo~tiktok-scraper: real video acquired end-to-end).
+        self.assertTrue(caps.can_acquire("tiktok"))
+        self.assertFalse(any(caps.can_acquire(p) for p in ("reddit", "twitch", "kick")))
 
     def test_youtube_runtime_proven_after_the_bounded_proof(self):
         self.assertEqual(caps.capability("youtube"), caps.CAP_RUNTIME_PROVEN)

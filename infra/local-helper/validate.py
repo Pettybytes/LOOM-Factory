@@ -41,8 +41,14 @@ def has_non_standard_port(url: str) -> bool:
     return port is not None and port not in (80, 443)
 
 
-def validate_media_url(url: str) -> str:
-    """Validate a media URL: https + approved host + no creds + no bad port."""
+def validate_media_url(url: str, *, host_check=None, scope: str = "") -> str:
+    """Validate a media URL: https + approved host + no creds + no bad port.
+
+    ``host_check`` selects the PLATFORM's own CDN predicate. It defaults to the
+    Meta/Instagram allowlist so every existing caller is unchanged; a platform
+    adapter (TikTok) supplies its own predicate rather than widening this one —
+    the gate stays exactly as strict, per platform.
+    """
     p = _split(url)
     if p.scheme != "https":
         raise ValidationError("BAD_SCHEME", "media URL must be https")
@@ -51,8 +57,11 @@ def validate_media_url(url: str) -> str:
     host = (p.hostname or "").lower()
     if not host:
         raise ValidationError("NO_HOST", "no host in URL")
-    if not is_approved_media_host(host):
-        raise ValidationError("HOST_NOT_ALLOWED", "host not in approved Meta/IG CDN allowlist")
+    check = host_check or is_approved_media_host
+    if not check(host):
+        detail = ("host not in approved Meta/IG CDN allowlist" if host_check is None
+                  else f"host not in the approved {scope or 'platform'} CDN allowlist")
+        raise ValidationError("HOST_NOT_ALLOWED", detail)
     try:
         port = p.port
     except ValueError:

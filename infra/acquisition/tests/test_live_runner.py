@@ -298,7 +298,9 @@ class TestFailClosed(unittest.TestCase):
         self._refuse(auth_job(), io=io, code="BREAKER_DISABLED")
 
     def test_unproven_platform_is_refused(self):
-        self._refuse(auth_job(platform="tiktok"), code="NOT_RUNTIME_PROVEN")
+        # tiktok left the unproven set on 2026-09-18 (apidojo actor proof), so a
+        # platform with no bounded proof still exercises this gate.
+        self._refuse(auth_job(platform="reddit"), code="NOT_RUNTIME_PROVEN")
 
     def test_fallback_actor_is_never_used(self):
         # The pinned actor is the only one the runner will select; asking for the
