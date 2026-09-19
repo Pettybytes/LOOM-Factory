@@ -9,7 +9,29 @@
 ---
 
 ## Last Updated
-2026-09-18 21:00 EDT (America/Detroit) — TWITCH ADAPTER IMPLEMENTED (awaiting one proof URL)
+2026-09-18 21:15 EDT (America/Detroit) — TWITCH RUNTIME-PROVEN (clip + VOD)
+
+## HANDOFF — Twitch RUNTIME-PROVEN (2026-09-18)
+
+Both signed Twitch approvals completed without another human click:
+
+- clip `AltruisticTallBorkDancingBaby-gb-T9vlskqh7FCfl` — whole-item, 34.333 s, 25,546,606 B
+  → `twitch__AltruisticTallBorkDancingBaby-gb-T9vlskqh7FCfl__b19cec0615e7.mp4`
+- VOD `2852456270` — bounded 00:30–01:00, 30.000 s, 12,230,775 B
+  → `twitch__2852456270__30-60__7c09e34a74da.mp4`
+
+Both H.264/AAC/yuv420p/fast-start, hashes matching their library rows, no full VOD retained, temp clean,
+$0 local, Apify ceiling unchanged at 7,200/2. Both cards show ACQUIRED with real facts, a library link,
+no Retry, and a truthful poster fallback (both files exceed Discord's 10 MiB native limit).
+
+**`TwitchAdapter.runtime_proven = True`** on genuine evidence. Fixed on the way: LOCAL_PLATFORMS
+platform-name routing (Twitch took the Apify path), the Instagram-only durable URL normaliser (which sent
+a Twitch click to `NO_ADAPTER`), all implicit `instagram` defaults (now fail closed as PLATFORM_MISSING),
+platform threading through the media identity check, the `youtube__` filename default, a `live_origin`
+scope error, and split spend policy from readiness. See CURRENT_STATE.md for the full list.
+
+**Next:** Kick follows this same lane (register an adapter; no shared-code branches). Then finish the
+remaining queued work — docs/UI polish for the automated suggested-window lane.
 
 ## HANDOFF — Twitch adapter implemented, awaiting one proof URL (2026-09-18)
 

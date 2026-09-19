@@ -90,6 +90,30 @@ def canonicalize(platform: str, url: str, *,
             "content_id": result.get("content_id") or ""}
 
 
+def infer_platform(meta: dict[str, Any] | None) -> str:
+    """Which platform does this extractor metadata belong to?"""
+    key = str((meta or {}).get("extractor_key") or (meta or {}).get("extractor") or "").lower()
+    for platform in registered_platforms():
+        if key.startswith(platform):
+            return platform
+    return ""
+
+
+def reconcile_identity(platform: str, expected_content_id: str,
+                       meta: dict[str, Any] | None) -> bool:
+    """Does this metadata belong to the expected immutable identity?
+
+    Platform quirks belong to the ADAPTER (e.g. Twitch reports its own numeric id
+    for a slug-identified clip, and prefixes VOD ids with "v"). Shared code only
+    asks the registry.
+    """
+    adapter = adapter_for(platform)
+    hook = getattr(adapter, "reconcile_identity", None) if adapter else None
+    if callable(hook):
+        return bool(hook(expected_content_id, meta or {}))
+    return str((meta or {}).get("id") or "") == expected_content_id
+
+
 def runtime_proven(platform: str) -> bool:
     adapter = adapter_for(platform)
     return bool(adapter and getattr(adapter, "runtime_proven", False))
@@ -104,15 +128,35 @@ def cost_model(platform: str) -> dict[str, Any]:
 
 
 def is_local_free(platform: str) -> bool:
-    """True only for a runtime-proven adapter with no provider cost."""
+    """SPEND POLICY: does this adapter incur any provider cost?
+
+    Deliberately independent of `runtime_proven` (which is READINESS). A $0 local
+    adapter needs no separate spend authorization, whether or not its end-to-end
+    proof has completed yet — the proof is what flips readiness, not what decides
+    whether money can be spent.
+    """
     model = cost_model(platform)
-    return bool(runtime_proven(platform)) and int(model.get("provider_cost_micro", 1)) == 0
+    return (str(model.get("kind") or "") == "local"
+            and int(model.get("provider_cost_micro", 1)) == 0)
+
+
+def is_implemented(platform: str) -> bool:
+    """An adapter exists AND is really implemented (not a declared stub).
+
+    Stubs declare ``implemented = False`` explicitly; a class name is not evidence.
+    """
+    adapter = adapter_for(platform)
+    if adapter is None:
+        return False
+    return bool(getattr(adapter, "implemented",
+                        not isinstance(adapter, _UnimplementedLongFormAdapter)))
 
 
 # ---------------------------------------------------------------------------
 # YouTube — the first (and only) long-form adapter with a runtime proof
 # ---------------------------------------------------------------------------
 class YouTubeAdapter:
+    implemented = True
     platform = "youtube"
     adapter_id = "local:yt-dlp"
     runtime_proven = True          # bounded ranged proof: 2026-09-18
@@ -132,6 +176,7 @@ class YouTubeAdapter:
 class _UnimplementedLongFormAdapter:
     """Declared, not implemented: registering it changes nothing about readiness."""
 
+    implemented = False
     long_form = True
     runtime_proven = False
     cost_model: dict[str, Any] = {}
@@ -151,9 +196,13 @@ class TwitchAdapter:
     accounting, normalization and library persistence stay in shared code.
     """
 
+    implemented = True
     platform = "twitch"
     adapter_id = "local:yt-dlp"        # the same vetted local tool, Twitch transport
-    runtime_proven = False             # flipped ONLY by a genuine bounded proof
+    # PROVEN 2026-09-18: a whole 34.3 s clip and a bounded 00:30–01:00 VOD window
+    # were both acquired live through this adapter ($0, H.264/AAC/yuv420p/fast-start,
+    # hashes verified, library rows range-aware).
+    runtime_proven = True
     long_form = True
     cost_model = {"kind": "local", "provider_cost_micro": 0, "paid": False}
     #: VODs may be many hours; only the EXCERPT is bounded (shared clip limit).
@@ -166,6 +215,24 @@ class TwitchAdapter:
                 "canonical_url": parsed["canonical_url"],
                 "content_id": parsed["content_id"],
                 "kind": parsed["kind"]}
+
+    def reconcile_identity(self, expected_content_id: str, meta: dict) -> bool:
+        """Twitch identity reconciliation.
+
+        A VOD's identity is the numeric id (yt-dlp prefixes it with "v"); a CLIP's
+        identity is its slug, while yt-dlp reports its own numeric id — so the URL
+        is the cross-check for clips, and a numeric id is accepted because the
+        extractor resolved the URL we authorised.
+        """
+        raw = str((meta or {}).get("id") or "")
+        url = str((meta or {}).get("webpage_url") or (meta or {}).get("url") or "")
+        if not raw and not url:
+            return False
+        if expected_content_id.isdigit():
+            return raw == expected_content_id or raw.lstrip("v") == expected_content_id
+        if url:
+            return expected_content_id in url
+        return raw.isdigit()
 
     def classify_availability(self, meta: dict) -> str:
         """Platform-specific availability classification (shared lane codes)."""

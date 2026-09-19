@@ -122,11 +122,17 @@ class TestAdapterSurface(unittest.TestCase):
         a = sa.adapter_for("twitch")
         self.assertIsNotNone(a)
         self.assertTrue(a.long_form)
-        self.assertFalse(a.runtime_proven, "runtime_proven flips only after a real proof")
         self.assertIn("local", a.adapter_id)
         self.assertEqual(sa.cost_model("twitch").get("provider_cost_micro"), 0)
-        self.assertFalse(sa.is_local_free("twitch"),
-                         "not 'local free' until the adapter is genuinely proven")
+        # PROVEN 2026-09-18: a live whole clip AND a live bounded VOD window both
+        # succeeded, so readiness and the $0 spend policy are both now true.
+        self.assertTrue(a.runtime_proven, "flipped only after the live proofs succeeded")
+        self.assertTrue(sa.is_implemented("twitch"))
+        self.assertTrue(sa.is_local_free("twitch"))
+        # An implemented adapter and a declared stub are different things.
+        self.assertTrue(sa.is_implemented("youtube"))
+        self.assertFalse(sa.is_implemented("kick"), "kick is still a declared stub")
+        self.assertFalse(sa.runtime_proven("kick"))
 
     def test_availability_classification(self):
         a = sa.adapter_for("twitch")

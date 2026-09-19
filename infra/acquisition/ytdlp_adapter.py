@@ -112,6 +112,46 @@ def _assert_hygiene(cmd: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 # Validation (pure)
 # ---------------------------------------------------------------------------
+def _infer_platform_from_url(legacy_url: str) -> str:
+    """Which registered adapter claims this URL?
+
+    Used only when a caller omitted the platform (older call sites), so the
+    filename prefix stays truthful instead of defaulting to a platform name.
+    """
+    try:
+        import source_adapters as _sa
+    except ImportError:
+        return ""
+    for name in _sa.registered_platforms():
+        adapter = _sa.adapter_for(name)
+        if adapter is None:
+            continue
+        try:
+            adapter.canonicalize(legacy_url)
+            return name
+        except Exception:  # noqa: BLE001 — not this adapter's URL
+            continue
+    return ""
+
+
+def _identity_ok(expected_id: str, meta: dict[str, Any], platform: str = "") -> bool:
+    """Platform-neutral identity check delegated to the adapter registry.
+
+    The platform is passed EXPLICITLY wherever the caller knows it: the media-stage
+    check only has an id, and inferring from metadata there silently fell back to a
+    literal comparison (which is how `v2852456270` and a clip's numeric id drifted).
+    """
+    try:
+        import source_adapters as _sa
+    except ImportError:
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        import source_adapters as _sa
+    resolved = (platform or "").lower() or _sa.infer_platform(meta)
+    return _sa.reconcile_identity(resolved, expected_id, meta)
+
+
 def validate_metadata(meta: dict[str, Any], *, expected_id: str,
                       allow_long_source: bool = False) -> dict[str, Any]:
     """Refuse BEFORE downloading when trustworthy metadata already violates a bound."""
@@ -151,13 +191,16 @@ def validate_metadata(meta: dict[str, Any], *, expected_id: str,
     video_id = str(meta.get("id") or "")
     if not video_id:
         raise YtDlpError("MISSING_VIDEO_ID", "probe returned no video id")
-    if video_id != expected_id:
+    if not _identity_ok(expected_id, meta):
         raise YtDlpError("CONTENT_ID_DRIFT",
                          f"downloaded id {video_id!r} != expected {expected_id!r}")
 
-    if meta.get("is_live") or meta.get("live_status") in ("is_live", "is_upcoming",
-                                                          "post_live", "was_live"):
+    live_status = str(meta.get("live_status") or "")
+    if meta.get("is_live") or live_status in ("is_live", "is_upcoming"):
         raise YtDlpError("LIVE_REJECTED", "live/upcoming stream rejected")
+    # A FINISHED broadcast (was_live / post_live) is an ordinary VOD and is
+    # acquirable — its live origin is recorded truthfully instead of refused.
+    live_origin = live_status in ("was_live", "post_live")
 
     duration = meta.get("duration")
     if duration is None:
@@ -185,7 +228,7 @@ def validate_metadata(meta: dict[str, Any], *, expected_id: str,
 
 
 def validate_media(probe: dict[str, Any], *, path: str | Path, expected_id: str,
-                   video_id_from_meta: str = "") -> dict[str, Any]:
+                   video_id_from_meta: str = "", platform: str = "" ) -> dict[str, Any]:
     """Post-download gate. Everything here must hold before finalization."""
     p = Path(path)
     if not p.is_file():
@@ -196,7 +239,8 @@ def validate_media(probe: dict[str, Any], *, path: str | Path, expected_id: str,
     if size > MAX_BYTES:
         raise YtDlpError("TOO_LARGE", f"{size} bytes exceeds the {MAX_BYTES}-byte limit")
 
-    if video_id_from_meta and video_id_from_meta != expected_id:
+    if video_id_from_meta and not _identity_ok(expected_id, {"id": video_id_from_meta},
+                                               platform):
         raise YtDlpError("CONTENT_ID_DRIFT",
                          f"media id {video_id_from_meta!r} != expected {expected_id!r}")
 
@@ -268,7 +312,7 @@ def acquire_local(*, url: str, expected_id: str, tmp_dir: Path, library_dir: Pat
                   run_ffmpeg: Callable[[list[str]], Any] | None = None,
                   window: dict[str, Any] | None = None,
                   cleanup: Callable[[Path], None] | None = None,
-                  ytdlp: str = "yt-dlp") -> dict[str, Any]:
+                  ytdlp: str = "yt-dlp", platform: str = "" ) -> dict[str, Any]:
     """One bounded attempt; returns the finalized library record or raises."""
     tmp_dir = Path(tmp_dir)
     library_dir = Path(library_dir)
@@ -294,6 +338,7 @@ def acquire_local(*, url: str, expected_id: str, tmp_dir: Path, library_dir: Pat
     try:
         probe = run_ffprobe(str(tmp_path))
         media = validate_media(probe, path=tmp_path, expected_id=expected_id,
+                                platform=platform,
                                video_id_from_meta=checked["video_id"])
         # Shared delivery contract: MP4 / H.264 / AAC / yuv420p / fast-start.
         # Compatible media is moved untouched; anything else is normalized once.
@@ -307,9 +352,15 @@ def acquire_local(*, url: str, expected_id: str, tmp_dir: Path, library_dir: Pat
             # The delivered clip must match the window that was actually approved.
             swc.validate_resulting_duration(approved=window,
                                             measured_ms=int(round(delivered["duration_seconds"] * 1000)))
-        platform = (window or {}).get("platform") or "youtube"
-        filename = (swc.filename_stem(platform, expected_id, window, digest) + ".mp4"
-                    if window else filename_for(expected_id, digest))
+        # The filename prefix is the REAL platform, for whole-item and ranged
+        # alike. Never default it: a wrong prefix mislabels the asset forever.
+        stem_platform = str((window or {}).get("platform") or platform or "").lower()
+        if not stem_platform:
+            stem_platform = _infer_platform_from_url(url)
+        if not stem_platform:
+            raise YtDlpError("PLATFORM_MISSING",
+                             "no platform available for the asset filename")
+        filename = swc.filename_stem(stem_platform, expected_id, window, digest) + ".mp4"
         final_path = library_dir / filename
         os.replace(staged, final_path)            # atomic finalize
 
@@ -341,6 +392,7 @@ def acquire_local(*, url: str, expected_id: str, tmp_dir: Path, library_dir: Pat
         "asset_filename": filename,
         "path": str(final_path),
         "video_id": expected_id,
+        "live_origin": bool((checked or {}).get("live_origin")),
         "canonical_url": url,
         "duration_seconds": delivered["duration_seconds"],
         "size_bytes": delivered["size_bytes"],

@@ -6,6 +6,50 @@
 
 ---
 
+## STOP STATE — 2026-09-18 ~21:15 EDT — TWITCH RUNTIME-PROVEN (clip whole-item + VOD bounded window)
+
+Both signed Approve & Acquire interactions are fulfilled; **no further human click was required**.
+
+| Asset | Mode | Result |
+|---|---|---|
+| `twitch__AltruisticTallBorkDancingBaby-gb-T9vlskqh7FCfl__b19cec0615e7.mp4` | whole-item | 25,546,606 B · **34.333 s** · 1920×1080 · H.264/AAC/yuv420p/**fast-start** |
+| `twitch__2852456270__30-60__7c09e34a74da.mp4` | bounded **00:30–01:00** | 12,230,775 B · **30.000 s** · 1920×1080 · H.264/AAC/yuv420p/**fast-start** |
+
+- Both hashes match their library rows; **no complete VOD retained** (only the authorized 30 s excerpt);
+  temp clean; **$0 local** (`local:yt-dlp`); Apify ceiling **untouched at 7,200 micro / 2**.
+- Both cards updated in place: ACQUIRING before yt-dlp/ffmpeg → **🎬 ACQUISITION · ACQUIRED** with real
+  media facts, `Open in Reaction Library`, **no Retry**, and a **truthful poster fallback** (24.4 MB and
+  11.7 MB both exceed the 10 MiB native limit — so no playback is claimed).
+- **`TwitchAdapter.runtime_proven` is now True**, on genuine evidence.
+- Duplicate execution is refused/idempotent; repeat authorization is a no-op (one provider call each).
+
+### Defects fixed on the way (all local, none external)
+1. **`LOCAL_PLATFORMS = {"youtube"}`** routed Twitch into the Apify provider path →
+   `NO_PROVIDER_ACTOR`. LOCAL is now an **adapter property** (`cost_model.kind == "local"`).
+2. **`source_context.normalize_source_url` was Instagram-only** (`HOST_MISMATCH … not instagram.com`),
+   so every Twitch row resolved to `None` → platform fell back to **instagram** → the click produced
+   `NO_ADAPTER: no adapter registered for platform 'instagram'`. It now delegates to the adapter registry.
+3. **Every implicit `instagram` default removed** (`LaneContext.platform`, `context_for`, durable
+   resolution, the card's sample vm): an unknown/missing platform now fails closed as
+   `PLATFORM_MISSING`/`PLATFORM_UNSUPPORTED` instead of silently becoming Instagram.
+4. **The identity check needed the platform**: `_identity_ok` inferred it from metadata, but the
+   media-stage check only had an id, so `v2852456270` and a clip's numeric id drifted. The platform is now
+   threaded explicitly (job → run_local → adapter → validate_media).
+5. **The asset filename defaulted to `youtube`** for whole-item items → a Twitch clip was filed as
+   `youtube__…`. The prefix is now the real platform and fails closed without one (the one affected row
+   was renamed and repaired, hash unchanged).
+6. `live_origin` was referenced in `acquire_local`'s return from another function's scope (NameError);
+   it now carries the validated value. Finished Twitch broadcasts (`was_live`/`post_live`) are accepted as
+   VODs instead of being rejected as live.
+7. Spend policy is now split from readiness: `is_local_free()` is the **$0 cost model**, `runtime_proven`
+   remains readiness — so an authorized $0 local attempt could run without falsely advertising proof.
+
+### Tests
+Suites: acquisition · discord-review · local-helper (all green). New coverage includes the Twitch URL
+contract (variants, tracking-parameter identity, every rejection code, drift, clip-vs-VOD separation,
+cross-platform collision, multi-hour acceptance, VOD-without-window refusal, ranged transport hygiene,
+filename conventions, availability classification, platform neutrality).
+
 ## INCREMENT — 2026-09-18 ~21:00 EDT — TWITCH ADAPTER IMPLEMENTED (NOT YET RUNTIME-PROVEN)
 
 Twitch now plugs into the **existing platform-neutral lane** through a registered adapter — no fork, no

@@ -109,7 +109,34 @@ def normalize_source_url(platform: str, url: str, *, expected_content_id: str = 
     shared intake fingerprint agree. Every other platform keeps the existing
     normalization, so Instagram behaviour is unchanged.
     """
-    if (platform or "").lower() == "youtube":
+    _pl = (platform or "").lower()
+    if not _pl:
+        # Refuse to GUESS a platform, but as a resolution failure rather than a
+        # crash: the caller treats it as "no durable context".
+        raise SourceContextError("PLATFORM_MISSING",
+                                 "stored source has no platform; refusing to guess")
+    # ANY platform with a registered adapter canonicalizes through the registry.
+    # The shared storage layer must not carry Instagram-only rules: that leak made
+    # every Twitch row resolve to None (platform fell back to instagram, the window
+    # was lost, and the $0 local path was disabled).
+    try:
+        import source_adapters as _sa
+    except ImportError:
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        import source_adapters as _sa
+    if _pl != "instagram" and _sa.adapter_for(_pl) is not None:
+        try:
+            return _sa.canonicalize(_pl, url,
+                                    expected_content_id=expected_content_id)["canonical_url"]
+        except Exception as e:  # noqa: BLE001 — fail closed on an adapter refusal
+            code = getattr(e, "code", "") or type(e).__name__
+            raise SourceContextError(
+                "HOST_MISMATCH" if code in ("FOREIGN_HOST", "HOST_MISMATCH") else "BAD_URL",
+                f"{code}: {e}")
+
+    if _pl == "youtube":
         try:
             import youtube_url as _yt
         except ImportError:  # keep working when only this package is importable
@@ -223,13 +250,13 @@ def resolve_context(content_id: str, *, get: Callable[[str], list],
             if not stored_url:
                 continue
             try:
-                canonical = normalize_source_url(row.get("platform") or "instagram",
+                canonical = normalize_source_url(row.get("platform") or "",
                                                  stored_url,
                                                  expected_content_id=content_id)
             except SourceContextError:
                 continue                     # refuse a drifted/invalid stored value
             return ResolvedContext(
-                platform=(row.get("platform") or "instagram").lower(),
+                platform=(row.get("platform") or "").lower(),
                 canonical_url=canonical,
                 content_id=content_id,
                 fingerprint=row.get(fp_field) or "",

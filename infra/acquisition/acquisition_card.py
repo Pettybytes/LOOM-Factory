@@ -147,6 +147,13 @@ NO_WINDOW_REVIEW_BUTTONS: tuple[tuple[str, str, int], ...] = (
     (ACT_HOLD, "Hold", STYLE_SECONDARY),
 )
 
+# Whole-item (no window) automated REVIEW: nothing to adjust, so no Adjust Window.
+WHOLE_ITEM_REVIEW_BUTTONS: tuple[tuple[str, str, int], ...] = (
+    (ACT_APPROVE_ACQUIRE, "Approve & Acquire", STYLE_SUCCESS),
+    (ACT_DENY, "Deny", STYLE_DANGER),
+    (ACT_HOLD, "Hold", STYLE_SECONDARY),
+)
+
 STATE_BUTTONS: dict[str, tuple[tuple[str, str, int], ...]] = {
     STATE_REVIEW: (
         (ACT_APPROVE, "Approve", STYLE_SUCCESS),
@@ -482,6 +489,7 @@ def build_view_model(
     window: dict[str, Any] | None = None,
     requires_range: bool = False,
     one_click_local: bool = False,
+    whole_item: bool = False,
 ) -> dict[str, Any]:
     """Assemble the presentation view model (no I/O, no validation of media)."""
     if state not in CARD_STATES:
@@ -520,6 +528,7 @@ def build_view_model(
         "window": window or {},
         "requires_range": bool(requires_range),
         "one_click_local": bool(one_click_local),
+        "whole_item": bool(whole_item),
     }
 
 
@@ -736,8 +745,12 @@ def _buttons_for(vm: dict[str, Any]) -> tuple[tuple[str, str, int], ...]:
     state = vm.get("state")
     if state == STATE_REVIEW and vm.get("one_click_local"):
         window = vm.get("window") or {}
-        return (ONE_CLICK_REVIEW_BUTTONS if window.get("start_ms") is not None
-                else NO_WINDOW_REVIEW_BUTTONS)
+        if window.get("start_ms") is not None:
+            return ONE_CLICK_REVIEW_BUTTONS
+        if vm.get("whole_item"):
+            # A whole-item acquisition has no window to adjust.
+            return WHOLE_ITEM_REVIEW_BUTTONS
+        return NO_WINDOW_REVIEW_BUTTONS
     return STATE_BUTTONS.get(state, ())
 
 
@@ -800,7 +813,7 @@ def format_acquisition_card(vm: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 ACQUIRED_REEL_FIXTURE: dict[str, Any] = {
     "ref": "DdZS1QRhrXE",
-    "platform": "instagram",
+    "platform": "",
     "content_id": "DdZS1QRhrXE",
     "canonical_url": "https://www.instagram.com/reel/DdZS1QRhrXE/",
     # Creator handle: rendered when the platform safely provides one. The

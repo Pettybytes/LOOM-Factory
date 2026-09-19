@@ -58,7 +58,7 @@ DISCORD_API = "https://discord.com/api/v10"
 class LaneContext:
     """Everything the card needs, gathered from the operator surface."""
     ref: str
-    platform: str = "instagram"
+    platform: str = ""          # NEVER a default: an unknown platform fails closed
     content_id: str = ""
     canonical_url: str = ""
     state: str = card.STATE_REVIEW
@@ -644,7 +644,14 @@ def context_for(parsed: dict[str, str], *, store: LaneStore) -> LaneContext:
     except Exception:  # noqa: BLE001 — a lookup failure must not silence the lane
         durable = None
 
-    platform = (source.get("platform") or (durable or {}).get("platform") or "instagram")
+    platform = str(source.get("platform") or (durable or {}).get("platform") or "").lower()
+    if not platform and durable:
+        # A RECORDED source with no platform is a data fault: fail closed. It must
+        # never silently become Instagram — that is how a Twitch click once reached
+        # the Apify path. (An entirely unknown ref simply has nothing to resolve and
+        # renders as REVIEW with no source.)
+        raise lane.LaneError("PLATFORM_MISSING",
+                             "the source has no recorded platform; refusing to guess")
     canonical_url = (source.get("canonical_url")
                      or (durable or {}).get("canonical_url") or "")
     content_id = source.get("platform_content_id") or ref
@@ -1183,7 +1190,8 @@ def one_click_approve_acquire(*, deps: LaneStore, ctx: LaneContext, actor: str,
             "spend authorization stay separate actions")
     shown_window = ctx.window or {}
     shown = shown_window.get("range_fingerprint") or ""
-    if not shown:
+    whole_item = not shown
+    if whole_item and not getattr(ctx, "whole_item_ok", True):
         raise lane.LaneError("RANGE_REQUIRED",
                              "no approved window is displayed for this candidate")
     if required_fingerprint and not shown.startswith(required_fingerprint):
@@ -1207,7 +1215,9 @@ def one_click_approve_acquire(*, deps: LaneStore, ctx: LaneContext, actor: str,
     # The approval is bound to the RANGE IDENTITY, not merely the source: an edit
     # between the two clicks changes the fingerprint and this refuses.
     approve_row = deps.pending_job(ctx.ref) or {}
-    bound = _bind_approval(deps, approve_row, shown, actor)
+    # A whole-item acquisition binds to the SOURCE identity; a ranged one binds to
+    # the exact range fingerprint.
+    bound = _bind_approval(deps, approve_row, shown or ctx.content_id, actor)
     if not bound:
         raise lane.LaneError("RANGE_AUTHORIZATION_MISMATCH",
                              "the approved range changed after this click; review the "
@@ -1240,6 +1250,8 @@ def _bind_approval(deps: LaneStore, job: dict[str, Any], fingerprint: str,
         "range_fingerprint")
     if current and current != fingerprint:
         return False
+    if not current and fingerprint == str(job.get("platform_content_id") or ""):
+        return True                     # whole-item binding by source identity
     job_id = str(job.get("id") or "")
     if not job_id:
         return False

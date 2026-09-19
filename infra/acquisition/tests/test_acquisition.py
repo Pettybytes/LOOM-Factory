@@ -41,14 +41,23 @@ class TestDedupKey(unittest.TestCase):
 
 class TestPlan(unittest.TestCase):
     def test_blocked_pending_adapter_by_default(self):
-        # An IMPLEMENTED-but-not-proven adapter plans a BLOCKED job (no download).
+        # A platform with NO adapter still plans a BLOCKED job (no download).
+        spec = _base()
+        spec["platform"] = "reddit"
+        job = acq.plan_acquisition_job(**spec)
+        self.assertEqual(job["status"], acq.STATUS_BLOCKED_PENDING_ADAPTER)
+        self.assertTrue(job["status_reason"])
+        self.assertEqual(job["destination"], "personal_reaction_library")
+
+    def test_implemented_local_free_adapter_queues_even_when_unproven(self):
+        # DELIBERATE: readiness (`runtime_proven`) is not permission to spend. An
+        # implemented, $0 LOCAL adapter may run an operator-authorized attempt, which
+        # is exactly how such an adapter becomes proven.
         orig = caps._CAPABILITY["youtube"]["state"]
         try:
             caps._CAPABILITY["youtube"]["state"] = caps.CAP_IMPLEMENTED_NOT_PROVEN
             job = acq.plan_acquisition_job(**_base())
-            self.assertEqual(job["status"], acq.STATUS_BLOCKED_PENDING_ADAPTER)
-            self.assertTrue(job["status_reason"])
-            self.assertEqual(job["destination"], "personal_reaction_library")
+            self.assertEqual(job["status"], "queued")
         finally:
             caps._CAPABILITY["youtube"]["state"] = orig
 

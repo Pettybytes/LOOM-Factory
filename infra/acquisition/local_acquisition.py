@@ -21,7 +21,7 @@ LOCAL_PROVIDER = "local"
 COST_LABEL = "Local acquisition · $0 provider cost"
 
 
-def default_acquire(*, url: str, expected_id: str, tmp_dir: Path,
+def default_acquire(*, url: str, expected_id: str, tmp_dir: Path, platform: str = "",
                     library_dir: Path,
                     window: dict[str, Any] | None = None) -> dict[str, Any]:
     """The real bounded attempt (only reached in the live proof)."""
@@ -45,7 +45,7 @@ def default_acquire(*, url: str, expected_id: str, tmp_dir: Path,
 
     return ya.acquire_local(
         url=url, expected_id=expected_id, tmp_dir=tmp_dir, library_dir=library_dir,
-        window=window,
+        window=window, platform=platform,
         run_probe=probe,
         run_download=lambda cmd: ya.run_ytdlp_command(cmd, timeout=600),
         run_ffprobe=ya.run_ffprobe_json,
@@ -66,7 +66,7 @@ def _json(raw: str) -> dict[str, Any]:
     return data
 
 
-def run_local(*, canonical_url: str, content_id: str, video_id: str = "",
+def run_local(*, canonical_url: str, content_id: str, video_id: str = "", platform: str = "",
               fingerprint: str = "", window: dict[str, Any] | None = None,
               acquire_fn: Callable[..., dict[str, Any]] = default_acquire,
               tmp_dir: Path | None = None, library_dir: Path | None = None,
@@ -91,6 +91,7 @@ def run_local(*, canonical_url: str, content_id: str, video_id: str = "",
 
     try:
         result = acquire_fn(url=canonical_url, expected_id=expected, window=window,
+                            platform=platform,
                             tmp_dir=tmp, library_dir=lib)
     except ya.YtDlpError as e:
         return _failure(e.code, e.message, ledger=ledger, run_id=run_id,
@@ -124,7 +125,7 @@ def run_local(*, canonical_url: str, content_id: str, video_id: str = "",
         "content_type": "video/mp4",
         "acquisition_job_id": job_id,
         "provenance": {
-            "platform": "youtube",
+            "platform": platform or "youtube",
             "canonical_url": result["canonical_url"],
             "window": ({"start_ms": window["start_ms"], "end_ms": window["end_ms"],
                         "clip_duration_ms": window["clip_duration_ms"],

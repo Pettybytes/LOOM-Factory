@@ -72,6 +72,24 @@ class AcquisitionError(ValueError):
         self.message = message
 
 
+def _implemented_local_free(platform: str) -> bool:
+    """May an operator-authorized attempt run on an UNPROVEN adapter?
+
+    Yes for an implemented, zero-cost LOCAL adapter: `runtime_proven` is READINESS
+    (what we advertise / auto-run), not permission to spend. A $0 local adapter
+    incurs no provider cost, so an authorized attempt is safe to execute and is
+    exactly how such an adapter becomes proven.
+    """
+    try:
+        import source_adapters as _sa
+    except ImportError:
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        import source_adapters as _sa
+    return _sa.is_implemented(platform) and _sa.is_local_free(platform)
+
+
 def dedup_key(fingerprint: str, authorization_type: str, mode: str,
               start_s: float | None, end_s: float | None) -> str:
     """Deterministic idempotency key (stable across NULL ranges)."""
@@ -145,7 +163,8 @@ def plan_acquisition_job(
 
     # A platform whose adapter proof is explicitly in progress may plan a
     # dispatchable job; this grants no capability claim of its own.
-    if caps.can_acquire(platform) or caps.proof_mode_allows(platform):
+    if (caps.can_acquire(platform) or caps.proof_mode_allows(platform)
+            or _implemented_local_free(platform)):
         status, reason = STATUS_QUEUED, ""
     else:
         status, reason = STATUS_BLOCKED_PENDING_ADAPTER, caps.capability_reason(platform)

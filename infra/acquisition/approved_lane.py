@@ -223,7 +223,7 @@ def default_provider_actor(platform: str) -> str:
 def require_runtime_proven(job: dict[str, Any]) -> None:
     """Only a runtime-proven platform adapter may be dispatched."""
     platform = job.get("platform") or ""
-    if caps.can_acquire(platform):
+    if caps.can_acquire(platform) or acquisition._implemented_local_free(platform):
         return
     if caps.proof_mode_allows(platform):
         return          # bounded adapter proof in progress; state flips only on success

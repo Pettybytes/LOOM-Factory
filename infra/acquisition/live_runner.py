@@ -97,13 +97,14 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
         raise LiveRunnerError("NO_JOB", "no acquisition job")
 
     platform = job.get("platform") or ""
-    local = platform in LOCAL_PLATFORMS
+    local = _platform_is_local(platform)
 
     # --- 2. Gate 2 authorization (also rejects a Gate 1-only job) ---------
     lane.require_spend_authorization(job)
 
     # --- 8. Platform must be runtime-proven --------------------------------
-    lane.require_runtime_proven(job)
+    if not _implemented_local_free(str(job.get("platform") or "")):
+        lane.require_runtime_proven(job)
 
     # --- 1. Gate 1 must exist, and must be the job's own correlation -------
     fingerprint = job.get("duplicate_fingerprint") or ""
@@ -261,6 +262,30 @@ def preflight(job: dict[str, Any] | None, *, io: LiveIO,
         "local": local,
         "window": window,
     }
+
+
+def _platform_is_local(platform: str) -> bool:
+    """Is this platform served by the LOCAL $0 adapter?
+
+    Derived from the adapter registry's cost model, never from a platform name, so
+    a new local adapter is a registration rather than a new branch here.
+    """
+    try:
+        import source_adapters as _sa
+        if str(_sa.cost_model(platform).get("kind") or "") == "local":
+            return True
+    except Exception:  # noqa: BLE001 — fall back to the legacy set
+        pass
+    return platform in LOCAL_PLATFORMS
+
+
+def _implemented_local_free(platform: str) -> bool:
+    """An implemented, zero-cost local adapter may run an authorized attempt."""
+    try:
+        import source_adapters as _sa
+        return _sa.is_implemented(platform) and _sa.is_local_free(platform)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _prior_attempt_rows(io: LiveIO, job_id: str) -> list[dict[str, Any]]:
@@ -559,6 +584,7 @@ def _run_local_attempt(io: LiveIO, pre: dict[str, Any], *, job_id: str,
         content_id=pre["content_id"],
         fingerprint=pre.get("fingerprint") or "",
         window=pre.get("window") or None,
+        platform=str((pre.get("job") or {}).get("platform") or ""),
         acquire_fn=_LOCAL_ACQUIRE or local_acquisition.default_acquire,
         persist_library=io.persist_library if io.persist_library else None,
         ledger=io.ledger,
