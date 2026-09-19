@@ -131,8 +131,15 @@ class TestAdapterSurface(unittest.TestCase):
         self.assertTrue(sa.is_local_free("twitch"))
         # An implemented adapter and a declared stub are different things.
         self.assertTrue(sa.is_implemented("youtube"))
-        self.assertFalse(sa.is_implemented("kick"), "kick is still a declared stub")
+        # Kick clip mode is IMPLEMENTED now; readiness is a separate question, and
+        # no Kick mode has a successful proof yet.
+        self.assertTrue(sa.is_implemented("kick"))
         self.assertFalse(sa.runtime_proven("kick"))
+        self.assertEqual(set(sa.adapter_for("kick").proven_modes), set())
+        # A declared stub is still distinguishable from a real adapter, and an
+        # unknown platform has no adapter at all.
+        self.assertFalse(sa._UnimplementedLongFormAdapter.implemented)
+        self.assertFalse(sa.is_implemented("reddit"))
 
     def test_availability_classification(self):
         a = sa.adapter_for("twitch")

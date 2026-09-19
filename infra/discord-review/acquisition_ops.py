@@ -859,6 +859,33 @@ def handle(parsed: dict[str, str], *,
         return {"ok": False, "action": action, "effects": {}, "error": code}
 
     facts = effects.pop("view_facts", {})
+    # SHARED terminal hydration: every adapter's terminal card must carry REAL media
+    # facts. The durable library row is the source of truth (written for every
+    # adapter), so a runner that omits view_facts — or a path that patches late —
+    # can never leave a bare ACQUIRED card. Values are only filled in, never
+    # invented, and a failure here never blocks the terminal patch.
+    try:
+        ref_id = ctx.content_id or ctx.ref
+        wanted = (facts.get("library") or {}).get("asset_filename")
+        row = next((r for r in deps.library_rows()
+                    if isinstance(r, dict)
+                    and (str(r.get("platform_content_id") or "") == ref_id
+                         or (wanted and r.get("asset_filename") == wanted))), None)
+        if isinstance(row, dict):
+            lib = dict(facts.get("library") or {})
+            if new_state == card.STATE_ACQUIRED:
+                lib["status"] = lib.get("status") or "acquired"
+                if row.get("asset_filename"):
+                    lib.setdefault("asset_filename", row["asset_filename"])
+                if row.get("asset_hash"):
+                    lib.setdefault("sha256", row["asset_hash"])
+            facts["library"] = lib
+            if facts.get("duration_seconds") is None and row.get("duration_seconds") is not None:
+                facts["duration_seconds"] = row["duration_seconds"]
+            if facts.get("size_bytes") is None and row.get("size_bytes") is not None:
+                facts["size_bytes"] = row["size_bytes"]
+    except Exception:  # noqa: BLE001 — hydration must never break the terminal patch
+        pass
     transport.patch_original(card.format_acquisition_card(ctx.view_model(new_state, **facts)))
     deps.ledger_put(in_flight=False)
     return {"ok": True, "action": action, "state": new_state, "effects": effects}

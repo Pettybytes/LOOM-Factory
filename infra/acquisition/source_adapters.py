@@ -251,9 +251,82 @@ class TwitchAdapter:
         return "AVAILABLE"
 
 
-class KickAdapter(_UnimplementedLongFormAdapter):
+class KickAdapter:
+    """Kick through the SHARED long-form lane.
+
+    Kick-specific surface only: URL canonicalization, content-ID extraction,
+    clip/VOD classification, metadata probing, ranged acquisition, availability
+    classification and provenance. Windows, range identity, authorization, card
+    states, durable jobs, $0 accounting, normalization and library persistence stay
+    shared.
+
+    Capability status is EXPLICIT and mode-aware:
+      * clip mode — implemented; `runtime_proven` stays False until a real bounded
+        proof succeeds (this is what flips it), and `proven_modes` records exactly
+        which modes are proven.
+      * VOD mode — implemented but NOT proven: the supplied proof URL
+        `01a02be6-62d0-76a1-b338-0a9c3f3b8175` is externally unavailable (yt-dlp
+        `kick:vod` → HTTP 404 in every canonical form; Kick public metadata → 404).
+        Kick overall therefore never claims full clip+VOD proof.
+    """
+
+    implemented = True
     platform = "kick"
-    adapter_id = "kick:unimplemented"
+    adapter_id = "local:yt-dlp"          # the same vetted local tool, Kick transport
+    runtime_proven = False               # flipped only by a real clip proof
+    proven_modes: frozenset = frozenset()  # e.g. {"clip"} after a successful proof
+    long_form = True
+    requires_window_for_long_source = True
+    cost_model = {"kind": "local", "provider_cost_micro": 0, "paid": False}
+    capability_note = ("clip: implemented (proof pending); "
+                       "vod: implemented_not_proven — supplied proof URL returns 404")
+
+    def canonicalize(self, url: str, *, expected_content_id: str = "") -> dict[str, str]:
+        import kick_url as ku
+        parsed = ku.parse(url, expected_content_id=expected_content_id)
+        return {"platform": self.platform,
+                "canonical_url": parsed["canonical_url"],
+                "content_id": parsed["content_id"],
+                "kind": parsed["kind"]}
+
+    def reconcile_identity(self, expected_content_id: str, meta: dict) -> bool:
+        """Kick reports the same immutable id, so this is a straight comparison.
+
+        VOD uuids are case-insensitive; a mismatch in kind is still a mismatch.
+        """
+        raw = str((meta or {}).get("id") or "")
+        url = str((meta or {}).get("webpage_url") or (meta or {}).get("url") or "")
+        if not raw and not url:
+            return False
+        if raw.lower() == expected_content_id.lower():
+            return True
+        return expected_content_id.lower() in url.lower() if url else False
+
+    def classify_availability(self, meta: dict) -> str:
+        if not isinstance(meta, dict):
+            return "UNAVAILABLE"
+        if meta.get("is_live"):
+            return "LIVE_WITHOUT_IMMUTABLE_ID"
+        status = str(meta.get("availability") or "").lower()
+        if status in ("subscriber_only", "premium_only"):
+            return "SUBSCRIBER_ONLY"
+        if status in ("deleted", "unavailable"):
+            return "UNAVAILABLE"
+        if meta.get("is_private") or status == "private":
+            return "PRIVATE"
+        if meta.get("duration") is None:
+            return "UNAVAILABLE"
+        return "AVAILABLE"
+
+
+class KickVodUnavailable(Exception):
+    """Raised when a Kick VOD proof URL is externally unavailable (HTTP 404).
+
+    Classified externally, never as a contract or local defect — and it must not
+    produce a card or fabricated metadata.
+    """
+
+    code = "VOD_EXTERNALLY_UNAVAILABLE"
 
 
 register_adapter(YouTubeAdapter())
