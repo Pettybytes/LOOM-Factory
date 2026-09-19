@@ -1505,3 +1505,183 @@ probing, external delegation, deterministic filenames, and the value-safe sessio
 
 **Not exercised:** an actual age-gated acquisition (would need the live Keychain
 prompt and human approval).
+
+---
+
+## 12. End-of-day continuity — 2026-09-18 (EDT) / 2026-09-19 (UTC)
+
+This section is the authoritative continuity record for the session that ended here.
+Nothing below reopens a milestone; it records what is **runtime-proven**, what is not,
+and what comes next.
+
+### 12.1 Cross-platform exact acquisition — coverage
+
+Runtime-proven acquisition now exists for **every launch-critical source except the
+intentionally deferred one**:
+
+| Source | Mode | Status |
+|---|---|---|
+| YouTube | exact video + approved bounded windows | runtime-proven |
+| Reddit | exact post URL / share link / short link | runtime-proven ($0) |
+| Instagram | exact Reel URL | runtime-proven |
+| TikTok | exact video URL | runtime-proven (Apify, paid) |
+| Twitch | whole-item clip | runtime-proven |
+| Twitch | bounded VOD window | runtime-proven |
+| Kick | clip | runtime-proven |
+| Kick | VOD / ranged | `implemented_not_proven` — supplied replay URLs returned external HTTP 404 |
+| X (Twitter) | — | intentionally unsupported and deferred |
+
+**Kick VOD/ranged being unproven does not block launch:** the mode is implemented, the
+failure was an external 404 on the supplied replay URLs (not a defect in our contract),
+and no paid fallback is ever automatic.
+
+### 12.2 TikTok — paid provider, runtime-proven
+
+* **Primary pinned actor: `apidojo~tiktok-scraper`.**
+* **Clockworks is NOT runtime-proven, NOT allowlisted, and cannot be selected
+  automatically.** Its base result carries no downloadable video (`mediaUrls: []`); only
+  the paid `shouldDownloadVideos ($)` add-on would supply one, and paid add-ons are never
+  sent.
+
+Proven target: creator `thoughtswthot` · content id `7598767615980408095` · 8.868 s ·
+720×1280 · AAC audio · SHA-256 begins `0e9af235dacf`.
+
+* Real Discord acceptance passed (card reaches ACQUIRED with truthful facts and a
+  playable attachment).
+* **Idempotent repeat produces no provider call, no download, no new row and no spend.**
+* **Corrected TikTok proof spend:** Apidojo **$0.0015** · Clockworks **$0.0084** ·
+  combined **$0.0099 of $0.02** — nothing unresolved.
+* **Apify terminal-state usage can accrue after first completion.** A charge read at
+  terminal state is not final; the ledger therefore supports an **exactly-once,
+  ceiling-guarded true-up** that converges a reconciled run onto the provider's final
+  figure and never credits money back silently.
+* **Internal ceilings are admission controls, not provider-side hard caps.** Apify
+  rejects any `maxTotalChargeUsd` below $0.50, so no cap run parameter is sent; exposure
+  is reduced by one exact URL, `maxItems: 1`, actor-specific input validation and one
+  active paid reservation at a time.
+* **Instagram accounting remains isolated** — the Instagram breaker row is never read or
+  written by the TikTok ledger.
+
+### 12.3 Reddit — runtime-proven at **$0 provider cost**
+
+Proof input `https://www.reddit.com/r/TheCapitalLink/s/rPHdJGq2A2` resolved in **one hop**
+to `https://www.reddit.com/r/TheCapitalLink/comments/1l6m106/`.
+
+Verified: stable Reddit post ID `1l6m106` · subreddit `TheCapitalLink` · native Reddit
+video · **separate video and audio streams** (the mux is mandatory) · local `yt-dlp`
+acquisition · **local mux proven** · shared normalization/finalization passed ·
+21.474 s · 720×1044 · exact aspect **20:29 vertical** · H.264/AAC · audio present ·
+6,490,643 bytes · SHA-256/asset integrity verified · durable Reaction Library row
+created · **real Discord video attachment playable** · **idempotent repeat creates no
+download, row, file or spend**.
+
+Filename: `reddit__deleted__now-why-they-do-officer-fine-shit-like-that__1l6m106__4a2f10f48e14.mp4`
+The source author is `[deleted]` and is stored truthfully — no creator is fabricated.
+
+**Architecture:** native Reddit media → local `yt-dlp`; separate video/audio → local mux;
+external-host posts → delegate to the corresponding platform adapter. **Public access is
+attempted first**; the authorized Chrome session is available when legitimately required.
+Cookies remain **local and in-process**: no password and no cookie value is logged,
+committed, written to a file, sent to Discord, or uploaded to Apify. **Human approval
+remains mandatory before age-gated acquisition.**
+
+**Remaining Reddit boundaries (do not overstate):**
+
+* A real **age-gated acquisition has not been exercised**.
+* **Crosspost identity remains unverified.**
+* **GIF/GIFV remains unverified.**
+
+These do not block the launch path.
+
+### 12.4 Reaction Library titles
+
+* **Migration `036_loom_reaction_library_titles.sql` applied.** First-class columns:
+  `source_title`, `display_title`, `creator_name`, `creator_handle`.
+* **Human-readable filename contract active:**
+  `platform__creator__short-title__content-id__short-hash.ext`
+* All original **nine assets migrated without identity or hash drift**; Reddit increased
+  the library to **ten assets**.
+* **Current library: 10 video assets + 8 posters.**
+* Gallery and detail pages are **title-primary**; **Range-capable playback remains
+  verified** (206 + correct `Content-Range`).
+* Local helper is healthy and is launched via **`infra/local-helper/run.sh`** (which sets
+  `PYTHONPATH` for the sibling packages).
+
+### 12.5 Presentation corrections
+
+* Aspect labels now use **exact reduced ratios**.
+* 720×1280 correctly displays `9:16 vertical`; **720×1044 correctly displays `20:29 vertical`**.
+* Non-9:16 portrait media is **never mislabelled as 9:16** (the previous formatter used a
+  0.35 tolerance against 16/9, which mislabelled 1.45-ratio media).
+* LOOM-owned operational surfaces use **`SYSTEM_LABEL = "loom"`**.
+* **Real supplied tenant IDs remain unchanged** — a genuine tenant id is still rendered
+  when the caller supplies one.
+* The reserved **Dreemzy** name is **not** used as LOOM's system identity.
+
+### 12.6 Stage 2 status (stage-local numbering — authoritative)
+
+| Segment | Status |
+|---|---|
+| 3 — Initial Connector Proofs | **complete** |
+| 4 — Topic Intelligence | **complete** |
+| 5 — Multi-Source Moment Mining | **active / in progress** |
+| 6 — Lean Ranking Composer | pending |
+| 7 — Reaction-Ready Package & Session Board | partial |
+| 7b — Flexible Reaction Ingestion | partial |
+| 7c — Reaction Sync & Dynamic Post-Production | pending |
+| 7d — Benchmark, Backlog & Channel 1 Launch | pending |
+| 8 — Tenant Control Plane + Automated Discord Tenant Provisioning | substantially completed ahead of sequence; **pending formal acceptance reconciliation** |
+| 9 — Scheduling Rules & Expanded Distribution | pending |
+| Physical Studio & OBS Production System | later |
+
+This stage-local ladder is the current numbering. The older global
+Segment 0–8 table earlier in this file is **historical only** and must not be used to
+number current work.
+
+### 12.7 Exact next objective
+
+**Stage 2 · Segment 5 — activate Automated Multi-Source Discovery V1 and feed ranked
+candidates into the correct tenant queues.**
+
+The next session should **not build more downloaders unless a genuine acquisition defect
+appears.** Priority sequence:
+
+1. Reconcile roadmap/tracker status with completed Segments 3 and 4.
+2. Inspect the existing discovery foundation **without rebuilding it**.
+3. Activate launch-focused discovery feeds for the three tenants.
+4. Start with already-proven **YouTube and Reddit** discovery.
+5. Add TikTok, Instagram, Twitch and Kick discovery using the selected actor/local strategies.
+6. Combine market evidence with hook, emotion, story and content-worthiness scoring.
+7. Route qualified candidates into each tenant's Source Review queue.
+8. Preserve human approval before acquisition, editing or publication.
+9. Prove **one real automated multi-source candidate flow end-to-end**.
+10. Keep **X deferred**.
+
+Launch tenants: main face/reaction channel · animals/pets ranking channel · human
+wild-moments/story channel.
+
+### 12.8 Locked guardrails (preserved, unchanged)
+
+Human approval before acquisition or publication · Approve/Hold/Reject/Retry behaviour ·
+no polling-based orchestration · callback-first processing · no automatic resubmission ·
+no automatic paid fallback · playlist/mix rejection · exact-URL acquisition ·
+platform-separated accounting · shared normalization and Reaction Library finalization ·
+no multilingual output in the launch scope · X/Postiz deferred · no unnecessary
+re-auditing of completed milestones.
+
+### 12.9 End-of-day summary
+
+**September 19 (UTC; 2026-09-18 EDT) produced the strongest verified LOOM build progress
+to date:**
+
+* TikTok exact acquisition — completed
+* Reddit exact acquisition — completed at **$0**
+* Real Discord acceptance — completed
+* Reaction Library title migration — completed
+* Delayed provider-billing defect — corrected
+* Exact aspect-ratio truthfulness — corrected
+* Cross-platform acquisition coverage now spans **every launch-critical source except
+  intentionally deferred X**
+
+Unproven behaviour is stated as unproven above and is not claimed as complete: age-gated
+Reddit acquisition, crosspost identity, GIF/GIFV, and Kick VOD/ranged.

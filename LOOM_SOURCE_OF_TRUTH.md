@@ -49,10 +49,42 @@ Construction is not runtime proof.
 
 # Current Position
 
-**Current stage:** Stage 1 — Factory Spine
-**Current segment:** Segment 6B — GHL Social Planner Distribution (ACCEPTED)
-**Current subsegment:** none — 6B accepted; next work is the Stage 2 Discord-centered OpenShorts editor (active)
-**Next segment:** Stage 2 — Discord-Centered OpenShorts Editor (add Edit to Approve/Reject/Hold)
+**Current stage:** Stage 2 — Ranking and Reaction Growth Engine
+**Current segment:** Segment 5 — Multi-Source Moment Mining (ACTIVE)
+**Current subsegment:** activating Automated Multi-Source Discovery V1 (proven YouTube + Reddit first)
+**Next segment:** Segment 6 — Lean Ranking Composer (pending)
+
+**Stage 2 segment ladder (stage-local numbering — AUTHORITATIVE for current work):**
+
+| Segment | Status |
+| --- | --- |
+| 3 — Initial Connector Proofs | complete |
+| 4 — Topic Intelligence | complete |
+| 5 — Multi-Source Moment Mining | **active / in progress** |
+| 6 — Lean Ranking Composer | pending |
+| 7 — Reaction-Ready Package & Session Board | partial |
+| 7b — Flexible Reaction Ingestion | partial |
+| 7c — Reaction Sync & Dynamic Post-Production | pending |
+| 7d — Benchmark, Backlog & Channel 1 Launch | pending |
+| 8 — Tenant Control Plane + Automated Discord Tenant Provisioning | substantially completed ahead of sequence; **pending formal acceptance reconciliation** |
+| 9 — Scheduling Rules & Expanded Distribution | pending |
+| Physical Studio & OBS Production System | later |
+
+This stage-local ladder is the current numbering. The older global Segment 0–8 table further
+down this file is **HISTORICAL ONLY** and must not be used to number current work.
+
+**Exact next objective:** Stage 2 · Segment 5 — activate Automated Multi-Source Discovery V1 and
+feed ranked candidates into the correct tenant queues. Do **not** build more downloaders unless a
+genuine acquisition defect appears. Launch tenants: main face/reaction channel · animals/pets
+ranking channel · human wild-moments/story channel. Keep X deferred.
+
+**Continuity (2026-09-18 EDT / 2026-09-19 UTC):** cross-platform exact acquisition is
+runtime-proven for YouTube, Reddit ($0), Instagram, TikTok, Twitch clips, Twitch bounded VOD
+windows and Kick clips. Kick VOD/ranged is `implemented_not_proven` (supplied replay URLs
+returned external 404s; does not block launch). X remains intentionally unsupported/deferred.
+See `CURRENT_STATE.md` §12 for the full record, including the Reaction Library title migration
+(`036`) and the presentation corrections.
+
 **Runtime execution approval:** Segment 6B accepted on combined evidence (automated harness + Workflow 05 exec `10296` `already_distributed`, zero GHL). Workflow 05 Create Post/reconciliation branches are statically implemented; first workflow-native runtime proof awaits the first genuine approved asset.
 
 **Roadmap changes (2026-09-13, authorized):** Segment 6C Scheduling Rules moved to Stage 2 (Stage 1 keeps only minimum publish-mode/time validation via G12). Added Stage 2 "Automated Discord Tenant Provisioning" (one bot, tenant categories/channels auto-created, channel IDs in tenant config, cards routed by `tenant_id`, one shared interaction endpoint, keep `#clip-review` for Stage 1).
@@ -362,6 +394,10 @@ Collect and normalize performance, improve source/topic selection, improve bound
 ---
 
 # Current Factory Execution Segments
+
+> **HISTORICAL — superseded for current work.** These Segment 0–8 numbers belong to the
+> earlier global ladder. Current work is numbered by the **Stage 2 stage-local ladder** in the
+> "Current Position" section at the top of this file. Do not mix the two numbering systems.
 
 | Segment                                       | Status                                           | Evidence                                                                 |
 | --------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------ |

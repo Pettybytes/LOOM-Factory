@@ -9,7 +9,67 @@
 ---
 
 ## Last Updated
-2026-09-18 21:15 EDT (America/Detroit) — TWITCH RUNTIME-PROVEN (clip + VOD)
+2026-09-18 23:20 EDT (America/Detroit) — END OF DAY: TikTok + Reddit exact acquisition, presentation corrections
+
+## HANDOFF — End of day: cross-platform exact acquisition complete (2026-09-18 EDT / 2026-09-19 UTC)
+
+**State:** `master` HEAD `e2e80f3`, clean, pushed. Suites **578 acquisition · 86 local-helper ·
+168 Discord = 832 total**, all green.
+
+**Cross-platform exact acquisition coverage is now complete for every launch-critical source
+except intentionally deferred X:** YouTube (video + bounded windows), Reddit ($0), Instagram,
+TikTok, Twitch clips, Twitch bounded VOD windows, Kick clips. **Kick VOD/ranged remains
+`implemented_not_proven`** — supplied replay URLs returned external HTTP 404s, which does not
+block launch. **X remains intentionally unsupported and deferred.**
+
+**TikTok (paid, runtime-proven).** Pinned actor `apidojo~tiktok-scraper`; Clockworks is NOT
+proven, NOT allowlisted and cannot be auto-selected (its base result carries no downloadable
+video). Proven target `thoughtswthot` / `7598767615980408095` / 8.868 s / 720×1280 / AAC /
+sha256 `0e9af235dacf…`. Real Discord acceptance passed; idempotent repeat = no provider call,
+no download, no row, no spend. **Corrected spend: Apidojo $0.0015 · Clockworks $0.0084 ·
+combined $0.0099 of $0.02, nothing unresolved.** Apify terminal-state usage can accrue after
+first completion, so the ledger supports an exactly-once, ceiling-guarded true-up. Internal
+ceilings are admission controls, **not** provider-side hard caps. Instagram accounting stays
+isolated.
+
+**Reddit (runtime-proven, $0 provider cost).** Share link `…/r/TheCapitalLink/s/rPHdJGq2A2`
+resolved in **one hop** to `…/r/TheCapitalLink/comments/1l6m106/`; post id `1l6m106`.
+Native video with **separate audio** → local `yt-dlp` → **local mux** → shared normalization →
+library. 21.474 s · 720×1044 · **20:29 vertical** · H.264/AAC · 6,490,643 B · sha256 `4a2f10f48e14…`
+· durable row created · Discord video attachment playable · idempotent repeat downloads nothing.
+Filename `reddit__deleted__now-why-they-do-officer-fine-shit-like-that__1l6m106__4a2f10f48e14.mp4`
+(author is `[deleted]`, stored truthfully). Public access is attempted first; the authorized
+Chrome session is for legitimate auth-gated cases only, cookies stay local and in-process, and
+**human approval remains mandatory for age-gated acquisition**.
+
+**Reaction Library.** Migration `036_loom_reaction_library_titles.sql` applied; `source_title`,
+`display_title`, `creator_name`, `creator_handle` are first-class. Human-readable filename
+contract `platform__creator__short-title__content-id__short-hash.ext` active. Nine original
+assets migrated with no identity or hash drift; Reddit made it **10 videos + 8 posters**.
+Gallery/detail pages are title-primary; Range playback verified; helper healthy via
+`infra/local-helper/run.sh`.
+
+**Presentation.** Aspect labels now use exact reduced ratios (720×1280 → `9:16 vertical`,
+720×1044 → `20:29 vertical`; non-9:16 portrait is never mislabelled). LOOM surfaces use
+`SYSTEM_LABEL = "loom"`; real tenant ids are untouched and still rendered when supplied; the
+reserved Dreemzy name is not LOOM's system identity.
+
+**Next (do not build more downloaders unless a genuine acquisition defect appears):**
+**Stage 2 · Segment 5 — activate Automated Multi-Source Discovery V1 and feed ranked candidates
+into the correct tenant queues.** Reconcile tracker status for Segments 3 and 4, inspect the
+existing discovery foundation without rebuilding it, activate launch-focused feeds for the three
+tenants starting with proven YouTube and Reddit, then add TikTok/Instagram/Twitch/Kick discovery,
+combine market evidence with hook/emotion/story/content-worthiness scoring, route qualified
+candidates into each tenant's Source Review queue, keep human approval before acquisition/editing/
+publication, and prove one real automated multi-source candidate flow end-to-end. Keep X deferred.
+
+Launch tenants: main face/reaction channel · animals/pets ranking channel · human
+wild-moments/story channel.
+
+Guardrails unchanged: human approval before acquisition or publication · Approve/Hold/Reject/Retry
+· no polling orchestration · callback-first · no automatic resubmission · no automatic paid
+fallback · playlist/mix rejection · exact-URL acquisition · platform-separated accounting · shared
+normalization + library finalization · no multilingual output in launch scope · X/Postiz deferred.
 
 ## HANDOFF — Twitch RUNTIME-PROVEN (2026-09-18)
 
