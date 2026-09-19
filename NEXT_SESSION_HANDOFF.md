@@ -104,9 +104,40 @@ loom_reviews                        terminal decisions
 
 ---
 
-## 5. What is NOT done — Editor implementation
+## 5. Editor implementation — IMPLEMENTED, VISUAL ACCEPTANCE PENDING
 
-**`EDITOR_IMPLEMENTATION = NOT STARTED`.** Only the architecture was diagnosed.
+**`EDITOR_IMPLEMENTATION = IMPLEMENTED`** (openshorts repo commit `416e12e`).
+**`EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN`.**
+
+⚠️ **Where the editor code actually lives:** `openshorts/` is a **separate nested
+git repo** (own remote `mutonby/openshorts`) and is **gitignored by LOOM-Factory**.
+`ManualTrimEditor.jsx`, `HookModal.jsx` and friends are tracked THERE, not in
+LOOM-Factory — `git status` in LOOM-Factory will never show them. Branch:
+`loom/factory-mvp-baseline-fixes`, no upstream configured; editor commits are
+local-only (14 unpushed at time of writing) — pushing is a deliberate decision,
+not an oversight.
+
+Evidence (labels per §2.5):
+- **Static verified** — `vite build` inside the `openshorts-frontend` container is
+  clean; `app.py` and `hooks.py` compile.
+- **Test verified** — 52 `node --test` cases in `dashboard/src/lib/*.test.mjs`;
+  22 unittest cases in `openshorts/tests/test_hook_rich_text.py`; the infra
+  baseline is **974/974 unchanged** (my changes are all in the nested repo, so the
+  LOOM-Factory total did not move — that is the correct result, not a skipped run).
+- **Runtime verified** — an editor session was minted for
+  `loom-edit-fidelity:0@render-1.1`; `/discord/editor/exchange` returned the
+  prepared draft (hook + 4 rich-text spans), `/discord/editor/bootstrap` returned
+  200 with media/clean URLs, and `/edit` served 200 from the public funnel origin.
+- **NOT verified** — the human visual acceptance (Header + Hook actually rendering
+  with the range colours on screen). That is Bryan's one click.
+
+What changed (accepted plan items 1-8): one shared overlay surface
+(`TextOverlayPreview.jsx`) plus one draft→preview conversion
+(`lib/editorPreviewState.js`), consumed by the primary preview AND the Hook modal;
+one span model (`lib/hookRichText.js`); shared looks/geometry (`lib/hookStyles.js`);
+the server burn honours spans (`hooks.py` `build_style_map`, `/api/hook` accepts
+`spans`/`base`, recorded in `edl_metadata`); the draft persists
+`hook_rich`/`hook_entrance`. Clip Title and Social Caption remain non-visual.
 
 ### Root cause (established, exact)
 ```
