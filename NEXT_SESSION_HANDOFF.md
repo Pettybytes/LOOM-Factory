@@ -268,7 +268,7 @@ The primary preview cannot show the Hook because it has **no overlay surface**; 
 7. **Render parity** — semantics (content, colours, placement, style, timing, trim, framing) must match; centralize shared config rather than two interpreted formats.
 8. **Oversize-image fallback** for editor previews — the card path is done (`10ac46f`); the editor/preview side is not.
 9. **Tests** — shared preview state construction, Hook/Header propagation, Clip Title distinct from Header, Social Caption non-visual, hook style/timing persistence, rich-text span persistence, backward compat with plain strings, lineage, completion error behaviour, card retry/idempotency, no hydration regression. There is **no JS test runner** in this repo — decide whether to add one or assert the contract from Python; report the choice.
-10. **One visual acceptance** — prepare a state (Clip Title `EDITOR PREVIEW ACCEPTANCE`, Header `HEADER PREVIEW`, Hook `LOOK MA.. NO HANDS!`, multiple colours, known trim/framing) and give Bryan exactly ONE instruction. `EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN` is not a failure.
+10. **One visual acceptance** — prepare a state (Clip Title `EDITOR PREVIEW ACCEPTANCE`, Header `HEADER PREVIEW`, Hook `LOOK MA.. NO HANDS!`, multiple colours, known trim/framing) and give Bryan exactly ONE instruction. `EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN (Round 5 - Render Parity) (Round 5 - Render Parity)` is not a failure.
 
 ---
 
@@ -307,7 +307,7 @@ Implemented: `infra/discovery/connectors/twitch.py` — Helix listing + EventSub
 
 ## 9. Remaining Segment 5 sequence (authorized order — do not reorder)
 
-1. **Finish Editor visual/runtime acceptance** (see §5) — `EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN`.
+1. **Finish Editor visual/runtime acceptance** (see §5) — `EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN (Round 5 - Render Parity) (Round 5 - Render Parity)`.
 2. **Segment 5B — Multimodal Candidate Intelligence.**
    * **Objective:** cheap LOCAL audio/visual signals so speech is not the only thing that can create a candidate moment. Target the `talking → talking → VISUAL PAYOFF → talking` failure.
    * Pipeline shape: `transcript + audio spike + visual activity + scene change → candidate evidence → Qwen`.
@@ -334,8 +334,10 @@ Also still open from earlier planning (not authorized yet): the 8 ecosystem item
 
 ## 10. Next session starting point
 
-Because `EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN`:
+Because `EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN (Round 5 - Render Parity) (Round 5 - Render Parity)`:
 
 ```
-START HERE NEXT SESSION: complete the prepared Editor visual acceptance, fix only proven defects, then begin Segment 5B.
-```
+START HERE NEXT SESSION: Human visual acceptance for Header render parity is ready.
+Open ~/Desktop/LOOM-EDITOR-ACCEPTANCE.txt to access the single-use editor link.
+Turn on the Header ("on-video title / header -> enabled"), select some text to style it, change to 'dedicated black region', hit 'auto edit', and view the Discord #re-review card output to confirm final render fidelity matches your exact selection geometry.
+Then begin Segment 5B.
