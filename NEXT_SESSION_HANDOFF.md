@@ -111,9 +111,26 @@ Hook rich text + one authoritative preview, `8895050` Header parity, `eef684b`
 Header defect fixes).
 **`HOOK_VISUAL_ACCEPTANCE = PASS`** (Bryan reported: Hook renders in the primary
 preview, including multiple colours).
-**`HEADER_VISUAL_ACCEPTANCE = ROUND 2: PARTIAL PASS`** — selective styling PASS,
-region separation PASS, Hook regression NONE; inline-field crash and Header
-padding failed and are fixed in `6e734da`, awaiting Bryan's re-test.
+**`HEADER_VISUAL_ACCEPTANCE = ROUND 3: PENDING_HUMAN`** — selective styling PASS,
+region separation PASS, Hook regression NONE (rounds 1-2); round-3 preview
+geometry parity fixed in `PreviewSurface` (see below).
+
+**Round-3 root cause — preview geometry parity (measured, not guessed).** The
+media is 720x1280 (exactly 9:16), but the two preview containers were different
+shapes: the modal's was a real 9:16 box, while the main preview used
+`aspect-[9/16] lg:aspect-auto lg:h-auto`, so on desktop its height came from the
+tall sidebar (~420x1000). The 9:16 video was therefore letterboxed ~126px top
+and bottom in the MAIN preview only, and the header band (0-14% of the
+CONTAINER) fell mostly into that black bar ("too high") while the Hook at 20%
+landed just under the video's top edge ("on the boundary"). Same normalized
+values, different frames.
+
+Fixed by `PreviewSurface.jsx` as the ONE surface used by the primary preview and
+both range modals: the frame's aspect ratio is pinned to the video's own aspect
+and capped by WIDTH only (a max-height would break the aspect and reintroduce the
+divergence). `overlayLayout.js` exposes `FRAME_ASPECT`, `frameRect()`,
+`framePoint()` and `normalizedPlacement()` so the transform is explicit and
+tested. **Do not reintroduce `lg:aspect-auto`/`max-h` on a preview container.**
 
 Round-2 root causes (both fixed, both pinned by tests):
 - **Inline Header field crashed the editor.** `ManualTrimEditor` read
