@@ -111,7 +111,29 @@ Hook rich text + one authoritative preview, `8895050` Header parity, `eef684b`
 Header defect fixes).
 **`HOOK_VISUAL_ACCEPTANCE = PASS`** (Bryan reported: Hook renders in the primary
 preview, including multiple colours).
-**`HEADER_VISUAL_ACCEPTANCE = FAILED → FIXED, PENDING_HUMAN RE-TEST`.**
+**`HEADER_VISUAL_ACCEPTANCE = ROUND 2: PARTIAL PASS`** — selective styling PASS,
+region separation PASS, Hook regression NONE; inline-field crash and Header
+padding failed and are fixed in `6e734da`, awaiting Bryan's re-test.
+
+Round-2 root causes (both fixed, both pinned by tests):
+- **Inline Header field crashed the editor.** `ManualTrimEditor` read
+  `e.currentTarget.selectionStart` INSIDE a deferred state updater; React nulls
+  `currentTarget` after dispatch, so the updater saw `null` ->
+  "Cannot read properties of null (reading 'selectionStart')" -> error boundary.
+  The modal fields were fine because they read a ref BEFORE `setState`. Fixed
+  with `readSelection()` (null-safe, refuses to touch non-INPUT/TEXTAREA) and an
+  eager snapshot; no blanket try/catch.
+- **Header crowded the region boundary.** Added `HEADER_SAFE_INSET_PCT`,
+  `headerUsableBand()`; the default anchor is now CENTRED in the usable band and
+  every anchor is clamped inside it, so explicit choices cannot breach padding.
+  Region clipping means a large rich-text range cannot redefine the geometry.
+
+**NEXT (after this re-test passes): FINAL RENDER PARITY.** The Editor is NOT
+complete until the actual rendered MP4 is proven to contain the same Header/Hook
+text, ranges, colours, fonts, relative sizes and placement seen in the preview:
+editor state -> draft/EDL -> render -> MP4 -> new asset_version -> GHL canonical
+-> Discord re-review card. Preview-only success is not final acceptance.
+**Do not start Segment 5B until render parity is runtime-proven.**
 
 Bryan's first Header acceptance failed on two counts, both root-caused:
 1. **Selective Header styling did not work.** `HeaderModal` re-synced the
