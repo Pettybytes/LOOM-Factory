@@ -1211,22 +1211,32 @@ row, with idempotency on repeat acquisition of the same canonical source.
 | Run | Actor | Outcome | Charge |
 |---|---|---|---|
 | `plG9LgcSeTxD8eYWV` | Clockworks | FAILED — wrong input (`startUrls` unsupported) | $0.0037 |
-| `1yp9focLtM6ZyC391` | Clockworks | SUCCEEDED — no downloadable media in base result | $0.0010 |
-| `wqL0eJXuT1HLhlEZj` | **Apidojo** | **SUCCEEDED — full video acquired end-to-end** | $0.0000 |
+| `1yp9focLtM6ZyC391` | Clockworks | SUCCEEDED — no downloadable media in base result | **$0.0047** |
+| `b1n5dko5Zbr8jaY0U` | Apidojo | SUCCEEDED — translation only | $0.0003 |
+| `hBGVgWTyIkRIBw2R2` | Apidojo | succeeded — media blocked by IG-only CDN allowlist | $0.0003 |
+| `n7rDP9veJqjWcHxHn` | Apidojo | succeeded — durable row lost to the empty-uuid defect | $0.0003 |
+| `gOUhlgCCiGuOBWU7T` | Apidojo | succeeded | $0.0003 |
+| `wqL0eJXuT1HLhlEZj` | **Apidojo** | **SUCCEEDED — full video acquired end-to-end** | **$0.0003** |
+
+⚠️ The charge column is the value Apify reports **now**, which is authoritative —
+not the value read at terminal state. See "Accounting correction" below.
 
 Apidojo receipt: content id `7598767615980408095`, `video.url` → HTTP 200
 `video/mp4`, 1,405,272 B, 8.868 s, 720×1280, H.264/AAC/yuv420p, fast-start, sha256
 `0e9af235dacf129a93f64ef40b89eab3512c65d63f1f870f1c7cbc58cddf1d6c`, library row
-`542ef5cf-2681-4ef7-96b1-4ae3f925e55c`. **TikTok spend: $0.0053 of $0.02**;
-nothing unresolved. Readiness is flipped only where a receipt exists — Clockworks
-stays unproven because its base result carries no video (the paid
-`shouldDownloadVideos ($)` add-on would be required, and paid add-ons are never sent).
+`542ef5cf-2681-4ef7-96b1-4ae3f925e55c`. **True TikTok spend: $0.0099 of the $0.02
+authorization** (Apidojo $0.0015, Clockworks $0.0084), nothing unresolved.
+Readiness is flipped only where a receipt exists — Clockworks stays unproven
+because its base result carries no video (the paid `shouldDownloadVideos ($)`
+add-on would be required, and paid add-ons are never sent).
 
 ### Defects found and fixed on the way
 
 1. `maxTotalChargeUsd` below **$0.50** is rejected by Apify
-   (`max-total-charge-usd-below-minimum`) — the $0.01 bound is therefore enforced by
-   the ledger reservation + `maxItems: 1`, and both numbers are reported.
+   (`max-total-charge-usd-below-minimum`). $0.50 is 50x the authorization, so NO
+   charge-cap run parameter is sent at all — sending the floor would be a
+   decorative parameter that misstates the real control. The $0.01/$0.02 bound is
+   an **internal admission control**, NOT a provider-side hard cap.
 2. Apify `~`-slug actors reject a `KeyError`-prone CAS patch: the REST store assumed
    every patch carried `status`, which broke the run-id bind **after** a run existed.
 3. An empty `acquisition_job_id` is invalid for a uuid column (400 `22P02`); the
@@ -1238,8 +1248,78 @@ stays unproven because its base result carries no video (the paid
 
 ### Remaining (explicit)
 
-* TikTok is NOT wired into the shared lane: there is no pinned provider actor in
-  `approved_lane.DEFAULT_PROVIDER_ACTORS`, so a paid TikTok dispatch still fails
-  closed with `NO_PROVIDER_ACTOR`.
+* TikTok IS wired into the shared lane: `approved_lane.DEFAULT_PROVIDER_ACTORS["tiktok"]`
+  is the proven Apidojo actor, and `provider.profile_for("tiktok")` supplies the
+  input shape, output validation and CDN predicate. Clockworks is neither pinned nor
+  allowlisted, so it cannot be auto-selected.
 * Slideshow/photo posts are refused by contract and are NOT a proven mode.
 * Apidojo's `song` carries no audio URL; audio came from the video's own stream.
+
+---
+
+## 9. TikTok — accounting correction, lane wiring, idempotent acceptance (2026-09-18)
+
+### Accounting correction (supersedes the figures in section 8)
+
+**Apify's `usageTotalUsd` is NOT final when a run reaches a terminal state.** It
+accrues with delay. Re-reading the run objects after the fact showed three runs
+had been reconciled against a *lower* figure than the provider's final charge:
+
+| Run | Recorded at reconcile | Provider's final | Delta |
+|---|---|---|---|
+| `1yp9focLtM6ZyC391` | $0.0010 | **$0.0047** | +$0.0037 |
+| `b1n5dko5Zbr8jaY0U` | $0.0000 | **$0.0003** | +$0.0003 |
+| `wqL0eJXuT1HLhlEZj` | $0.0000 | **$0.0003** | +$0.0003 |
+
+So the earlier claim of "$0.0056 spend, nothing unresolved" was **wrong**: the
+ledger had over-released $0.0043 of reservation. The $0.0006 "unexplained"
+difference was simply the two earlier Apidojo runs (2 x $0.0003) omitted from a
+scratch summary — but the real error underneath it was far larger.
+
+Fix: `TikTokSpendLedger.correct_actual()` true-ups a reconciled run against the
+provider's final charge. It CASes on the OLD actual (idempotent, cannot
+double-apply), never credits money back (a lower figure is reported as
+`REFUSED_DOWNWARD`, not silently applied), and is guarded by the same ceilings.
+
+Corrected ledger after true-up: Apidojo $0.0015 / Clockworks $0.0084 /
+**combined $0.0099 of $0.020**, nothing unresolved, both actors within ceiling.
+
+### Spending-limit description (corrected)
+
+The ceilings are the **authoritative internal admission control**. They are **not**
+a provider-side hard cap: once a run has started, LOOM cannot technically prevent
+Apify from charging beyond $0.01. Exposure is reduced — not eliminated — by the
+bound together with: exactly one direct public video URL, `maxItems: 1`,
+actor-specific input validation, and one active paid reservation at a time.
+No charge-cap run parameter is sent (Apify rejects anything below $0.50, and $0.50
+is 50x the authorization).
+
+### Provider wiring (addition, Instagram unchanged)
+
+`provider.profile_for(platform)` now owns input shape, output validation and the
+media CDN predicate. `InstagramProviderProfile` reproduces the previous behaviour
+exactly (`media_host_check("instagram")` returns `None`, so the helper's default
+allowlist still applies). `TikTokProviderProfile` delegates to the proven adapter.
+`live_runner` gained a platform-scoped `host_check` on the bounded downloader and a
+pinned TikTok cost estimate; `orchestrate.dispatch` passes platform + canonical URL
+into output validation.
+
+### Idempotent UI/lane acceptance (proved, $0 spent)
+
+`infra/acquisition/prove_tiktok_idempotent_dispatch.py` re-requests the already
+acquired canonical video against the REAL durable library row, with every provider
+entry point replaced by a tripwire:
+
+* canonical identity → `d390d3eab2b1e1ac…`, dispatch pins `apidojo~tiktok-scraper`
+  (Clockworks refused `UNKNOWN_ACTOR`)
+* `preflight` refuses **`ALREADY_ACQUIRED`** before any reservation
+* provider calls: **none**; media downloads: **none**; library writes: **none**
+* ledger spend delta: **0 micro-dollars**, nothing unresolved
+* card reaches `ACQUIRED` with truthful facts
+  (`0:08 · 720×1280 · 9:16 vertical · 1.3 MB · Audio present (AAC)`), a private
+  library link, the library filename + sha256 prefix, and video-vs-poster fallback
+  resolved per guild tier (1.3 MB fits even tier 0)
+
+**Not exercised:** the live Discord guild round-trip (posting/patching a real
+message). The card payload, state, buttons and fallback are asserted from the real
+modules; the transport to Discord itself was not driven.

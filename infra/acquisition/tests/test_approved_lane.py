@@ -132,13 +132,19 @@ class TestRuntimeProvenAndAttempts(unittest.TestCase):
             lane.require_runtime_proven({"platform": "reddit"})
         self.assertEqual(e.exception.code, "NOT_RUNTIME_PROVEN")
 
-    def test_tiktok_is_dispatchable_at_the_readiness_gate(self):
-        # Readiness is honest per platform; the LANE wiring is a separate step, so
-        # the pinned-actor lookup below still fails closed.
+    def test_tiktok_is_wired_to_the_proven_actor_only(self):
+        import provider
         lane.require_runtime_proven({"platform": "tiktok"})
-        with self.assertRaises(lane.LaneError) as e:
-            lane.default_provider_actor("tiktok")
-        self.assertEqual(e.exception.code, "NO_PROVIDER_ACTOR")
+        self.assertEqual(lane.default_provider_actor("tiktok"),
+                         provider.ACTOR_TIKTOK_VIDEO)
+        # Clockworks is neither pinned nor allowlisted, so it can never be
+        # auto-selected (and no fallback exists to reach it).
+        with self.assertRaises(provider.ProviderError) as e:
+            provider.allowed_actor("tiktok", "clockworks~tiktok-scraper")
+        self.assertEqual(e.exception.code, "UNKNOWN_ACTOR")
+        with self.assertRaises(lane.LaneError) as e2:
+            lane.default_provider_actor("reddit")
+        self.assertEqual(e2.exception.code, "NO_PROVIDER_ACTOR")
 
     def test_one_attempt_then_explicit_retry(self):
         self.assertTrue(lane.attempts_allowed({"retry_count": 0}))

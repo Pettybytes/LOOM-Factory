@@ -128,12 +128,18 @@ class TestGateEnforcement(unittest.TestCase):
         self.assertEqual(transport.calls[0][1], provider.ACTOR_REEL_SCRAPER)
 
     def test_platform_without_a_pinned_actor_is_refused(self):
+        # tiktok gained a pinned provider on 2026-09-18; a platform with none
+        # still exercises this refusal.
         with self.assertRaises(lane.LaneError) as e:
-            lane.default_provider_actor("tiktok")
+            lane.default_provider_actor("reddit")
         self.assertEqual(e.exception.code, "NO_PROVIDER_ACTOR")
 
+    def test_tiktok_selects_the_proven_actor(self):
+        self.assertEqual(lane.default_provider_actor("tiktok"),
+                         provider.ACTOR_TIKTOK_VIDEO)
+
     def test_unproven_platform_is_refused(self):
-        job = authorized_job(platform="tiktok")
+        job = authorized_job(platform="reddit")
         with self.assertRaises(lane.LaneError):
             run(job)
 

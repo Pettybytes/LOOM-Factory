@@ -49,7 +49,8 @@ def dispatch(*, job, canonical_url, content_id, platform, actor,
                 "message": getattr(e, "message", "") or str(e)}
 
     try:
-        out = provider.validate_output(items, content_id=content_id)
+        out = provider.validate_output(items, content_id=content_id, platform=platform,
+                                      canonical_url=canonical_url)
     except provider.ProviderError as e:
         return {"ok": False, "error": e.code, "message": e.message}
 

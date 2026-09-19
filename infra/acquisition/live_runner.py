@@ -80,6 +80,10 @@ class LiveIO:
     provider_runs_for_job: Callable[[str], list[dict[str, Any]]] | None = None
     ledger: Any | None = None              # DurableLedger (required to spend)
     known_failure_charge_micro: int | None = None
+    #: Platform CDN predicate for the bounded downloader. ``None`` keeps the
+    #: local helper's default (Meta/Instagram) allowlist, so existing paths are
+    #: untouched; TikTok supplies its own.
+    host_check: Callable[[str], bool] | None = None
     tmp_dir: str = "/tmp"
     library_dir: str = ""
     download_timeout: float = 60.0
@@ -317,18 +321,24 @@ def _estimate_micro(platform: str) -> int:
     """Pinned per-result cost for the proven adapter (exact, not a guess)."""
     if platform == "instagram":
         return cost.REEL_SCRAPER_RESULT_MICRO
+    if platform == "tiktok":
+        import tiktok_actors as _tt
+        return _tt.get_actor(provider.ACTOR_TIKTOK_VIDEO).cost_micro_per_result
     raise LiveRunnerError("NO_ESTIMATE", f"no pinned cost estimate for platform {platform!r}")
 
 
 # ---------------------------------------------------------------------------
 # Bounded download + validation
 # ---------------------------------------------------------------------------
-def build_bounded_downloader(io: LiveIO, *, max_bytes: int, max_duration: float) -> Callable:
+def build_bounded_downloader(io: LiveIO, *, max_bytes: int, max_duration: float,
+                             host_check: Callable[[str], bool] | None = None) -> Callable:
     def download(url: str) -> dict[str, Any]:
         tmp_path = ""
         try:
+            extra = {"host_check": host_check} if host_check is not None else {}
             tmp_path, written, http_status, content_type = io.download_one_video(
-                url, io.tmp_dir, max_bytes=max_bytes, timeout=io.download_timeout)
+                url, io.tmp_dir, max_bytes=max_bytes, timeout=io.download_timeout,
+                **extra)
             meta = io.parse_ffprobe_result(io.run_ffprobe(tmp_path),
                                            actual_size_bytes=written,
                                            max_bytes=max_bytes,
@@ -476,8 +486,10 @@ def build_live_runner(*, io: LiveIO, store: Any,
             return {"ok": False, "status": "failed", "attempts": 0,
                     "error": {"code": getattr(e, "code", "FAILED"),
                               "message": getattr(e, "message", str(e))}}
-        downloader = build_bounded_downloader(io, max_bytes=pre["job"]["max_bytes"],
-                                              max_duration=pre["job"]["max_duration_seconds"])
+        downloader = build_bounded_downloader(
+            io, max_bytes=pre["job"]["max_bytes"],
+            max_duration=pre["job"]["max_duration_seconds"],
+            host_check=provider.media_host_check(pre["job"].get("platform") or ""))
         finalizer = build_finalizer(io, pre=pre)
 
         # Attempts are checked BEFORE any reservation, so a refusal can never hold

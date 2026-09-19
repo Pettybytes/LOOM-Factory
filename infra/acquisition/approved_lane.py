@@ -57,6 +57,9 @@ GATE_AUTHORIZE = "authorize"
 # would feed a person's name into the actor allowlist.
 DEFAULT_PROVIDER_ACTORS: dict[str, str] = {
     "instagram": provider.ACTOR_REEL_SCRAPER,
+    # TikTok's pinned provider is the proven Apidojo actor. Clockworks is NOT here
+    # and is not in the actor allowlist either, so it cannot be auto-selected.
+    "tiktok": provider.ACTOR_TIKTOK_VIDEO,
 }
 
 # Gate-1 jobs are queued but explicitly NOT spend-authorized. The reason string

@@ -52,16 +52,13 @@ APIDOJO_RESULT_MICRO = 300
 #: reservation and by acquiring exactly one result.
 AUTHORIZED_CHARGE_CEILING_USD = 0.01
 
-#: LIVE FINDING (2026-09-18): Apify REJECTS ``maxTotalChargeUsd`` below **$0.50**
-#: with ``max-total-charge-usd-below-minimum`` ("Maximum cost per run is less than
-#: the allowed minimum of $0.50"). The literal $0.01 cap is therefore NOT
-#: expressible as a run parameter on this platform. The run parameter carries the
-#: platform floor instead, and the $0.01/$0.02 authorization is enforced by the
-#: ledger plus ``maxItems: 1`` over one direct video URL. Both numbers are always
-#: reported, so the deviation is documented rather than hidden.
+#: Apify REJECTS ``maxTotalChargeUsd`` below **$0.50**
+#: (``max-total-charge-usd-below-minimum``, live 2026-09-18). $0.50 is 50x this
+#: project's per-actor authorization, so sending it would be a decorative
+#: parameter that misrepresents the real control. LOOM therefore sends NO charge
+#: cap, and the $0.01/$0.02 bound is described for what it actually is — see
+#: ``charge_cap_report``.
 APIFY_MIN_MAX_TOTAL_CHARGE_USD = 0.50
-
-MAX_TOTAL_CHARGE_USD = APIFY_MIN_MAX_TOTAL_CHARGE_USD
 
 MAX_ITEMS = 1
 MAX_DURATION_SECONDS = 300
@@ -288,37 +285,51 @@ def build_actor_input(actor: str, canonical_url: str, *,
     return inp
 
 
-def effective_charge_cap_usd(authorized_usd: float = AUTHORIZED_CHARGE_CEILING_USD) -> float:
-    """The charge cap Apify will actually accept (its $0.50 floor is a floor)."""
-    return max(float(authorized_usd), APIFY_MIN_MAX_TOTAL_CHARGE_USD)
+def effective_charge_cap_usd(explicit_cap_usd: float | None = None) -> float | None:
+    """The cap Apify would accept, or ``None`` when no cap is sent."""
+    if explicit_cap_usd is None:
+        return None
+    return max(float(explicit_cap_usd), APIFY_MIN_MAX_TOTAL_CHARGE_USD)
 
 
-def start_run_params(*, authorized_usd: float = AUTHORIZED_CHARGE_CEILING_USD,
-                     ) -> dict[str, Any]:
-    """RUN parameters (not actor input) for the start-run call.
+def start_run_params(*, explicit_cap_usd: float | None = None) -> dict[str, Any]:
+    """RUN parameters for the start-run call — NO charge cap by default.
 
-    Returns the EFFECTIVE cap — the larger of the authorized bound and Apify's
-    $0.50 minimum. The authorized bound is unchanged and still enforced by the
-    ledger; ``charge_cap_report`` states both.
+    Apify accepts no ``maxTotalChargeUsd`` below $0.50, and $0.50 is 50x the
+    authorized per-actor bound, so passing it would be an ineffective decoration
+    that misstates the real control. An explicit cap is honoured only when it is
+    at or above the platform floor.
     """
-    cap = effective_charge_cap_usd(authorized_usd)
-    if cap <= 0:
-        raise TikTokActorError("BAD_CHARGE_CAP", "maxTotalChargeUsd must be > 0")
+    cap = effective_charge_cap_usd(explicit_cap_usd)
+    if cap is None:
+        return {}
     return {"max_total_charge_usd": cap}
 
 
-def charge_cap_report(*, authorized_usd: float = AUTHORIZED_CHARGE_CEILING_USD,
-                      ) -> dict[str, Any]:
-    """Both numbers, plus why they differ (quoted verbatim in the proof report)."""
-    cap = effective_charge_cap_usd(authorized_usd)
+def charge_cap_report(*, explicit_cap_usd: float | None = None) -> dict[str, Any]:
+    """What actually bounds a TikTok run — stated without overclaiming.
+
+    The ceilings are AUTHORITATIVE INTERNAL ADMISSION CONTROLS. They are NOT a
+    provider-side hard cap: once a run has started, LOOM cannot technically
+    prevent Apify from charging beyond $0.01. Exposure is reduced, not eliminated,
+    by the bound together with the listed reducers.
+    """
     return {
-        "authorized_usd": authorized_usd,
-        "effective_run_parameter_usd": cap,
+        "authorized_ceiling_usd": AUTHORIZED_CHARGE_CEILING_USD,
+        "run_parameter_sent": effective_charge_cap_usd(explicit_cap_usd) is not None,
         "apify_minimum_usd": APIFY_MIN_MAX_TOTAL_CHARGE_USD,
-        "clamped": cap != authorized_usd,
-        "reason": ("Apify rejects maxTotalChargeUsd below $0.50 "
-                   "(max-total-charge-usd-below-minimum); the $0.01 bound is "
-                   "enforced by the TikTok ledger reservation and maxItems=1"),
+        "provider_side_hard_cap": False,
+        "enforced_by": [
+            "TikTok ledger full-exposure reservation (internal admission control)",
+            "exactly one direct public video URL",
+            "maxItems: 1 in the actor input",
+            "actor-specific input validation",
+            "one active paid reservation at a time",
+        ],
+        "reason": ("Apify rejects maxTotalChargeUsd below $0.50, and $0.50 is 50x "
+                   "the authorized $0.01, so no run parameter is sent. The "
+                   "$0.01/$0.02 bound is an internal admission control, NOT a "
+                   "provider-side hard cap."),
     }
 
 

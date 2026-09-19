@@ -118,7 +118,8 @@ class TikTokSpendStore(Protocol):
     def rows(self) -> list[dict[str, Any]]: ...
     def insert(self, row: dict[str, Any]) -> dict[str, Any]: ...
     def cas(self, run_id: str, expect_status: str,
-            patch: dict[str, Any]) -> list[dict[str, Any]]: ...
+            patch: dict[str, Any],
+            expect: dict[str, Any] | None = None) -> list[dict[str, Any]]: ...
 
 
 class MemoryTikTokStore:
@@ -138,11 +139,15 @@ class MemoryTikTokStore:
         return dict(row)
 
     def cas(self, run_id: str, expect_status: str,
-            patch: dict[str, Any]) -> list[dict[str, Any]]:
+            patch: dict[str, Any],
+            expect: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         for row in self._rows:
-            if row.get("run_id") == run_id and row.get("status") == expect_status:
-                row.update(patch)
-                return [dict(row)]
+            if row.get("run_id") != run_id or row.get("status") != expect_status:
+                continue
+            if expect and any(row.get(k) != v for k, v in expect.items()):
+                continue          # a concurrent writer already moved this field
+            row.update(patch)
+            return [dict(row)]
         return []
 
 
@@ -439,6 +444,72 @@ class TikTokSpendLedger:
                 "actor_state": self.actor_state(actor),
                 "combined_state": self.combined_state()}
 
+    # -- repair: true up a reconciled run against the provider's final charge --
+    def correct_actual(self, *, actor: str, run_id: str,
+                       usage_total_usd: float | None,
+                       expect_micro: int | None = None) -> dict[str, Any]:
+        """Converge a reconciled run on the provider's FINAL charge.
+
+        Apify's ``usageTotalUsd`` is NOT final when a run reaches a terminal state;
+        it accrues with delay (observed 2026-09-18 on three runs, one of them by
+        3,700 micro-dollars). A charge read at terminal state can therefore
+        under-state the real spend, so the ledger must be able to converge upward
+        once the provider's number settles.
+
+        This CASes on the OLD actual charge, so it is idempotent and cannot
+        double-apply. It never credits money back: a lower figure is reported, not
+        silently applied.
+        """
+        if actor not in self._ceilings:
+            raise TikTokLedgerError("UNKNOWN_ACTOR",
+                                    f"{actor!r} has no TikTok ceiling record")
+        new = actual_micro_from_usage(usage_total_usd)
+        if new is None:
+            raise TikTokLedgerError("COST_UNVERIFIED",
+                                    "cannot true up from an unknown charge")
+        match = [r for r in self._tiktok_rows() if r.get("run_id") == run_id]
+        if not match:
+            raise TikTokLedgerError("UNKNOWN_RUN", f"no run {run_id!r}")
+        if match[0].get("actor") != actor:
+            raise TikTokLedgerError("ACTOR_MISMATCH", "run belongs to a different actor")
+        status = str(match[0].get("status") or "")
+        if status != STATUS_RECONCILED:
+            raise TikTokLedgerError(
+                "NOT_RECONCILED",
+                f"run is {status!r}; only a reconciled run can be trued up")
+
+        old = match[0].get("actual_micro")
+        old_i = int(old or 0)
+        if new == old_i and (expect_micro is None or expect_micro == old_i):
+            return {"applied": False, "reason": "ALREADY_CURRENT",
+                    "run_id": run_id, "actual_micro": new,
+                    "actor_state": self.actor_state(actor)}
+        if new < old_i:
+            return {"applied": False, "reason": "REFUSED_DOWNWARD",
+                    "run_id": run_id, "actual_micro": new,
+                    "recorded_micro": old_i,
+                    "actor_state": self.actor_state(actor)}
+        if expect_micro is not None and expect_micro != old_i:
+            return {"applied": False, "idempotent": True, "reason": "STALE_EXPECTATION",
+                    "run_id": run_id, "recorded_micro": old_i,
+                    "actor_state": self.actor_state(actor)}
+
+        reserved = int(match[0].get("reserved_micro") or 0)
+        patch = {"actual_micro": new, "released_micro": max(0, reserved - new),
+                 "over_reservation": new > reserved}
+        rows = self._store.cas(run_id, STATUS_RECONCILED, patch,
+                               expect={"actual_micro": old})
+        if not rows:
+            return {"applied": False, "idempotent": True, "reason": "CAS_CONFLICT",
+                    "run_id": run_id, "actor_state": self.actor_state(actor)}
+
+        state = self.actor_state(actor)
+        return {"applied": True, "idempotent": False, "run_id": run_id, "actor": actor,
+                "previous_micro": old_i, "actual_micro": new,
+                "delta_micro": new - old_i,
+                "within_actor_ceiling": state["within_ceiling"],
+                "actor_state": state, "combined_state": self.combined_state()}
+
     # -- convenience -------------------------------------------------------
     def remaining_micro(self, actor: str) -> int:
         return self.actor_state(actor)["remaining_micro"]
@@ -508,7 +579,8 @@ def rest_store(url: str, key: str, *, timeout: float = 30.0) -> TikTokSpendStore
             rows = _do("POST", PROVIDER_RUNS_TABLE, body)
             return rows[0] if rows else body
 
-        def cas(self, run_id: str, expect_status: str, patch: dict) -> list[dict]:
+        def cas(self, run_id: str, expect_status: str, patch: dict,
+                expect: dict | None = None) -> list[dict]:
             # `patch` is deliberately general: the run-id bind renames a
             # reservation WITHOUT touching its status, so `status` must not be
             # assumed present. Assuming it raised KeyError('status') on a live run
@@ -520,7 +592,13 @@ def rest_store(url: str, key: str, *, timeout: float = 30.0) -> TikTokSpendStore
                 body["cost_actual_micro"] = patch["actual_micro"]
             if patch.get("run_id"):
                 body["run_id"] = patch["run_id"]
+            # `expect` adds compare-and-swap conditions (e.g. the OLD actual
+            # charge), so a true-up cannot double-apply.
+            filters = ""
+            for key, value in (expect or {}).items():
+                column = {"actual_micro": "cost_actual_micro"}.get(key, key)
+                filters += f"&{column}=eq.{value}"
             return _do("PATCH", f"{PROVIDER_RUNS_TABLE}?run_id=eq.{run_id}"
-                                f"&status=eq.{expect_status}", body)
+                                f"&status=eq.{expect_status}{filters}", body)
 
     return _Rest()

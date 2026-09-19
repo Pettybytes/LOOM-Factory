@@ -151,18 +151,22 @@ class TestTikTokUrlIdentity(unittest.TestCase):
 # 12. charge-cap placement
 # ===========================================================================
 class TestChargeCapPlacement(unittest.TestCase):
-    def test_12a_charge_cap_is_not_actor_input(self):
+    def test_12a_no_charge_cap_is_sent_and_the_claim_is_honest(self):
         inp, params = ta.build_run_input(ta.ACTOR_CLOCKWORKS, TARGET)
         for key in ("maxTotalChargeUsd", "max_total_charge_usd", "maxTotalChargeUsdUsd"):
             self.assertNotIn(key, inp, "the charge cap must never be actor input")
-        # LIVE FINDING: Apify's floor is $0.50, so the run parameter carries the
-        # effective cap while the $0.01 authorization stays with the ledger.
+        # Apify rejects anything below $0.50, and $0.50 is 50x the authorization,
+        # so NO cap is sent rather than a decorative one that misstates control.
+        self.assertEqual(params, {})
         report = ta.charge_cap_report()
-        self.assertEqual(report["authorized_usd"], 0.01)
-        self.assertEqual(report["effective_run_parameter_usd"], 0.50)
-        self.assertTrue(report["clamped"])
-        self.assertEqual(params, {"max_total_charge_usd": 0.50})
-        self.assertIn("0.50", report["reason"])
+        self.assertEqual(report["authorized_ceiling_usd"], 0.01)
+        self.assertFalse(report["run_parameter_sent"])
+        self.assertEqual(report["apify_minimum_usd"], 0.50)
+        self.assertFalse(report["provider_side_hard_cap"])
+        self.assertIn("NOT a provider-side hard cap", report["reason"])
+        self.assertIn("internal admission control", report["reason"])
+        self.assertTrue(any("maxItems" in e for e in report["enforced_by"]))
+        self.assertTrue(any("reservation" in e for e in report["enforced_by"]))
 
     def test_12a2_each_actor_gets_its_own_live_verified_input_shape(self):
         """Live-verified schemas: Clockworks=postURLs, Apidojo=startUrls+maxItems."""
@@ -180,24 +184,29 @@ class TestChargeCapPlacement(unittest.TestCase):
         self.assertEqual(len(clockworks["postURLs"]), 1)
         self.assertEqual(len(apidojo["startUrls"]), 1)
 
-    def test_12b_charge_cap_travels_as_a_run_parameter(self):
+    def test_12b_no_charge_cap_reaches_the_wire(self):
         inp, params = ta.build_run_input(ta.ACTOR_APIDOJO, TARGET)
         sink = {}
         transport = apify_client.HttpTransport("token")
         with mock.patch("urllib.request.urlopen",
                         _urlopen_returning({"data": {"id": "run-1"}}, sink)):
             transport.start_run(ta.ACTOR_APIDOJO, inp, **params)
-        self.assertIn("maxTotalChargeUsd=0.5", sink["url"])
+        self.assertNotIn("maxTotalChargeUsd", sink["url"])
         self.assertNotIn("maxTotalChargeUsd", sink["body"])
         self.assertEqual(sink["body"], inp)
+        # An explicitly requested cap is honoured, but never below the floor.
+        self.assertEqual(ta.start_run_params(explicit_cap_usd=0.75),
+                         {"max_total_charge_usd": 0.75})
 
-    def test_12c_non_positive_charge_cap_is_rejected(self):
+    def test_12c_a_cap_below_the_platform_floor_is_never_sent(self):
         transport = apify_client.HttpTransport("token")
         _expect_code(self, apify_client.ApifyError, "BAD_CHARGE_CAP",
                      transport.start_run, ta.ACTOR_APIDOJO, {}, max_total_charge_usd=-1)
         _expect_code(self, apify_client.ApifyError, "BAD_CHARGE_CAP",
                      transport.start_run, ta.ACTOR_APIDOJO, {}, max_total_charge_usd=0)
-        # A request below the platform floor is raised to it, never accepted as-is.
+        # The rejected $0.01 form is never emitted; a below-floor request is
+        # raised to the floor, and the default sends nothing at all.
+        self.assertIsNone(ta.effective_charge_cap_usd(None))
         self.assertEqual(ta.effective_charge_cap_usd(0.01), 0.50)
         self.assertEqual(ta.effective_charge_cap_usd(0.25), 0.50)
         self.assertEqual(ta.effective_charge_cap_usd(2.00), 2.00)
@@ -328,18 +337,47 @@ class TestResponseTranslation(unittest.TestCase):
         self.assertEqual(ta.CLOCKWORKS_MEDIA_BLOCKER,
                          "paid_addon_required:shouldDownloadVideos")
 
-    def test_15g_tiktok_capability_is_honest_and_still_fails_closed(self):
+    def test_15g_tiktok_capability_and_pinning_are_honest(self):
         import approved_lane as lane
         import platform_capabilities as caps
+        import provider
         self.assertEqual(caps.capability("tiktok"), caps.CAP_RUNTIME_PROVEN_PROVIDER)
         self.assertTrue(caps.can_acquire("tiktok"))
         reason = caps.capability_reason("tiktok")
         self.assertIn("apidojo~tiktok-scraper", reason)
-        self.assertIn("clockworks~tiktok-scraper", reason)
-        # Proven at the actor level, but NOT yet wired into the shared lane: the
-        # paid lane must still refuse rather than guess an actor.
-        _expect_code(self, lane.LaneError, "NO_PROVIDER_ACTOR",
-                     lane.default_provider_actor, "tiktok")
+        reason_l = reason.lower()
+        self.assertIn("clockworks", reason_l)
+        # Pinned to the proven actor, and Clockworks can never be selected.
+        self.assertEqual(lane.default_provider_actor("tiktok"),
+                         provider.ACTOR_TIKTOK_VIDEO)
+        with self.assertRaises(provider.ProviderError) as e:
+            provider.allowed_actor("tiktok", ta.ACTOR_CLOCKWORKS)
+        self.assertEqual(e.exception.code, "UNKNOWN_ACTOR")
+
+    def test_15h_the_shared_lane_builds_tiktok_input_and_validates_tiktok_output(self):
+        """The provider profile is what makes TikTok dispatchable, unchanged for IG."""
+        import provider
+        inp = provider.build_input(TARGET, platform="tiktok")
+        self.assertEqual(inp, {"startUrls": [{"url": TARGET}], "maxItems": 1})
+        self.assertEqual(provider.build_input("https://www.instagram.com/reel/ABC/",
+                                             platform="instagram"),
+                         {"username": ["https://www.instagram.com/reel/ABC/"],
+                          "resultsLimit": 1})
+        item = {"id": CID, "video": {"url": VIDEO_CDN, "duration": 8.869,
+                                      "width": 720, "height": 1280}}
+        out = provider.validate_output([item], content_id=CID, platform="tiktok",
+                                       canonical_url=TARGET)
+        self.assertEqual(out["video_url"], VIDEO_CDN)
+        self.assertEqual(out["result"]["content_id"], CID)
+        # The host gate is per platform, and Instagram's remains the default.
+        self.assertIsNone(provider.media_host_check("instagram"))
+        self.assertTrue(provider.media_host_check("tiktok")("v45-eu.tiktokcdn.com"))
+        self.assertFalse(provider.media_host_check("tiktok")("scontent.cdninstagram.com"))
+        # A TikTok refusal surfaces as a classified ProviderError, not a raw error.
+        _expect_code(self, provider.ProviderError, "SLIDESHOW_NOT_VIDEO",
+                     provider.validate_output,
+                     [{"id": CID, "isSlideshow": True}], content_id=CID,
+                     platform="tiktok", canonical_url=TARGET)
 
     def test_15e_run_translation_and_error_mapping(self):
         run = {"data": {"id": "r1", "status": "SUCCEEDED", "usageTotalUsd": 0.0017,
@@ -521,6 +559,41 @@ class TestTikTokCeilings(unittest.TestCase):
         self.assertEqual(state["outstanding_micro"], 0)
         self.assertFalse(led.settle_unverified(actor=ta.ACTOR_APIDOJO, run_id="run-u",
                                                usage_total_usd=0.0003)["applied"])
+
+    def test_19c_a_reconciled_run_can_be_trued_up_to_the_final_charge(self):
+        """Apify's usageTotalUsd is NOT final at terminal state — it accrues late.
+
+        Three live runs read low at reconciliation (one by 3,700 micro-dollars),
+        so the ledger must converge upward on the provider's final number.
+        """
+        led = self._ledger()
+        led.reserve(actor=ta.ACTOR_CLOCKWORKS, run_id="run-t")
+        led.reconcile(actor=ta.ACTOR_CLOCKWORKS, run_id="run-t",
+                      usage_total_usd=0.0010)
+        self.assertEqual(led.actor_state(ta.ACTOR_CLOCKWORKS)["spent_micro"], 1_000)
+        out = led.correct_actual(actor=ta.ACTOR_CLOCKWORKS, run_id="run-t",
+                                 usage_total_usd=0.0047, expect_micro=1_000)
+        self.assertTrue(out["applied"])
+        self.assertEqual((out["previous_micro"], out["actual_micro"], out["delta_micro"]),
+                         (1_000, 4_700, 3_700))
+        self.assertTrue(out["within_actor_ceiling"])
+        self.assertEqual(led.actor_state(ta.ACTOR_CLOCKWORKS)["spent_micro"], 4_700)
+        # Idempotent, and never re-applied from a stale expectation.
+        again = led.correct_actual(actor=ta.ACTOR_CLOCKWORKS, run_id="run-t",
+                                   usage_total_usd=0.0047, expect_micro=4_700)
+        self.assertFalse(again["applied"])
+        self.assertEqual(again["reason"], "ALREADY_CURRENT")
+        stale = led.correct_actual(actor=ta.ACTOR_CLOCKWORKS, run_id="run-t",
+                                   usage_total_usd=0.0090, expect_micro=1_000)
+        self.assertFalse(stale["applied"])
+        self.assertEqual(stale["reason"], "STALE_EXPECTATION")
+        self.assertEqual(led.actor_state(ta.ACTOR_CLOCKWORKS)["spent_micro"], 4_700)
+        # A lower figure is reported, never silently credited back.
+        down = led.correct_actual(actor=ta.ACTOR_CLOCKWORKS, run_id="run-t",
+                                  usage_total_usd=0.0001, expect_micro=4_700)
+        self.assertFalse(down["applied"])
+        self.assertEqual(down["reason"], "REFUSED_DOWNWARD")
+        self.assertEqual(led.actor_state(ta.ACTOR_CLOCKWORKS)["spent_micro"], 4_700)
 
     def test_20_combined_tiktok_ceiling_is_enforced(self):
         led = self._ledger(combined_ceiling_micro=10_000)
