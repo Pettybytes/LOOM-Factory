@@ -1,4 +1,12 @@
 :8081 {
+	# Access log — REQUIRED for correlating Discord endpoint-verification
+	# attempts at the Caddy boundary. Without this, Caddy logs only startup
+	# events and a failed verification is indistinguishable from a request
+	# that never reached the host at all.
+	log {
+		output stdout
+		format json
+	}
 	# Discord Activity / editor routes — allow Discord to iframe ONLY the
 	# editor, never the rest of the app, and never arbitrary origins.
 	@editor {
