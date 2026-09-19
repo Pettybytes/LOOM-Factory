@@ -134,8 +134,13 @@ class TestAdapterSurface(unittest.TestCase):
         # Kick clip mode is IMPLEMENTED now; readiness is a separate question, and
         # no Kick mode has a successful proof yet.
         self.assertTrue(sa.is_implemented("kick"))
-        self.assertFalse(sa.runtime_proven("kick"))
-        self.assertEqual(set(sa.adapter_for("kick").proven_modes), set())
+        # Readiness is MODE-SCOPED: the clip proof succeeded, the VOD proof did not
+        # (its supplied URL is externally unavailable), so Kick must not claim both.
+        self.assertTrue(sa.runtime_proven("kick"))
+        kick = sa.adapter_for("kick")
+        self.assertEqual(set(kick.proven_modes), {"clip"})
+        self.assertNotIn("vod", kick.proven_modes)
+        self.assertIn("vod", kick.capability_note.lower())
         # A declared stub is still distinguishable from a real adapter, and an
         # unknown platform has no adapter at all.
         self.assertFalse(sa._UnimplementedLongFormAdapter.implemented)
