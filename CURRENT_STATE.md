@@ -1323,3 +1323,97 @@ entry point replaced by a tripwire:
 **Not exercised:** the live Discord guild round-trip (posting/patching a real
 message). The card payload, state, buttons and fallback are asserted from the real
 modules; the transport to Discord itself was not driven.
+
+---
+
+## 10. Human-readable titles + filenames, and the real-guild acceptance (2026-09-18)
+
+### Title contract (`infra/acquisition/title_contract.py`)
+
+Titles are for humans; ids and hashes preserve machine identity. Distinct fields are
+kept separately: `source_title`, `display_title`, `creator_name`, `creator_handle`,
+`content_id`, `asset_filename`. A title never replaces a content id.
+
+Display-title priority: **1** platform title → **2** caption/clip name → **3** stored
+source metadata → **4** creator + concise content-type label → **5** `untitled-clip`.
+
+A **placeholder** title (a generic label that only restates identity — `TikTok video
+#<id>`, `Video by <handle>`) is NOT metadata: it is rejected at priorities 1-3 and the
+title falls through to priority 4. That is why the live TikTok row reads
+`thoughtswthot · TikTok video` rather than the synthesised `TikTok video #7598767615980408095`.
+No AI model and no paid provider is ever consulted to invent a title.
+
+### Filename contract
+
+    platform__creator__short-title__content-id__short-hash.ext
+    …__poster.jpg        (poster keeps the video's base name)
+
+Lowercase filesystem-safe; platform + creator preserved when known; **complete**
+content id preserved (never truncated); hash suffix 8-12 chars; title portion
+truncated to ~60 chars at a word boundary; control characters, path separators and
+leading/trailing dots removed; whitespace normalized; apostrophes elided (`It's` →
+`its`, never `it-s`); reserved device names guarded (`con` → `con-asset`); collisions
+resolved deterministically by widening the hash sample.
+
+### Migration of the existing library
+
+`migrate_library_titles.py` (dry-run by default, `--apply` to execute) walks per
+asset: derive → create without overwriting → verify size + SHA-256 → compare-and-swap
+the row on the OLD filename → verify the asset and poster resolve → **only then**
+remove the obsolete path. Any failure rolls the row back and keeps the original.
+
+Result on the 9 existing assets: **9 rows verified (size + SHA-256 match), 8 posters
+resolve, all machine-only names gone.**
+
+* Real titles recovered for every source from FREE local metadata (yt-dlp), e.g.
+  `The Most Unhinged Marriage Proposal in Mushoku Tensei` (Lore Addict),
+  `Duke reacts to the pajamas Emily bought for Rage`, `Free Trey`.
+* **3 rows had `platform = "youtube"` while actually being Twitch/Twitch/Kick** —
+  proven from their canonical URLs (`clips.twitch.tv`, `twitch.tv/videos`, `kick.com`)
+  and corroborated by `loom_acquisition_jobs.platform`. Corrected as part of the
+  migration; filenames now carry the true platform.
+* **Title-limited rows: 3** (both Instagram Reels and the TikTok video) — the platform
+  supplied only a placeholder, so they carry a derived creator+label title. Reported,
+  not hidden.
+* Titles are durable inside `provenance` (a real JSONB column) because the table has
+  no title columns and no DDL was available; `migration 036` adds them and promotes the
+  values when applied. `reaction_library.asset_titles()` reads either shape.
+
+### UI / Discord presentation
+
+* Reaction Library gallery: `display_title` is the heading, with creator, platform,
+  duration, size and status; the machine filename is secondary and monospaced.
+* Library detail page: the title is the `<h1>` and the tab title; `Title`,
+  `Source title` and `Creator` are rows alongside the unchanged identity fields.
+* Acquisition card: the human title leads the embed **description**; the STATE stays the
+  embed title (a card's state must not be displaced by a title).
+
+### Real-guild acceptance (no paid run)
+
+`prove_tiktok_discord_acceptance.py` re-requested the already-acquired TikTok video
+through the shared lane and the **real Discord API**:
+
+* pinned actor `apidojo~tiktok-scraper`; preflight refused **`ALREADY_ACQUIRED`**
+* provider calls: **none**; downloads: **none**; library rows written: **none**
+* ledger spend delta: **0 micro-dollars**; nothing unresolved; asset SHA-256 unchanged
+* posted card `1550695941349056513` in the Clippy Factory guild: state
+  `ACQUISITION · ACQUIRED`, description `thoughtswthot · TikTok video`,
+  media `0:08 · 720×1280 · 9:16 vertical · 1.3 MB · Audio present (AAC)`,
+  Library field with the new filename + `sha256 0e9af235dacf…`
+* real guild limit 10 MiB (tier 0) → **video attached and playable**
+  (`https://cdn.discordapp.com/attachments/…/tiktok__thoughtswthot__…mp4`)
+
+### Verified after renaming
+
+Range/playback (`206`, `Content-Range: bytes 0-1023/1405272`), full-file fetch
+(1,405,272 B = the row's size), poster serving (`200`, `image/jpeg`), gallery and
+detail rendering (title-primary), idempotent repeat acquisition, and all three test
+suites (519 acquisition · 86 local-helper · 168 discord).
+
+### Known follow-up
+
+* A **stale helper process (PID 1314)** still owns `127.0.0.1:8787` and serves the OLD
+  page templates. Asset/poster/Range serving is unaffected (it resolves rows from the
+  DB at request time and reads the same library dir), but the new gallery/detail markup
+  only appears after that process is restarted.
+* `migration 036` is written but **not applied** (no DDL access from this host).

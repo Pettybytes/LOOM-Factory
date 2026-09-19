@@ -40,10 +40,28 @@ def sha256_hex(data: bytes) -> str:
 
 
 def filename_for(platform: str, content_id: str, digest: str, ext: str = "mp4") -> str:
-    """Deterministic, disambiguating filename (never trusts user input for ids)."""
+    """Legacy identity-only filename (platform + content id + hash prefix).
+
+    Kept for callers that have no title metadata yet. New acquisitions should use
+    ``asset_filename()`` so the asset is human-readable.
+    """
     safe_platform = "".join(c for c in (platform or "item").lower() if c.isalnum())[:16]
     safe_id = "".join(c for c in (content_id or "item") if c.isalnum() or c in "-_")[:64]
     return f"{safe_platform}__{safe_id}__{digest[:12]}.{ext}"
+
+
+def asset_filename(*, platform: str, content_id: str, digest: str,
+                   creator_name: str = "", creator_handle: str = "",
+                   source_title: str = "", caption: str = "", stored_title: str = "",
+                   clip_name: str = "", kind: str = "", ext: str = "mp4",
+                   taken: "set[str] | frozenset[str] | None" = None) -> dict[str, Any]:
+    """Derive the human-readable filename + title fields for one asset."""
+    import title_contract
+    return title_contract.title_fields(
+        platform=platform, content_id=content_id, digest=digest,
+        creator_name=creator_name, creator_handle=creator_handle,
+        source_title=source_title, caption=caption, stored_title=stored_title,
+        clip_name=clip_name, kind=kind, ext=ext, taken=taken)
 
 
 def plan_library_entry(
@@ -61,8 +79,19 @@ def plan_library_entry(
     storage_url: str = "",
     rights_usage_note: str = "",
     retention_days: int = DEFAULT_RETENTION_DAYS,
+    source_title: str = "",
+    display_title: str = "",
+    creator_name: str = "",
+    creator_handle: str = "",
 ) -> dict[str, Any]:
-    """Validate + build a Reaction Library asset record (provenance + retention)."""
+    """Validate + build a Reaction Library asset record (provenance + retention).
+
+    Human-readable fields are DISTINCT from identity: ``display_title`` never
+    replaces ``platform_content_id``, and ``source_title`` keeps the platform's own
+    words. Missing titles stay empty or fall back per the title contract — never
+    fabricated.
+    """
+    import title_contract
     if not digest or len(digest) != 64:
         raise ValueError("digest must be a 64-hex sha256")
     if not filename:
@@ -74,6 +103,27 @@ def plan_library_entry(
     if retention_days <= 0:
         raise ValueError("retention_days must be > 0")
 
+    title = title_contract.clean_title(display_title) or \
+        title_contract.resolve_display_title(
+            platform=platform, content_id=platform_content_id,
+            source_title=source_title, creator_name=creator_name,
+            creator_handle=creator_handle)
+    # Human-readable titles are durable inside ``provenance`` (a real JSONB column)
+    # rather than as new top-level columns: the table schema is fixed and the
+    # persisted record must never carry a key the table does not have. Migration
+    # 036 promotes these to first-class columns when it is applied; read them back
+    # through ``asset_titles()`` so both shapes work.
+    provenance = {
+        "duplicate_fingerprint": duplicate_fingerprint,
+        "platform": platform,
+        "platform_content_id": platform_content_id,
+        "canonical_url": canonical_url,
+        "acquisition_job_id": acquisition_job_id,
+        "source_title": title_contract.clean_title(source_title),
+        "display_title": title,
+        "creator_name": title_contract.clean_creator(creator_name),
+        "creator_handle": title_contract.clean_creator(creator_handle),
+    }
     return {
         "duplicate_fingerprint": duplicate_fingerprint,
         "platform": platform,
@@ -88,15 +138,30 @@ def plan_library_entry(
         "content_type": content_type,
         "storage_url": storage_url,
         "retention_days": retention_days,
-        "provenance": {
-            "duplicate_fingerprint": duplicate_fingerprint,
-            "platform": platform,
-            "platform_content_id": platform_content_id,
-            "canonical_url": canonical_url,
-            "acquisition_job_id": acquisition_job_id,
-        },
+        "provenance": provenance,
         "rights_usage_note": (rights_usage_note or "").strip(),
     }
+
+
+TITLE_FIELDS = ("source_title", "display_title", "creator_name", "creator_handle")
+
+
+def asset_titles(row: dict[str, Any] | None) -> dict[str, str]:
+    """Read the human-readable title fields from whichever shape holds them.
+
+    Prefers first-class columns (migration 036); falls back to ``provenance`` so
+    rows written before the migration keep working.
+    """
+    row = row or {}
+    prov = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+    out: dict[str, str] = {}
+    for field in TITLE_FIELDS:
+        value = row.get(field)
+        if value in (None, ""):
+            value = prov.get(field)
+        out[field] = str(value or "")
+    out["display_title"] = out["display_title"] or out["source_title"]
+    return out
 
 
 def dedup_digest(record: dict[str, Any]) -> str:

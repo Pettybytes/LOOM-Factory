@@ -23,6 +23,7 @@ from library_root import library_root
 import acquire as acq
 import assemble as asm
 import fmp4
+import reaction_library
 from validate import ValidationError, validate_candidate, validate_media_url
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -232,16 +233,21 @@ def render_gallery_page(records: list, jobs: dict) -> bytes:
         size = r.get("size_bytes")
         size_txt = f"{int(size) / (1024*1024):.1f} MiB" if size else "unknown"
         acquired = str(r.get("created_at") or "")[:19].replace("T", " ")
+        titles = reaction_library.asset_titles(r)
+        display = titles["display_title"] or str(r.get("asset_filename") or "")
+        creator = titles["creator_name"] or titles["creator_handle"]
         cards.append(f"""
   <a class="card" href="/library/{_esc(digest)}">
     {thumb}
     <div class="meta">
-      <div class="name">{_esc(r.get('asset_filename'))}</div>
+      <div class="title">{_esc(display)}</div>
+      <div class="row"><span class="k">creator</span>{_esc(creator or '—')}</div>
       <div class="row"><span class="k">platform</span>{_esc(r.get('platform') or '')}</div>
       <div class="row"><span class="k">duration</span>{_fmt_duration(r.get('duration_seconds'))}</div>
       <div class="row"><span class="k">size</span>{_esc(size_txt)}</div>
       <div class="row"><span class="k">status</span><span class="badge">{_esc(status)}</span></div>
       <div class="row"><span class="k">acquired</span>{_esc(acquired)}</div>
+      <div class="file">{_esc(r.get('asset_filename'))}</div>
     </div>
   </a>""")
     body = "".join(cards) or '<p class="empty">No assets in the library yet.</p>'
@@ -262,6 +268,10 @@ def render_gallery_page(records: list, jobs: dict) -> bytes:
  .noposter {{ display:flex; align-items:center; justify-content:center; aspect-ratio:9/16;
               background:#11151a; color:#5d6672; font-size:12px; }}
  .meta {{ padding:10px 12px 14px; }}
+ .title {{ font-size:13.5px; color:#f2f4f8; font-weight:600; line-height:1.35;
+           margin-bottom:8px; }}
+ .file {{ font-size:10.5px; color:#5d6672; word-break:break-all; margin-top:8px;
+          font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }}
  .name {{ font-size:12px; color:#aab2bf; word-break:break-all; margin-bottom:8px; }}
  .row {{ display:flex; justify-content:space-between; font-size:12.5px; padding:2px 0; }}
  .k {{ color:#7f8794; }}
@@ -291,7 +301,13 @@ def render_library_page(record: dict, job: dict | None) -> bytes:
     prov = record.get("provenance") or {}
     job = job or {}
     asset_prov = job.get("asset_provenance") or {}
+    titles = reaction_library.asset_titles(record)
+    display = titles["display_title"] or filename
+    creator = titles["creator_name"] or titles["creator_handle"]
     rows = [
+        ("Title", display),
+        ("Source title", titles["source_title"]),
+        ("Creator", creator),
         ("Filename", filename),
         ("Size", f"{int(size):,} bytes" if size else "unknown"),
         ("Duration", f"{float(duration):.2f} s" if duration else "unknown"),
@@ -308,7 +324,7 @@ def render_library_page(record: dict, job: dict | None) -> bytes:
     body_rows = "".join(
         f"<tr><th>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in rows)
     html = f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Reaction Library · {_esc(filename)}</title>
+<html><head><meta charset="utf-8"><title>Reaction Library · {_esc(display)}</title>
 <style>
  :root {{ color-scheme: dark; }}
  body {{ margin:0; padding:28px; background:#0f1115; color:#e6e8ec;
@@ -326,8 +342,8 @@ def render_library_page(record: dict, job: dict | None) -> bytes:
  code {{ background:#171b21; padding:2px 6px; border-radius:6px; }}
  .empty {{ color:#f0a4a4; }}
 </style></head><body>
-<h1>Reaction Library</h1>
-<div class="sub">Local asset detail · read-only view served from this Mac</div>
+<h1>{_esc(display)}</h1>
+<div class="sub">{_esc(record.get('platform') or '')} · {_esc(creator or 'creator unknown')} · read-only view served from this Mac</div>
 <div class="wrap">
   <video controls preload="metadata" playsinline
          src="/library/{_esc(digest)}/media"></video>

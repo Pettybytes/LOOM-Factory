@@ -490,6 +490,8 @@ def build_view_model(
     requires_range: bool = False,
     one_click_local: bool = False,
     whole_item: bool = False,
+    display_title: str = "",
+    source_title: str = "",
 ) -> dict[str, Any]:
     """Assemble the presentation view model (no I/O, no validation of media)."""
     if state not in CARD_STATES:
@@ -524,6 +526,8 @@ def build_view_model(
         "profile_id": profile_id,
         "fixture": bool(fixture),
         "library_url": library_url,
+        "display_title": display_title,
+        "source_title": source_title,
         "local_acquisition": bool(local_acquisition),
         "window": window or {},
         "requires_range": bool(requires_range),
@@ -682,9 +686,13 @@ def format_acquisition_embed(vm: dict[str, Any]) -> dict[str, Any]:
                    "inline": False})
     fields.append({"name": "Provenance", "value": provenance_line(vm), "inline": False})
 
+    # The STATE stays the embed title: it is the card's machine-readable identity
+    # and must not be displaced. The human title leads the description, which is
+    # the most visible line under it.
     embed: dict[str, Any] = {
         "title": STATE_TITLES[state],
-        "description": _clip(vm.get("caption") or f"{vm['platform_label']} source", 400),
+        "description": _clip(vm.get("display_title") or vm.get("source_title")
+                             or vm.get("caption") or f"{vm['platform_label']} source", 400),
         "color": STATE_COLORS[state],
         "fields": fields,
     }
