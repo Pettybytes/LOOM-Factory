@@ -87,6 +87,12 @@ OPENSHORTS_OUTPUT   = _env("LOOM_OPENSHORTS_OUTPUT",
 GHL_TOKEN           = _env("LOOM_GHL_TOKEN", required=False) or None
 GHL_LOCATION_ID     = _env("LOOM_GHL_LOCATION_ID", "GNhV1OyhFLzcl67XwTBV")
 GHL_MEDIA_API       = "https://services.leadconnectorhq.com"
+
+# Truthful storage fact for an EDITED version: the edit path registers no
+# media at all (no canonical url, no GHL media id), because later versions
+# re-render from the durable clean source. Recording the column default
+# ("uploaded") would be a storage claim that was never made.
+STORAGE_NOT_APPLICABLE = "not_applicable"
 LISTEN_HOST         = _env("LOOM_DISCORD_LISTEN_HOST", "127.0.0.1")
 LISTEN_PORT         = int(_env("LOOM_DISCORD_LISTEN_PORT", "8090"))
 CLIP_REVIEW_CHANNEL_NAME = _env("LOOM_CLIP_REVIEW_CHANNEL", "clip-review")
@@ -706,6 +712,41 @@ def supabase_upsert(table, payload, ignore_duplicates=False):
     req = Request(url, data=data, headers=headers, method="POST")
     with urlopen(req, timeout=15) as resp:
         return resp.status, json.loads(resp.read().decode() or "{}")
+
+
+def mark_edited_storage_status(tenant_id, clip_id, asset_version):
+    """Record the TRUTHFUL storage fact for a freshly registered EDITED version.
+
+    ``register_edited_asset`` stamps the new lineage row with the ``loom_media``
+    column default ('uploaded'), but the edit/publication path deliberately
+    registers no media — no ``canonical_url``, no ``ghl_media_id``. Left alone,
+    the row (and the review card that renders ``storage_status``) claims a
+    storage outcome that never happened.
+
+    So: when the row carries neither a canonical url nor a GHL media id, record
+    ``not_applicable`` instead. Rows that DO carry either are left untouched —
+    this never asserts anything about real storage, it only stops asserting a
+    false one. Non-fatal: a failure here must never block the completion.
+    """
+    try:
+        rows = supabase_filter_get("loom_media", {
+            "tenant_id": tenant_id, "clip_id": clip_id, "asset_version": asset_version,
+        })
+        if not rows:
+            return False
+        row = rows[0]
+        if row.get("canonical_url") or row.get("ghl_media_id"):
+            return False  # something really was stored; leave the fact alone
+        if row.get("storage_status") == STORAGE_NOT_APPLICABLE:
+            return False
+        supabase_patch_media(row["id"], {"storage_status": STORAGE_NOT_APPLICABLE})
+        print(f"[media] storage_status {clip_id}@{asset_version} -> "
+              f"{STORAGE_NOT_APPLICABLE} (no media registered on this path)", flush=True)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[media] storage_status correction failed for "
+              f"{clip_id}@{asset_version}: {type(e).__name__}: {e}", flush=True)
+        return False
 
 
 def supabase_patch_media(media_id, updates):
@@ -2683,6 +2724,11 @@ class Handler(BaseHTTPRequestHandler):
         target_version = result.get("asset_version")
         tenant_id = result.get("tenant_id") or session.get("tenant_id")
         clip_id = result.get("clip_id") or session.get("clip_id")
+
+        # Truthful storage fact for the new version. The registration RPC stamps
+        # 'uploaded' via the column default; this path stores nothing, so record
+        # that plainly before the card renders the field.
+        mark_edited_storage_status(tenant_id, clip_id, target_version)
 
         # Card dedup: if a final_publication card already exists for this exact
         # tenant/clip/asset_version, return the existing delivery — no duplicate.
