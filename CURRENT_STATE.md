@@ -1959,3 +1959,110 @@ every case (0 unaligned words) — alignment is not the bottleneck here.
    (+20.8 s, +15.7 s) come from re-segmentation, not from the cleanup itself.
 
 **Not started:** timestamp-primitive decision, 5C.2 Boundary Refiner.
+
+---
+
+## 16. Timestamp-primitive decision — LOCKED (2026-09-20)
+
+Decision, locked on completed evidence (5C.1 WhisperX evaluation, DeepFilterNet A/B,
+Segment 5B signal layer). Nothing here contradicts the reviewed contract:
+
+1. **LOOM's existing transcription/VAD/decoder remains authoritative for transcript
+   CONTENT.** WhisperX's VAD/decoder path is **never** used to produce transcript
+   text — 5C.1 measured it changing or losing content on 3 of 7 speech clips
+   (dropped an opening sentence; 33 of 78 words missing on the noise clip;
+   hallucinated `Hi Tom! Hi Tom! Hi Tom!`).
+2. **WhisperX wav2vec2 alignment is SUPPLEMENTAL word-level timing evidence** over
+   the transcript LOOM already owns. It never replaces the transcript.
+3. **Aligned timestamps are NOT ground truth** and never alter transcript content.
+   5C.1 measured a median word-boundary shift of only 79 ms start / 52 ms end and
+   could not establish a precision gain without ground truth; it also stretched
+   single words implausibly (`mean` across 3.36 s).
+4. **Safe fallback is mandatory.** If alignment fails, is implausible, loses
+   correspondence, or is unavailable, refinement falls back to existing
+   transcript/segment timing — and says so.
+5. **DeepFilterNet is EXCLUDED from the automatic processing path** (see §15:
+   no transcription gain, substitutions were degradations, and loud-region energy
+   was attenuated on the eventful content LOOM targets).
+6. **Segment 5B signal windows remain event/salience evidence, not speech timing.**
+   They may preserve a bounded nonverbal tail; they never set word timing.
+
+## 17. Segment 5C.2 — Boundary Refiner (2026-09-20)
+
+**Purpose:** refine the boundaries of an ALREADY-SELECTED candidate moment.
+Not discovery, not semantic reranking. Deterministic, local, **$0**, no model call.
+
+### Files
+
+| | |
+|---|---|
+| NEW | `infra/content_intelligence/boundary_refiner.py` — the refiner + config + result contract |
+| NEW | `infra/content_intelligence/tests/test_boundary_refiner.py` — 28 focused tests |
+| NEW | `infra/content_intelligence/prove_boundary_refiner.py` — A–I acceptance on real media |
+
+### Contract
+
+`refine_boundaries(start, end, *, segments, words, aligned_words, signal_windows,
+media_duration, config, provenance) -> RefinedBoundary` carrying
+`original_start/end`, refined `start/end`, deltas, `start_reason`/`end_reason`,
+`evidence[]`, `fallback`, `alignment_used`, `timing_source`, `event_tail_s`,
+`clamped`, `provenance`. Pure stdlib; no I/O; no randomness; never returns
+transcript content.
+
+Alignment is accepted only when it passes sanity gates: implausible single-word
+spans (> 1.5 s) are dropped, out-of-bounds and incoherent spans are dropped,
+correspondence with the existing transcript must be ≥ 0.60, and median timing
+disagreement must be ≤ 0.75 s. Failure sets `fallback` and uses transcript timing.
+
+### Acceptance — real media, real timings (11/11 PASS)
+
+Inputs are real: the local Reaction Library files, LOOM's existing word timings and
+the real WhisperX aligned words from the committed 5C.1 run, plus live 5B signal
+windows computed by `multimodal_signals`. Cases are found by searching the
+evidence set for genuine instances; where none exists an item is reported
+**NOT PROVEN** rather than quietly passed (none were).
+
+| | item | observed |
+|---|---|---|
+| A | excessive leading dead air reduced | start 69.31 → **72.26** (`trimmed_leading_silence`) |
+| B | excessive trailing dead air reduced | end 13.96 → **10.01** (`trimmed_trailing_silence`, −3.95 s) |
+| C | tight candidate unchanged | real 103-word phrase 8.06–40.22 → Δ **+0.000/+0.000** |
+| D | mid-sentence start expands backward | start 8.22 → **8.01** (`expanded_back_to_phrase_start`) |
+| E | early end expands forward | end 39.45 → **40.27** (`extended_to_phrase_end`, +0.82 s) |
+| F | nonverbal payoff preserved | real `visual_motion` 27.00–34.00, 1.16 s after speech → tail **+2.50 s**; distant signal → 0.0 |
+| G | bad alignment rejected | 2 real implausible spans (`Yeah,` 1.82 s, `mean` 3.36 s) dropped; shifted alignment → `alignment_disagreement_high` fallback |
+| H | media-edge candidate clamped | candidate (−5, dur+10) → 1.18–33.59 within 0–40.65 |
+| I | replay deterministic | identical output |
+
+### Tests
+
+`infra/content_intelligence` — **125 OK** (97 pre-existing preserved + 28 new).
+
+### Design corrections made during acceptance (recorded, not hidden)
+
+1. An over-broad `max_contract_s` clamp was **blocking genuine dead-air trimming**;
+   it now applies only when a candidate has no speech anchor at all. Speech is
+   protected instead by a structural guarantee: every word the original candidate
+   carried must remain inside the refined window.
+2. Pads were applied even when a boundary did not move, mislabelling unchanged
+   edges; edges that do not move now report `unchanged` and are not padded.
+3. The trailing-silence anchor originally used the last word before the ORIGINAL
+   end, which trimmed back an intentional phrase extension; it now anchors on the
+   last word ending before the REFINED end.
+4. Three initial acceptance failures were **case-construction errors** (a 0.48 s
+   "long" gap, a candidate overshooting into the next phrase, a 16 s backward
+   reach beyond `edge_search_s`) — the refiner was right and the cases were wrong.
+
+### Limitations (stated)
+
+* `edge_search_s` (8 s) means a genuinely distant phrase start will not be reached;
+  the refiner prefers the nearest safe edge over a long backward grab.
+* `phrase_gap_s` (0.45 s) is a heuristic: on continuous dialogue a whole clip can
+  read as one "phrase", so mid-sentence expansion is bounded by `edge_search_s`.
+* Thresholds are hand-picked from 5C.1/5B evidence and are **not** claimed optimal.
+* The A/B dead-air instances come from a music-heavy clip, so some "silence" is
+  music; the demonstration is about boundary behaviour on real timings, not about
+  transcript quality there.
+
+**Still open:** promotion of safe adjustments from proposal → automatic is a
+**trust ramp backed by acceptance evidence**, not a permanent human gate.

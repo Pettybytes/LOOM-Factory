@@ -488,3 +488,31 @@ started.
 - **Next authorized step:** the **timestamp-primitive decision**, then **5C.2
   (Complete-Thought Boundary Refiner)** — both still need explicit go-ahead.
   ​5C.1's alignment verdict stands: alignment-only, never a wholesale ASR swap.
+
+---
+
+## 14. Timestamp primitive LOCKED + Segment 5C.2 Boundary Refiner COMPLETE (2026-09-20)
+
+### Timestamp primitive — LOCKED (`CURRENT_STATE.md` §16)
+LOOM's transcription/VAD/decoder stays authoritative for transcript CONTENT.
+WhisperX alignment is supplemental word-level timing over that transcript, never
+ground truth, never a content source, always with a safe fallback. DeepFilterNet
+is excluded from the automatic path. 5B signal windows are event/salience
+evidence only — they may preserve a bounded nonverbal tail, never set word timing.
+
+### 5C.2 — Boundary Refiner — COMPLETE
+* `infra/content_intelligence/boundary_refiner.py` — deterministic, local, **$0**,
+  no model call; pure stdlib.
+* `infra/content_intelligence/tests/test_boundary_refiner.py` — 28 tests.
+* `infra/content_intelligence/prove_boundary_refiner.py` — A–I acceptance on real
+  media + real timings (**11/11 PASS**; full table in `CURRENT_STATE.md` §17).
+* `infra/content_intelligence` — **125 OK** (97 pre-existing preserved).
+* Contract carries `original_bounds` alongside refined bounds, plus explicit
+  `start_reason`/`end_reason`/`fallback`/`evidence` — **no silent fallback**.
+
+### Next authorized step
+Per §9: **bounded relative-Qwen rerank A/B**, then **Segment 5 runtime acceptance**,
+then docs/tests/commit and Segment 5 closeout. Reopening anything the Editor gate
+closed is still forbidden (`CURRENT_STATE.md` §11-13 remain authoritative).
+Promotion of boundary adjustments from proposal → automatic remains a **trust
+ramp backed by acceptance evidence**, not a permanent human gate.
