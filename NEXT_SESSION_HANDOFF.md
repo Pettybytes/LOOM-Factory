@@ -1,6 +1,20 @@
-# NEXT SESSION HANDOFF — LOOM Editor Closeout
+# NEXT SESSION HANDOFF — Editor CLOSED → SEGMENT 5B NEXT
 
 **Supersedes everything before it for resuming work.** Read this first, then `LOOM_SOURCE_OF_TRUTH.md`, `CURRENT_STATE.md`, `HANDOFF.md`.
+
+> ## ✅ EDITOR GATE CLOSED — 2026-09-20 ~02:44 EDT (HUMAN ACCEPTANCE PASS)
+>
+> Bryan completed the final live human acceptance on `loom-clean-fixture:0` **`v1.1 → v1.2`**.
+> The returned Discord FINAL REVIEW card proves in one transaction: dedicated black Header region,
+> video composition below it, Header text + rich/range styling persisted, Hook change persisted,
+> subtitle font-size control working, submission completed, new asset version created, and the edited
+> asset automatically returned to Discord for re-review.
+>
+> **Do NOT re-audit the Editor, re-run Editor acceptance, reopen accepted visual behaviour, or add
+> Editor feature work.** Reopen only on a demonstrated real regression.
+> Full detail + accepted lineage + preserved fixes are in `CURRENT_STATE.md`.
+>
+> **Next authorized workstream: SEGMENT 5B — MULTI-SOURCE MOMENT MINING.**
 
 ---
 
@@ -10,11 +24,25 @@
 |---|---|
 | Repo path | `/Users/user/Desktop/LOOM-Factory` |
 | Branch | `master` |
-| FINAL_HEAD | `10ac46f74d5ca0bac80f5cfe1e703738d7783fa7` |
-| REMOTE_HEAD | `10ac46f74d5ca0bac80f5cfe1e703738d7783fa7` (local == remote ✅) |
-| Worktree | **clean** |
-| Full tests | **974** (acquisition 578 · content_intelligence 55 · local-helper 86 · discovery 87 · discord-review 168) |
+| FINAL_HEAD | `7c20b3e` (editor `/api/header` allowlist fix + regression coverage + CURRENT_STATE acceptance record) |
+| REMOTE_HEAD | `7c20b3e` (local == remote ✅) |
+| Worktree | not clean by design — see preserved artifacts below |
+| Full tests | discord-review **232 OK** · openshorts header **9 OK** |
 | Failures | **0** |
+
+### Preserved intentionally (do not commit/delete)
+- `aborted-runs/` (openshorts)
+- `security_utils.py.bak-20260908212436` (openshorts)
+- `infra/supabase/038_loom_editor_session_tokens.sql` (LOOM-Factory, pre-existing untracked)
+- pre-existing uncommitted edits in openshorts: `dashboard/src/lib/api.js`,
+  `dashboard/src/components/LoomActivityRoot.jsx`, `tests/test_header_rich_text.py`, `.gitignore`
+
+### ⚠️ OUTSTANDING BLOCKER — openshorts push
+`openshorts` commit **`f436357`** exists locally on `loom/factory-mvp-baseline-fixes` but **cannot be
+pushed**: its remote is `https://github.com/mutonby/openshorts.git` and the authenticated GitHub
+account (`Pettybytes`) is denied write access (`403 Permission to mutonby/openshorts.git denied to
+Pettybytes`). LOOM-Factory **did** push. Resolving this needs repo access granted by the owner, or a
+fork + PR — it is not a credential failure (identity resolves fine, `github-api` evidence).
 | Test runner | `python3 -m unittest discover -s tests` from **inside** each `infra/<suite>/`. **Not pytest** (not installed, not needed). Do NOT pass `-t .` — it forces package semantics and raises "Start directory is not importable". |
 
 Commits this session, all pushed: `8df2054` (Twitch connector) · `88814bd` (Caddy access logging) · `9973fb7` (GHL upload retry) · `8b89ce2` (truthful card contract + idempotent retry + flushed log) · `10ac46f` (tier-aware oversize fallback).
