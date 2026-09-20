@@ -516,3 +516,24 @@ then docs/tests/commit and Segment 5 closeout. Reopening anything the Editor gat
 closed is still forbidden (`CURRENT_STATE.md` §11-13 remain authoritative).
 Promotion of boundary adjustments from proposal → automatic remains a **trust
 ramp backed by acceptance evidence**, not a permanent human gate.
+
+---
+
+## 15. Relative-Qwen rerank — implemented, real A/B BLOCKED on credential (2026-09-20)
+
+* `infra/content_intelligence/relative_rerank.py` — relative reranking of a
+  BOUNDED finalist set. Records relative rank/score/rationale/evidence/redundancy/
+  confidence **alongside** the untouched independent score. Strict schema,
+  deterministic handling, safe fallback on every failure, candidates never deleted.
+* `tests/test_relative_rerank.py` — 26 tests. `prove_relative_rerank.py` — A–G
+  acceptance. `infra/content_intelligence` — **151 OK**; `infra/discord-review`
+  unchanged.
+* Acceptance: **F and G PASS** (8 checks); **A–E NOT PROVEN** because
+  `LOOM_OPENROUTER_API_KEY` (the existing OpenRouter/Qwen route) did not exist
+  anywhere. The key is now **stored** in the masked secret store (host policy
+  `openrouter.ai`) but was not visible to that run's process snapshot.
+* **Next step:** run `python3 infra/content_intelligence/prove_relative_rerank.py`
+  in a fresh snapshot to execute the real A/B and obtain A–E, token/cost/latency
+  figures. Only then can a verdict of ADOPT / ADOPT WITH LIMITATIONS be defended.
+* Verdict until then: **DO NOT ADOPT (yet) — NOT PROVEN**; reranking stays unwired.
+* Editor remains CLOSED; 5B, 5C.1, DeepFilterNet and 5C.2 are unchanged.

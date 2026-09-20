@@ -2066,3 +2066,91 @@ evidence set for genuine instances; where none exists an item is reported
 
 **Still open:** promotion of safe adjustments from proposal → automatic is a
 **trust ramp backed by acceptance evidence**, not a permanent human gate.
+
+---
+
+## 18. Relative-Qwen rerank — bounded A/B (2026-09-20)
+
+**Status: IMPLEMENTED and offline-proven; the real A/B is BLOCKED on a credential
+and is therefore NOT PROVEN. Nothing was wired into production.**
+
+Objective: does relative comparison by Qwen improve LOOM's ability to prioritize
+the strongest candidates from the SAME source, versus independent/absolute scoring?
+
+Where it sits: **after** bounded finalists. Discovery, 5B, Content Intelligence
+and 5C.2 are untouched, and none of their behaviour changed.
+
+### Files
+
+| | |
+|---|---|
+| NEW | `infra/content_intelligence/relative_rerank.py` |
+| NEW | `infra/content_intelligence/tests/test_relative_rerank.py` — 26 tests |
+| NEW | `infra/content_intelligence/prove_relative_rerank.py` — A–G acceptance |
+
+### Contract
+
+`relative_rerank(finalists, ...) -> RerankResult`, and it records **alongside**
+the existing independent score/rank: `relative_rank`, `relative_score`,
+`rationale`, `strongest_evidence`, `redundant_with`, `confidence`, `reranked`,
+`provenance`. The original independent score is **never overwritten**.
+
+* Evidence is bounded: `max_excerpt_chars=700` per finalist, `max_evidence_chars=6000`
+  total, `max_finalists=6` sent per call. Whole-source transcripts are never sent.
+* Candidates are never deleted: finalists beyond `max_finalists` are carried
+  through unchanged with `reranked=False` and ordered after the reranked set.
+* Strict schema validation: every finalist exactly once, unique contiguous ranks,
+  no unknown/missing ids, bounded `confidence`, non-self `redundant_with`.
+* Deterministic handling: `temperature=0`, stable ordering, tie-break by
+  (relative_score desc, independent_score desc, candidate_id asc).
+* **Safe fallback on every failure** — `finalist_set_too_small`,
+  `provider_error:<CODE>`, `transport_error:<Type>`, `invalid_json`,
+  `schema_invalid` — each returning the independent ordering. Reranking is never
+  a hard failure point.
+
+### Acceptance (real candidate sets; never manufactured)
+
+Three real sources, 4 finalists each, built from real local media: real word
+timings from the committed 5C.1 run (`kick__looselipssinkships`,
+`mushoku-tensei`, `twitch__balpreezy`) plus live 5B signal windows.
+
+| | item | result |
+|---|---|---|
+| F | deterministic/schema-valid handling of a bounded finalist set | **PASS** (3 checks) |
+| G | safe fallback (no credential / malformed JSON / schema violation / too-small set / never a hard failure) | **PASS** (5 checks) |
+| A | agreement between independent and relative ordering | **NOT PROVEN** |
+| B | relative comparison changes a meaningful ordering | **NOT PROVEN** |
+| C | redundant/overlapping finalists: stronger representative preferred | **NOT PROVEN** |
+| D | high absolute score with weaker source-relative value | **NOT PROVEN** |
+| E | lower absolute score that becomes compelling in comparison | **NOT PROVEN** |
+
+`=== ACCEPTANCE: 8 passed, 0 failed, 5 not proven ===`
+
+### Blocker (explicit)
+
+The established Qwen route is OpenRouter + `qwen/qwen3.5-9b` via
+`LOOM_OPENROUTER_API_KEY`. That key **does not exist** in `~/.openclaw/.env`
+(13 LOOM keys, none OpenRouter), the shell env, or any repo `.env`
+(`infra/tunnel-proxy/.env` has only `LOOM_GEMINI_KEY`;
+`infra/discord-review/.env` is empty). A–E require real model calls and cannot be
+produced without it, so they are reported **NOT PROVEN** rather than invented.
+
+The key was then requested through the masked secret store and is **STORED**
+(host policy: `openrouter.ai` available), but it was **not yet visible to this
+run's process snapshot**, so no call was attempted in that turn.
+
+### Next step (exact)
+
+    python3 infra/content_intelligence/prove_relative_rerank.py
+
+in a fresh exec snapshot. It will run the real A/B: independent scoring per
+candidate (one call each, existing route and prompt) versus one relative call per
+finalist set, and record calls, input/output tokens, actual cost, average cost per
+set and latency, then evaluate A–E. Estimated bounded cost: ≤ 4 finalists ×
+3 sources independent calls + 3 relative calls on a small pinned model.
+
+### Verdict
+
+**DO NOT ADOPT (yet) — evidence insufficient.** Per the brief, relative reranking
+must not be wired into production without A–E evidence; it remains unwired, and
+the existing independent ranking remains fully usable.
