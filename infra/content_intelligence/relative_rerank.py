@@ -82,8 +82,23 @@ class RerankConfig:
     max_excerpt_chars: int = 700    # transcript excerpt per finalist
     max_evidence_chars: int = 6000  # total evidence budget for the whole prompt
     temperature: float = 0.0
-    max_output_tokens: int = 1500
-    timeout: float = 120.0
+    # The pinned Qwen model is a REASONING model. Measured through the existing
+    # provider path on this machine: one assessment consumed 5464 output tokens
+    # (reasoning + answer). The original 1500 budget returned an EMPTY completion
+    # (finish_reason="length", content="") and every call failed as invalid_json;
+    # even 6000 failed intermittently because reasoning length varies per call.
+    # A generous cap costs nothing extra: only ACTUAL usage is billed.
+    max_output_tokens: int = 16000
+    # One assessment measured 60.9 s end to end, so a 120 s timeout left almost no
+    # headroom for a slower reasoning pass.
+    # Measured: showing each candidate's independent score in the comparison
+    # prompt ANCHORS the model onto it — the relative ordering reproduced the
+    # independent ordering exactly (rho 1.0, identical scores) on all 3 sources.
+    # With the score line removed the same question produced rho 0.2 and -0.105
+    # on 2 of 3 sources, i.e. genuine relative judgement. The score is still
+    # PRESERVED in the result; it is simply not revealed to the model.
+    include_independent_score_in_prompt: bool = False
+    timeout: float = 300.0
     model: str = QWEN_PINNED_MODEL
 
 
@@ -179,9 +194,11 @@ def build_rerank_prompt(finalists: list[Finalist], source_context: str = "",
     for f in finalists:
         excerpt = (f.transcript_excerpt or "")[:cfg.max_excerpt_chars]
         dims = ", ".join(f"{k}={v}" for k, v in sorted((f.dimensions or {}).items()))[:240]
-        block = [f"candidate_id: {f.candidate_id}",
-                 f"independent_score: {round(float(f.independent_score), 2)}",
-                 f"duration_s: {round(float(f.duration_s), 2) if f.duration_s is not None else 'unknown'}"]
+        block = [f"candidate_id: {f.candidate_id}"]
+        if cfg.include_independent_score_in_prompt:
+            block.append(f"independent_score: {round(float(f.independent_score), 2)}")
+        block.append(
+            f"duration_s: {round(float(f.duration_s), 2) if f.duration_s is not None else 'unknown'}")
         if f.hook:
             block.append(f"hook: {f.hook[:160]}")
         if dims:

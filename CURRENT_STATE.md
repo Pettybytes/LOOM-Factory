@@ -2189,3 +2189,109 @@ later support it: **F** (deterministic, schema-valid handling of a bounded final
 set) and **G** (safe fallback on every failure path, never a hard failure point).
 
 Calls made: **0**. Tokens: **0**. Cost: **$0**. Latency: none.
+
+---
+
+## 19. Relative-Qwen A/B — EXECUTED with real model evidence (2026-09-20)
+
+**Verdict: ADOPT WITH LIMITATIONS** (bounded, advisory; see §19.5).
+
+### 19.1 Two real defects found in the established Qwen route
+
+The route is OpenRouter + pinned `qwen/qwen3.5-9b` via `LOOM_OPENROUTER_API_KEY`.
+It is a **reasoning model**, and that broke the route twice over:
+
+1. **Default output budget is unusable.** At the provider default
+   (`max_output_tokens=1200`) every call spent its entire budget on reasoning and
+   returned an EMPTY completion (`finish_reason="length"`, `content=""`), which
+   surfaces as `INVALID_RESPONSE`. Measured `reasoning_tokens` = 1200/1200.
+2. **Even a large budget is unreliable with thinking ON.** Budget 3000 -> still
+   all reasoning, no content. Budget 6000 -> one call used 3140 reasoning tokens
+   and succeeded (5464 output tokens total, 60.9 s, $0.000335), then a later run
+   at the same setting failed. At 16000 the full A/B scored **1 success / 4
+   attempts** (`#w1` scored, then `#w2`, `mushoku#w1`, `balpreezy#w1` all
+   `INVALID_RESPONSE`).
+
+### 19.2 The fix: non-thinking mode (supported by the same route)
+
+`/api/v1/models` reports `qwen/qwen3.5-9b` supports **`reasoning`**,
+**`response_format`**, **`structured_outputs`** and `include_reasoning`
+(max completion 32768). So non-thinking is available without changing provider,
+model, endpoint or key.
+
+Measured on one real finalist set (4 candidates), same prompt, same route:
+
+| | thinking ON | **non-thinking + json_object** | **non-thinking + json_schema** |
+|---|---|---|---|
+| output tokens | 5464+ | **403** | **364** |
+| reasoning tokens | 5464 | **0** | **0** |
+| latency | 60.9 s | **5.5 s** | **3.7 s** |
+| cost/call | $0.000335 | **$0.000135** | **$0.000130** |
+| schema | intermittent failure | **VALID** | **VALID** |
+
+Sampling used Qwen's documented non-thinking recommendation (temperature 0.7 /
+top_p 0.8 / top_k 20); **temperature 0 was not assumed optimal and was not
+tested**, so it remains an open variable. Note the two variants produced
+*different* orderings for the same input, so the model's judgment is not
+deterministic at these settings — only its HANDLING is (F).
+
+### 19.3 A/B executed (both arms, same generation profile)
+
+13 calls, **13/13 schema-valid**, total **$0.001348**, latency mean 9.9 s / max 35.5 s.
+Arm A = one call per candidate (existing content prompt, independent scoring).
+Arm B = one relative call per finalist set.
+
+| source | arm A (independent) | arm B (relative, anchored prompt) | rho |
+|---|---|---|---|
+| kick | w1=85, w4=82, w3=72, w2=68 | w1,w4,w3,w2 | 1.0 |
+| mushoku | w2=92, w1=82 | w2,w1 | 1.0 |
+| balpreezy | w3=55, w2=42, w1=35, w4=35 | w3,w2,w1,w4 | 1.0 |
+
+### 19.4 Anchoring confound — found and measured
+
+`rho=1.0` on all three sources came with relative scores **numerically identical**
+to the independent scores. Cause: the rerank prompt displayed each candidate's
+`independent_score`, so the model echoed the anchor.
+
+Bounded diagnostic (3 calls, $0.000324) — identical prompt with ONLY that line
+removed:
+
+| source | rho vs arm A | rank changes | redundancy flag |
+|---|---|---|---|
+| kick | **0.2** | w2, w4 | none |
+| mushoku | 1.0 | none | w1 -> w2 |
+| balpreezy | **-0.105** | w1, w3 | w3 -> w2 |
+
+**The anchor is removed by default** (`include_independent_score_in_prompt=False`,
+overridable). The independent score is still preserved in the result; it is
+simply no longer revealed to the model.
+
+### 19.5 A-G outcomes on real evidence
+
+| | item | result |
+|---|---|---|
+| A | agreement between independent and relative ordering | **NOT ESTABLISHED** — 1.0 anchored (artifact); 0.2 / 1.0 / -0.105 unanchored |
+| B | relative comparison changes a meaningful ordering | **PROVEN** — 2 of 3 sources changed ranks |
+| C | redundant/overlapping finalists: stronger representative preferred | **PROVEN** — 2 of 3 sources flagged redundancy (w1->w2; w3->w2), naming the stronger representative |
+| D | high absolute score with weaker source-relative value | **PROVEN (single instance)** — kick w4: independent 82 / rank 2 -> relative rank 4 |
+| E | lower absolute score that becomes compelling in comparison | **PROVEN (single instance)** — balpreezy w1: independent 35 / rank 3 -> relative rank 1 |
+| F | deterministic/schema-valid bounded handling | **PROVEN** |
+| G | safe fallback, never a hard failure point | **PROVEN** |
+
+**Verdict: ADOPT WITH LIMITATIONS**, bounded to: relative judgment within ONE
+source over 2-6 finalists; non-thinking explicitly enabled; JSON constrained;
+strict schema validation; the independent score kept but NOT revealed; relative
+rank/score/rationale/redundancy recorded alongside the untouched independent
+score; safe fallback always. Because the ordering is not deterministic and D/E
+rest on single instances, it stays **advisory** — a proposal surfaced next to the
+independent ranking, not a silent reordering, and promotion from proposal to
+automatic remains a trust ramp backed by acceptance evidence. Highest-confidence
+new capability: **redundancy detection**, which the independent scorer cannot
+produce at all.
+
+### 19.6 Cost
+
+Measured across this work: A/B $0.001348 + unanchored diagnostic $0.000324 +
+non-thinking experiment $0.000265 + budget probes ~$0.0012 + failed thinking-mode
+runs ~$0.0015 = **~$0.0047**. The key's own counter reported $0.007956 in total
+usage (including earlier activity). No paid service beyond the existing route.

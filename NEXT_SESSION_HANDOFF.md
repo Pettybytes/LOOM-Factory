@@ -553,3 +553,32 @@ ramp backed by acceptance evidence**, not a permanent human gate.
 * No production code or contract changed on this retry, so no test re-run was
   required (`infra/content_intelligence` 151 OK, `infra/discord-review` 232 OK
   from the preceding verified run remain valid).
+
+---
+
+## 16. Relative-Qwen A/B EXECUTED — verdict ADOPT WITH LIMITATIONS (2026-09-20)
+
+* **Route defects found (owner should fix in the route config):** with the pinned
+  reasoning model, the provider default `max_output_tokens=1200` fails **100%**
+  of calls (empty completion -> `INVALID_RESPONSE`); thinking ON is still
+  unreliable at 16000 (1 success / 4 attempts).
+* **Non-thinking is supported by the same route** (`reasoning`,
+  `response_format`, `structured_outputs` are all in `supported_parameters`) and
+  is ~13x cheaper in tokens, ~11x faster, and schema-valid:
+  403 vs 5464 output tokens, 5.5 s vs 60.9 s, $0.000135 vs $0.000335 per call.
+* **A/B executed:** 13 calls, 13/13 schema-valid, $0.001348, mean 9.9 s.
+* **Anchoring confound found and fixed:** showing `independent_score` in the
+  rerank prompt made the model echo it (rho 1.0, identical scores, all sources).
+  With that line removed: rho **0.2 / 1.0 / -0.105**. The prompt no longer
+  reveals the score (`include_independent_score_in_prompt=False`), while the
+  result still preserves it.
+* **A-G:** B PROVEN (2/3 sources changed ranks), C PROVEN (2/3 flagged
+  redundancy — the independent scorer cannot do this), D and E PROVEN as single
+  instances, F and G PROVEN. A NOT ESTABLISHED (the original agreement was the
+  anchor artifact).
+* **Verdict: ADOPT WITH LIMITATIONS** — bounded, advisory-only, safe-fallback
+  always; not deterministic, so it must not silently reorder production output.
+* Tests: `infra/content_intelligence` **158 OK**; `infra/discord-review` 232 OK.
+  Artifacts: `relative_rerank.py`, `complete_ab_non_thinking.py`,
+  `experiment_non_thinking.py`, `experiment_unanchored_rerank.py`.
+* Cost of this work: **~$0.0047** measured.

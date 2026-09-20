@@ -275,6 +275,65 @@ class PromptBoundingTests(unittest.TestCase):
         self.assertIn("NOT predicting views", prompt)
         self.assertIn("redundant_with", prompt)
 
+    def test_prompt_does_not_reveal_the_independent_score_by_default(self):
+        """Measured: revealing it anchored the model onto the independent order
+        (rho 1.0 on all 3 sources, identical scores); hiding it produced genuine
+        relative judgement (rho 0.2 / -0.105 on 2 of 3)."""
+        self.assertFalse(RerankConfig().include_independent_score_in_prompt)
+        self.assertNotIn("independent_score", build_rerank_prompt(finalists(3)))
+
+    def test_prompt_can_opt_into_showing_the_score(self):
+        cfg = RerankConfig(include_independent_score_in_prompt=True)
+        self.assertIn("independent_score", build_rerank_prompt(finalists(3), config=cfg))
+
+
+class AbEntryPathTests(unittest.TestCase):
+    """The real A/B entry path must reach the existing provider WITHOUT a
+    relative-import failure.
+
+    provider.py uses ``from . import evidence`` / ``from .contract import ...``,
+    so it can only be imported as part of the ``content_intelligence`` package.
+    A bare ``from provider import ...`` loads it as a top-level module and dies
+    with "attempted relative import with no known parent package" — which is
+    exactly how the first real A/B run crashed.
+    """
+
+    def test_harness_does_not_import_provider_as_a_top_level_module(self):
+        src = (Path(__file__).resolve().parents[1] / "prove_relative_rerank.py").read_text(
+            encoding="utf-8")
+        self.assertNotIn("from provider import", src)
+        self.assertNotIn("import provider\n", src)
+        self.assertIn("content_intelligence.provider", src)
+        self.assertIn("content_intelligence.providers", src)
+
+    def test_existing_provider_is_importable_in_package_context(self):
+        infra = Path(__file__).resolve().parents[2]      # .../infra
+        if str(infra) not in sys.path:
+            sys.path.insert(0, str(infra))
+        from content_intelligence.provider import Evidence
+        from content_intelligence.providers import ProviderError, build_provider
+        self.assertTrue(hasattr(Evidence, "__dataclass_fields__"))
+        self.assertTrue(callable(build_provider))
+        self.assertTrue(issubclass(ProviderError, RuntimeError))
+
+    def test_provider_cannot_load_as_a_bare_top_level_module(self):
+        """Locks in WHY the package import is required, so the reason cannot be
+        'cleaned up' away later."""
+        src = (Path(__file__).resolve().parents[1] / "provider.py").read_text(encoding="utf-8")
+        self.assertIn("from . import evidence", src)
+
+    def test_output_budget_accommodates_the_pinned_reasoning_model(self):
+        """Measured through the existing provider path: one assessment consumed
+        5464 output tokens (reasoning + answer), and a budget at or below that
+        returns an EMPTY completion (finish_reason='length', content='') which
+        surfaces as invalid_json. 1500 failed every call; 6000 failed
+        intermittently; 16000 was reliable."""
+        self.assertGreaterEqual(RerankConfig().max_output_tokens, 8000)
+
+    def test_timeout_leaves_headroom_over_measured_latency(self):
+        """A real assessment measured 60.9 s end to end."""
+        self.assertGreaterEqual(RerankConfig().timeout, 180.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
