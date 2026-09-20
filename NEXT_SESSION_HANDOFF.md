@@ -1,6 +1,17 @@
-# NEXT SESSION HANDOFF — Editor CLOSED → SEGMENT 5B NEXT
+# NEXT SESSION HANDOFF — Editor CLOSED → SEGMENT 5 RUNTIME ACCEPTANCE NEXT
 
 **Supersedes everything before it for resuming work.** Read this first, then `LOOM_SOURCE_OF_TRUTH.md`, `CURRENT_STATE.md`, `HANDOFF.md`.
+
+> ## 🚩 CURRENT CHECKPOINT — 2026-09-20 SESSION CLOSEOUT (START HERE)
+>
+> **Repository:** branch `master`, `HEAD == origin/master == cbfaa5d` (0 ahead / 0 behind, nothing unpushed).
+> **Worktree:** clean except ONE intentional untracked file — `infra/supabase/038_loom_editor_session_tokens.sql` (2729 B, mode 600). It must NOT be deleted, overwritten, committed, or lost.
+> **Tests:** `infra/content_intelligence` **171 OK** · `infra/discord-review` **232 OK**.
+> **Editor:** CLOSED — do not reopen without a demonstrated real regression.
+> **Segment 5:** **ACTIVE, not closed.** 5B + 5C.1 + DeepFilterNet + 5C.2 + Qwen routing work are done; what remains is the **runtime spine**: automated discovery → existing real tenant queue → real end-to-end acceptance → closure.
+> **Segment 6 (Lean Ranking Composer):** LOCKED until Segment 5 genuinely closes.
+>
+> **Full durable checkpoint, next-work order and the unresolved provider-default decision are in §18 below.**
 
 > ## ✅ EDITOR GATE CLOSED — 2026-09-20 ~02:44 EDT (HUMAN ACCEPTANCE PASS)
 >
@@ -602,3 +613,186 @@ ramp backed by acceptance evidence**, not a permanent human gate.
 * Preserved: prompt, scoring semantics, contract, validation, thresholds, error
   codes, fallback. Untouched: Gemini provider, reranker, candidate generation,
   Editor, discovery, tenant queues, Segment 5/6.
+
+---
+
+## 18. SESSION CLOSEOUT — DURABLE CHECKPOINT FOR TOMORROW (2026-09-20)
+
+### 18.1 Repository checkpoint (verified at closeout)
+
+| | |
+|---|---|
+| branch | `master` |
+| HEAD | **`cbfaa5d`** |
+| `origin/master` | **`cbfaa5d`** (identical — `HEAD == origin/master`) |
+| ahead / behind | 0 / 0 — no unpushed commits |
+| worktree | clean **except** the intentional untracked 038 migration |
+
+Pushed today, in order: `fcc54e9` (5C.1 WhisperX) → `9b8a6cb` (DeepFilterNet
+DO NOT ADOPT) → `c6ef583` (5C.2 Boundary Refiner + locked timestamp primitive) →
+`f35df47` (rerank implementation, A–E blocked) → `957c4e2` (blocked retry) →
+`e3d9137` (real A/B + verdict + anchor fix) → `185edfc` (harness entry-path fix) →
+**`cbfaa5d` (Qwen provider hardening)**.
+
+**Intentional 038 exception:** `infra/supabase/038_loom_editor_session_tokens.sql`
+is deliberately UNTRACKED (not gitignored). It is present, unmodified since
+Sep 19 21:19, and must not be deleted, overwritten, committed accidentally, or
+lost. No other file was left uncommitted, and nothing pre-existing was committed
+merely to make the tree look clean.
+
+### 18.2 Segment 5 status: ACTIVE (not closed)
+
+Completed in this work block:
+
+1. **5B — multimodal signal mining: COMPLETE.** Transcript/audio/visual evidence
+   extraction with deterministic signal windows (`audio_spike`, `visual_motion`,
+   `scene_cut`) used as evidence by everything downstream.
+2. **5C.1 — WhisperX evaluation: CLOSED, alignment-ONLY decision.** WhisperX's
+   VAD/decoder path changed or lost transcript content on 3 of 7 speech clips, so
+   it is **never** used to produce transcript text; wav2vec2 alignment is
+   supplemental word-level timing over LOOM's existing transcript. Evidence:
+   `infra/whisperx-eval/` (`results.json`, `README`).
+3. **DeepFilterNet: DO NOT ADOPT** for automatic preprocessing. No transcription
+   gain on any difficult clip (net word loss on 4 of 5), substitutions were
+   degradations, and loud-region energy was attenuated on the eventful content
+   LOOM targets (shouting 74 %, singing 73 %, music 33 %, low-SNR 21 %). Evidence:
+   `infra/deepfilter-eval/`.
+4. **5C.2 — Boundary Refiner: COMPLETE** and the **timestamp primitive is LOCKED**.
+   Deterministic, local, **$0**, no model call, pure stdlib. Refines the boundaries
+   of an already-selected candidate; carries `original_bounds` plus
+   `start_reason`/`end_reason`/`fallback`/`evidence`; trimming may remove silence
+   only. Acceptance A–I on real media + real timings: **11/11 PASS**. Files:
+   `infra/content_intelligence/boundary_refiner.py`,
+   `tests/test_boundary_refiner.py`, `prove_boundary_refiner.py`.
+5. **Relative-Qwen rerank — real A/B EXECUTED.** Verdict **ADOPT WITH LIMITATIONS**
+   and it remains **ADVISORY and UNWIRED**. See 18.3.
+6. **Qwen provider hardening — runtime-proven at `cbfaa5d`.** See 18.4.
+
+Not yet done (this is tomorrow's work):
+
+* **Automated discovery has NOT been started in this work block.**
+* **Tenant queue activation has NOT been completed.**
+* **Segment 5 final runtime acceptance has NOT been completed.**
+* **Candidate generation is untouched.**
+* **Segment 6 remains LOCKED** until Segment 5 genuinely closes.
+
+### 18.3 Relative-Qwen rerank — findings (A/B closed, do not reopen)
+
+* **Verdict: ADOPT WITH LIMITATIONS**, bounded and advisory. Recorded in
+  `CURRENT_STATE.md` §19.
+* **The independent score is still preserved and still authoritative.** Relative
+  reranking records `relative_rank`/`relative_score`/`rationale`/
+  `strongest_evidence`/`redundant_with`/`confidence` **alongside** the untouched
+  independent score, and never silently reorders production output.
+* **Relative reranking uses explicit NON-THINKING Qwen + structured output.**
+  Measured: 403/364 output tokens, **0 reasoning tokens**, 5.5 s / 3.7 s,
+  $0.000135 / $0.000130 per call, schema-valid — versus 5464 output tokens and
+  60.9 s with reasoning on.
+* **Qwen reasoning-ON failure findings:** the pinned `qwen/qwen3.5-9b` is a
+  reasoning model, so with thinking on it spent the entire output budget on
+  reasoning and returned an **empty completion** (`finish_reason="length"`,
+  `content=""`) — surfacing as `INVALID_RESPONSE`. That failed **100 %** of calls
+  at the provider default (`max_output_tokens=1200`; `reasoning_tokens` 1200/1200)
+  and stayed unreliable at 6000 (intermittent) and 16000 (1 success / 4 attempts).
+* **Anchoring confound found and fixed:** showing `independent_score` in the
+  comparison prompt made the model echo it (rank correlation 1.0 with numerically
+  identical scores on all 3 sources). With only that line removed: **rho 0.2 / 1.0
+  / −0.105** — genuine relative judgement. The prompt no longer reveals the score
+  (`include_independent_score_in_prompt=False`, overridable).
+* Acceptance on real evidence: **B PROVEN** (2 of 3 sources changed ranks),
+  **C PROVEN** (2 of 3 flagged redundancy — the independent scorer cannot do
+  this at all), **D/E PROVEN as single instances**, **F/G PROVEN**, **A NOT
+  ESTABLISHED**. Ordering changes are *plausibly useful but not independently
+  verifiable* (no ground-truth labels), which is exactly why it stays advisory.
+
+### 18.4 Production Qwen provider hardening — `cbfaa5d` (runtime-proven)
+
+* **Affected production caller:** `infra/content_intelligence/pipeline.py` →
+  `Pass1Pipeline._score_candidate` → `build_provider(provider_name, …)` →
+  `QwenProvider.assess()`. Reachable when `provider_name="qwen"`.
+* **Change, scoped to `QwenProvider`:** the request now **always** carries
+  `"reasoning": {"enabled": false}` (opt-in only via `reasoning_enabled=True`,
+  never by omission, so it cannot silently fall back to the broken default); it
+  **always** sets `response_format` — `json_schema` by default via
+  `QWEN_RESPONSE_SCHEMA`, which mirrors exactly the shape `_build_prompt` always
+  demanded, with `json_object` available and an unknown value raising `BAD_CONFIG`
+  before any HTTP call; and the output budget stays **bounded at 1200** (measured
+  need for this prompt: 337–665 tokens).
+* **Preserved unchanged:** prompt, scoring semantics, response contract and
+  downstream `assess_content` validation, thresholds, evidence contracts, error
+  codes, usage/model-identity capture and fallback behaviour.
+* **Actual production smoke proof** (`build_provider("qwen")` →
+  `provider.assess()` → `assess_content()`):
+
+| metric | value |
+|---|---|
+| reasoning tokens | **0** |
+| input tokens | **410** |
+| output tokens | **534** |
+| latency | **7.9 s** |
+| cost | **$0.00004** |
+| assessment | **valid 14-dimension assessment**, worthiness **68**, confidence 0.3333, format `reaction_single` |
+
+* **`Pass1Config.provider_name` STILL defaults to `gemini`.** No provider-default
+  migration was authorized today, and the default was deliberately not touched
+  during closeout.
+* Coverage: 13 new contract tests in
+  `tests/test_qwen_provider_contract.py` pin the request (non-thinking always
+  present, thinking opt-in only, structured output set, bounded budget, prompt
+  byte-identical, `INVALID_RESPONSE`/`AUTH` intact).
+
+### 18.5 Test state
+
+| suite | result |
+|---|---|
+| `infra/content_intelligence` | **171 OK** |
+| `infra/discord-review` | **232 OK** |
+
+### 18.6 Gates — status and scope
+
+* **Editor: CLOSED.** Do not reopen without a demonstrated real regression, and
+  do not add Editor feature work.
+* **Candidate generation: untouched** in this work block.
+* **Automated discovery: not started.** **Tenant queue activation: not completed.**
+  **Segment 5 final runtime acceptance: not completed.**
+* **Segment 6 (Lean Ranking Composer): LOCKED** until Segment 5 genuinely closes.
+
+### 18.7 UNRESOLVED DECISION — provider default (do NOT change silently)
+
+`Pass1Config.provider_name` currently defaults to **Gemini**, even though the Qwen
+structured-scoring route is now runtime-proven, inexpensive (~$0.00004 per
+assessment) and hardened. **Decide deliberately during future
+routing/configuration work** whether Qwen should replace Gemini as the default for
+applicable Content Intelligence scoring. Do not change the default as a side
+effect of other work, and it was NOT changed during this closeout.
+
+---
+
+## 19. START HERE — TOMORROW'S WORK ORDER
+
+1. **Read the handoff/current-state docs only as needed** (§18 here, plus
+   `CURRENT_STATE.md` §18–20). **Do not re-audit already accepted work** — 5B,
+   5C.1, DeepFilterNet, 5C.2 and the Qwen routing work are closed.
+2. **Confirm the repository checkpoint:** branch `master`, `HEAD ==
+   origin/master`, expect `cbfaa5d` or later; verify the 038 migration is still
+   present and untracked.
+3. **Resume Segment 5 with automated discovery** and route its output into the
+   **existing real tenant queue**. (Discovery has not been started yet.)
+4. **Prove the real sourcing/intelligence spine end-to-end with the EXISTING
+   tenant.** One existing real tenant is sufficient — do **not** provision all
+   planned tenants merely to prove the architecture.
+5. **Verify tenant routing/isolation contracts** on that real path.
+6. **Perform the remaining Segment 5 runtime acceptance.**
+7. **If — and only if — all closure criteria are actually satisfied, mark
+   Segment 5 CLOSED.**
+8. **Only after Segment 5 is genuinely closed may Segment 6 — Lean Ranking
+   Composer — unlock.**
+
+**Carry-forward decision to make deliberately (not tonight):** see §18.7 —
+whether Qwen should become the default provider for applicable Content
+Intelligence scoring.
+
+**Not authorized to start without a new explicit instruction:** automated
+discovery, tenant queue activation, Segment 5 final acceptance, Segment 6,
+provider-default migration, additional Qwen/Gemini experiments, Editor work,
+OBS/streaming work, or any new feature.
