@@ -537,3 +537,19 @@ ramp backed by acceptance evidence**, not a permanent human gate.
   figures. Only then can a verdict of ADOPT / ADOPT WITH LIMITATIONS be defended.
 * Verdict until then: **DO NOT ADOPT (yet) — NOT PROVEN**; reranking stays unwired.
 * Editor remains CLOSED; 5B, 5C.1, DeepFilterNet and 5C.2 are unchanged.
+
+### 15.1 Fresh-snapshot retry — still blocked (2026-09-20)
+
+* Re-ran `prove_relative_rerank.py` in a fresh snapshot after storing the secret:
+  `LOOM_OPENROUTER_API_KEY present: False` — **8 passed, 0 failed, 5 not proven**.
+* Protected secrets are **not injected into native shell exec** processes, and are
+  never readable back, so the harness cannot receive the value that way.
+* **Unblock:** add `LOOM_OPENROUTER_API_KEY` to `~/.openclaw/.env` (the file that
+  already supplies the other 13 `LOOM_*` vars), then run with
+  `set -a; source ~/.openclaw/.env; set +a` before
+  `python3 infra/content_intelligence/prove_relative_rerank.py`.
+* **Final verdict recorded: DO NOT ADOPT (yet) — NOT PROVEN.** Reranking stays
+  unwired. Calls 0, tokens 0, cost $0.
+* No production code or contract changed on this retry, so no test re-run was
+  required (`infra/content_intelligence` 151 OK, `infra/discord-review` 232 OK
+  from the preceding verified run remain valid).

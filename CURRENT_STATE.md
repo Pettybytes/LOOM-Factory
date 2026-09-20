@@ -2154,3 +2154,38 @@ set and latency, then evaluate A–E. Estimated bounded cost: ≤ 4 finalists ×
 **DO NOT ADOPT (yet) — evidence insufficient.** Per the brief, relative reranking
 must not be wired into production without A–E evidence; it remains unwired, and
 the existing independent ranking remains fully usable.
+
+### 18.1 Fresh-snapshot retry with the stored credential (2026-09-20)
+
+Ran `prove_relative_rerank.py` again in a **fresh execution snapshot** after the
+protected secret was stored: `LOOM_OPENROUTER_API_KEY present: False`.
+
+Result identical: **8 passed, 0 failed, 5 not proven** — A–E still **NOT PROVEN**.
+
+Cause: the secret store does not inject protected values into **native
+shell/sandbox** processes (by design), and stored values are never readable back,
+so the harness cannot receive it that way. The stored entry's current host policy
+lists `openrouter.ai` as available; the value simply was not visible to this shell.
+**No model call was made, and none was manufactured.**
+
+**Unblock (owner action, no code change needed):** put
+`LOOM_OPENROUTER_API_KEY=...` in `~/.openclaw/.env` — the same file that already
+supplies the other 13 `LOOM_*` variables to this environment (verified present in
+the exec env). Then run:
+
+    set -a; source ~/.openclaw/.env; set +a
+    python3 infra/content_intelligence/prove_relative_rerank.py
+
+and the real A/B executes as built.
+
+### 18.2 Final verdict — Relative-Qwen rerank (evidence-based)
+
+**DO NOT ADOPT (yet) — NOT PROVEN.**
+
+No model evidence exists for A–E, so by the brief's own standard relative
+reranking remains **unwired** and the existing independent ranking remains fully
+usable. What *is* proven is the risk surface that would make adoption safe if A–E
+later support it: **F** (deterministic, schema-valid handling of a bounded finalist
+set) and **G** (safe fallback on every failure path, never a hard failure point).
+
+Calls made: **0**. Tokens: **0**. Cost: **$0**. Latency: none.
