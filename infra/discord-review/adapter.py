@@ -476,20 +476,110 @@ def mint_session_token(edit_session_id: str):
     Minting marks the moment the editor becomes AUTHENTICATED. We extend
     expires_at to the (longer) session TTL here, so the 15-minute LAUNCH window
     never terminates an already-open editor — the durable draft remains
-    resumable until it completes or is explicitly expired. Returns the token or
-    None."""
+    resumable until it completes or is explicitly expired.
+
+    NEVER rebinds an existing credential. Returns the token, or None."""
+    token, _code = mint_session_token_diag(edit_session_id)
+    return token
+
+
+def mint_session_token_diag(edit_session_id: str):
+    """Mint a credential and report WHY it could not be minted.
+
+    Returns (token_or_None, code) with code in:
+      ok                    — a NEW credential was issued (never a rebind)
+      already_authenticated — this session already holds a live credential;
+                              no second one is issued, so the open editor's
+                              token can never be orphaned
+      not_active            — the session row is not active (terminal)
+      lookup_failed         — the store could not be read/written
+
+    Two credentials for one session are supported through the append-only
+    credential table; the legacy single-column binding is written ONLY when it
+    is still NULL (write-once), which is what removes the rebinding defect."""
+    if not edit_session_id:
+        return None, "not_active"
     token = secrets.token_urlsafe(24)  # ~32 chars, opaque
     token_hash = hash_token(token)
-    session_expires_at = (datetime.now(timezone.utc) + timedelta(seconds=EDITOR_SESSION_TTL_SECONDS)).isoformat()
+    session_expires_at = (datetime.now(timezone.utc)
+                          + timedelta(seconds=EDITOR_SESSION_TTL_SECONDS)).isoformat()
+
+    # 1) Append-only credential table (preferred: concurrent editors each keep
+    #    their own credential).
+    append = _append_editor_token(edit_session_id, token_hash, session_expires_at)
+    if append == "ok":
+        return token, "ok"
+    if append == "error":
+        return None, "lookup_failed"
+
+    # 2) Legacy fallback: bind the single column ONLY if it is unbound.
     url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
-           f"?id=eq.{edit_session_id}&status=eq.active")
+           f"?id=eq.{edit_session_id}&status=eq.{SESSION_STATUS_ACTIVE}"
+           f"&session_token_hash=is.null")
     data = json.dumps({"session_token_hash": token_hash,
                        "expires_at": session_expires_at}).encode()
     headers = _supabase_headers()
     headers["Content-Type"] = "application/json"
+    headers["Prefer"] = "return=representation"
     req = Request(url, data=data, headers=headers, method="PATCH")
-    with urlopen(req, timeout=15) as resp:
-        return token if resp.status in (200, 204) else None
+    try:
+        with urlopen(req, timeout=15) as resp:
+            bound = json.loads(resp.read().decode() or "[]")
+    except HTTPError as e:
+        return None, "lookup_failed" if e.code >= 500 else "not_active"
+    except URLError:
+        return None, "lookup_failed"
+    if isinstance(bound, list) and bound:
+        return token, "ok"
+    # Zero rows: either the session is not active, or a credential is already
+    # bound. Distinguish the two so the caller can answer truthfully.
+    return None, ("already_authenticated" if editor_session_has_credential(edit_session_id)
+                  else "not_active")
+
+
+class EditorTokenTableUnavailable(Exception):
+    pass
+
+
+def _append_editor_token(edit_session_id, token_hash, expires_at):
+    """INSERT one credential. Returns 'ok', 'unavailable' (table not deployed)
+    or 'error'."""
+    url = f"{SUPABASE_URL}/rest/v1/{EDITOR_TOKEN_TABLE}"
+    data = json.dumps({
+        "edit_session_id": edit_session_id,
+        "token_hash": token_hash,
+        "expires_at": expires_at,
+    }).encode()
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    headers["Prefer"] = "return=representation"
+    req = Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=15) as resp:
+            return "ok" if resp.status in (200, 201, 204) else "error"
+    except HTTPError as e:
+        if e.code in (404, 400):
+            return "unavailable"
+        return "error"
+    except URLError:
+        return "error"
+
+
+def editor_session_has_credential(edit_session_id):
+    """True when the session already holds a bound credential (append-only
+    table or the legacy column). Used to answer 'already authenticated'
+    instead of silently rebinding and orphaning the open editor."""
+    try:
+        tokens = _supabase_get_json(
+            f"{SUPABASE_URL}/rest/v1/{EDITOR_TOKEN_TABLE}"
+            f"?edit_session_id=eq.{edit_session_id}&select=token_hash&limit=1")
+        if tokens:
+            return True
+    except SupabaseLookupError as e:
+        if e.code not in (404, 400, 401, 403):
+            raise
+    rows = fetch_session_by_id(edit_session_id)
+    return bool(rows and rows[0].get("session_token_hash"))
 
 
 def resolve_pending_launch(launch_user_id: str):
@@ -535,34 +625,54 @@ def resolve_editor_session_token(session_token: str):
     return session
 
 
-def resolve_editor_session_token_diag(session_token: str):
-    """Validate the editor session token and CLASSIFY the rejection reason for
-    diagnostics. Returns (session_or_None, reason) where reason is one of:
-    missing_token, hash_mismatch, inactive, expired, ok."""
-    if not session_token:
-        return None, "missing_token"
-    token_hash = hash_token(session_token)
-    # Look up by hash WITHOUT the active filter first, so we can distinguish
-    # hash_mismatch (unknown token) from inactive (known but not active).
-    url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
-           f"?session_token_hash=eq.{token_hash}&select=*")
-    req = Request(url, headers=_supabase_headers(), method="GET")
-    with urlopen(req, timeout=15) as resp:
-        rows = json.loads(resp.read().decode() or "[]")
-    if not rows:
-        return None, "hash_mismatch"
-    row = rows[0]
-    if row.get("status") != "active":
-        return None, "inactive"
-    expires_at = row.get("expires_at")
-    if expires_at:
-        try:
-            exp = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-            if exp < datetime.now(timezone.utc):
-                return None, "expired"
-        except Exception:
-            pass
+# Terminal session statuses and the truthful reason each one reports. The
+# editor credential is validated against the session row's status, and a single
+# bucket ("inactive") used to hide WHICH terminal state was hit — which made an
+# expired credential indistinguishable from a completed one in the logs.
+SESSION_STATUS_ACTIVE = "active"
+_TERMINAL_REASONS = {
+    "expired": "expired",
+    "completed": "completed",
+    "revoked": "revoked",
+    "cancelled": "revoked",
+    "canceled": "revoked",
+}
+
+# Append-only editor credentials. The legacy single-column binding
+# (loom_edit_sessions.session_token_hash) is REBINDABLE: minting a second token
+# for the same session overwrote the first one's hash and orphaned a legitimate,
+# still-open editor (every later call reported hash_mismatch). This table stores
+# one row per minted credential so tokens are never rebound or revoked by a
+# later mint. It is optional at runtime: when it is not deployed the adapter
+# falls back to a WRITE-ONCE binding of the legacy column.
+EDITOR_TOKEN_TABLE = "loom_editor_session_tokens"
+
+
+def _terminal_reason(status: str) -> str:
+    return _TERMINAL_REASONS.get(str(status or "").strip().lower(), "inactive")
+
+
+def _parse_expiry(expires_at):
+    if not expires_at:
+        return None
+    try:
+        return datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _session_expired(row) -> bool:
+    exp = _parse_expiry((row or {}).get("expires_at"))
+    return bool(exp and exp < datetime.now(timezone.utc))
+
+
+def _session_identity(row):
+    """The editor's authorised identity, or None when the row is unusable."""
+    if not isinstance(row, dict):
+        return None
     clip_id = row.get("clip_id") or ""
+    if not clip_id or not row.get("id"):
+        return None
     job_id, _, clip_index = clip_id.rpartition(":")
     return {
         "edit_session_id": row.get("id"),
@@ -571,7 +681,99 @@ def resolve_editor_session_token_diag(session_token: str):
         "source_asset_version": row.get("source_asset_version"),
         "job_id": job_id,
         "clip_index": clip_index,
-    }, "ok"
+    }
+
+
+def _supabase_get_json(url):
+    """GET a Supabase REST url. Raises SupabaseLookupError on any non-2xx so a
+    transport/permission failure is never mistaken for 'no such row'."""
+    req = Request(url, headers=_supabase_headers(), method="GET")
+    try:
+        with urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode() or "[]")
+    except HTTPError as e:
+        raise SupabaseLookupError(e.code, url) from e
+    except URLError as e:
+        raise SupabaseLookupError(0, url) from e
+
+
+class SupabaseLookupError(Exception):
+    def __init__(self, code, url):
+        super().__init__(f"supabase lookup failed (status {code})")
+        self.code = code
+        self.url = url
+
+
+def fetch_session_by_id(edit_session_id):
+    return _supabase_get_json(
+        f"{SUPABASE_URL}/rest/v1/loom_edit_sessions?id=eq.{edit_session_id}&select=*")
+
+
+def fetch_sessions_by_session_token_hash(token_hash):
+    return _supabase_get_json(
+        f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
+        f"?session_token_hash=eq.{token_hash}&select=*")
+
+
+def lookup_editor_token(token_hash):
+    """Resolve a presented session-token hash to its session row.
+
+    Order: the append-only credential table first (a token stays valid even
+    after another token is minted for the same session), then the legacy
+    write-once column. Returns (row_or_None, source) where source is one of
+    'token_table', 'legacy'. Raises SupabaseLookupError when the lookup itself
+    failed (permission/transport) — that is NOT the same as an unknown token."""
+    if not token_hash:
+        return None, "legacy"
+    try:
+        tokens = _supabase_get_json(
+            f"{SUPABASE_URL}/rest/v1/{EDITOR_TOKEN_TABLE}"
+            f"?token_hash=eq.{token_hash}&select=*&limit=1")
+    except SupabaseLookupError as e:
+        if e.code not in (404, 400, 401, 403):
+            raise
+        tokens = None  # table not deployed / not readable -> legacy path
+    if tokens:
+        sid = (tokens[0] or {}).get("edit_session_id")
+        if sid:
+            rows = fetch_session_by_id(sid)
+            return ((rows[0] if rows else None), "token_table")
+        return None, "token_table"
+    rows = fetch_sessions_by_session_token_hash(token_hash)
+    return ((rows[0] if rows else None), "legacy")
+
+
+def resolve_editor_session_token_diag(session_token: str):
+    """Validate the editor session token and CLASSIFY the rejection reason for
+    diagnostics. Returns (session_or_None, reason) where reason is one of:
+    missing_token, hash_mismatch, lookup_failed, expired, completed, revoked,
+    inactive, ok.
+
+    Only an ACTIVE, unexpired session is accepted; every terminal state is
+    rejected with its OWN reason so the editor can tell an expired credential
+    (re-acquire) from a completed one (already finished) from a genuinely
+    unknown token, and from a lookup failure that is not an auth verdict."""
+    if not session_token:
+        return None, "missing_token"
+    token_hash = hash_token(session_token)
+    try:
+        row, source = lookup_editor_token(token_hash)
+    except SupabaseLookupError as e:
+        print(f"[session] lookup_failed status={e.code} fp={token_fp(session_token)}",
+              flush=True)
+        return None, "lookup_failed"
+    if not row:
+        return None, "hash_mismatch"
+    status = str(row.get("status") or "").strip()
+    if status != SESSION_STATUS_ACTIVE:
+        return None, _terminal_reason(status)
+    if _session_expired(row):
+        return None, "expired"
+    session = _session_identity(row)
+    if not session:
+        return None, "hash_mismatch"
+    session["token_source"] = source
+    return session, "ok"
 
 
 def normalize_ready_file(ready_file, job_id):
@@ -609,6 +811,59 @@ def check_existing_card(tenant_id, clip_id, asset_version):
     req = Request(url, headers=_supabase_headers(), method="GET")
     with urlopen(req, timeout=15) as resp:
         return json.loads(resp.read().decode() or "[]")
+
+
+def _stable_json(value):
+    """Canonical JSON for fingerprinting: key order and default encoding must
+    not change the identity of the same submission."""
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        return json.dumps(str(value))
+
+
+def submission_fingerprint(body: dict) -> str:
+    """Identity of ONE edit submission — what the editor asked to persist.
+
+    Keyed to the SUBMISSION's own content (rendered file hash/size, trim range,
+    caption/reframe changes, instruction, render metadata), never merely to
+    job_id + clip_index. That is what lets a replay of the SAME submission be
+    recognised as a no-op while a genuinely DIFFERENT submission from the same
+    clip still allocates the next asset version."""
+    payload = {
+        "content_type": (body or {}).get("content_type") or "video/mp4",
+        "file_hash": (body or {}).get("file_hash"),
+        "size_bytes": (body or {}).get("size_bytes"),
+        "trim_start": (body or {}).get("trim_start"),
+        "trim_end": (body or {}).get("trim_end"),
+        "caption_changes": (body or {}).get("caption_changes"),
+        "crop_reframe_changes": (body or {}).get("crop_reframe_changes"),
+        "instruction": (body or {}).get("instruction") or "",
+        "edl_metadata": (body or {}).get("edl_metadata"),
+    }
+    return hashlib.sha256(_stable_json(payload).encode()).hexdigest()
+
+
+def stored_submission_fingerprint(edit_session_id):
+    """The fingerprint recorded when this session last completed, or None.
+    Read from the immutable correction log (which already carries
+    edit_session_id + edl_metadata), so no schema change is required."""
+    if not edit_session_id:
+        return None
+    try:
+        rows = supabase_filter_get("loom_edit_corrections",
+                                   {"edit_session_id": edit_session_id})
+    except Exception as e:  # noqa: BLE001
+        print(f"[complete] submission fingerprint lookup failed: {type(e).__name__}",
+              flush=True)
+        return None
+    for row in (rows or []):
+        if not isinstance(row, dict):
+            continue
+        meta = row.get("edl_metadata") or {}
+        if isinstance(meta, dict) and meta.get("submission_fingerprint"):
+            return meta["submission_fingerprint"]
+    return None
 
 
 def register_edited_asset_rpc(payload: dict):
@@ -760,13 +1015,135 @@ def supabase_patch_media(media_id, updates):
         return resp.status, json.loads(resp.read().decode() or "{}")
 
 
+ASSET_VERSION_MODE_PINNED = "pinned"
+ASSET_VERSION_MODE_LATEST = "latest"
+ASSET_VERSION_LATEST_TOKENS = ("", "latest", "*")
+
+
+def parse_asset_version(version):
+    """'render-1.12' -> ('render', 1, 12); None when unparseable. Comparison is
+    NUMERIC, so render-1.10 sorts after render-1.9 (a string compare would put
+    '1.10' below '1.9' and silently pick the stale version)."""
+    m = re.match(r"^([A-Za-z_-]+)-(\d+)\.(\d+)$", str(version or "").strip())
+    if not m:
+        return None
+    return (m.group(1), int(m.group(2)), int(m.group(3)))
+
+
+def newest_media_version(media_rows):
+    """Deterministically newest parseable asset_version in the durable rows."""
+    best, best_key = None, None
+    for r in (media_rows or []):
+        if not isinstance(r, dict):
+            continue
+        key = parse_asset_version(r.get("asset_version"))
+        if key is None:
+            continue
+        if best_key is None or key > best_key:
+            best, best_key = r.get("asset_version"), key
+    return best
+
+
+def resolve_asset_version_selection(media_rows, requested_version):
+    """Choose WHICH asset version to hydrate, and say why.
+
+    Contract (an older version is NEVER silently substituted):
+      * a specific version -> mode 'pinned': hydrate THAT version. When it is
+        absent from the durable records the caller must fail truthfully
+        (reason 'version_not_found') rather than fall back.
+      * '', None, 'latest' -> mode 'latest': the newest parseable version in the
+        durable records, chosen deterministically.
+
+    Returns (version_or_None, mode, reason).
+    """
+    rows = [r for r in (media_rows or []) if isinstance(r, dict)]
+    known = {r.get("asset_version") for r in rows}
+    req = str(requested_version or "").strip()
+    if req in ASSET_VERSION_LATEST_TOKENS:
+        newest = newest_media_version(rows)
+        if not newest:
+            return None, ASSET_VERSION_MODE_LATEST, "no_versions"
+        return newest, ASSET_VERSION_MODE_LATEST, "ok"
+    if req not in known:
+        return None, ASSET_VERSION_MODE_PINNED, "version_not_found"
+    return req, ASSET_VERSION_MODE_PINNED, "ok"
+
+
+# Clip sub-resources the editor reads through the gateway. These are the ones
+# that have a durable answer when the live (rehydrated) job is gone.
+CLIP_SUBRESOURCE_RE = re.compile(r'^/api/clip/([^/]+)/([^/]+)/(transcript|edl|scenes)$')
+
+
+def durable_clip_payload(kind, durable):
+    """The durable answer for a clip sub-resource the live backend cannot serve.
+
+    transcript -> the word blocks recorded on this version's correction (the
+                  same blocks the bootstrap ships). Empty when none were ever
+                  persisted: that is the truthful answer, never invented words.
+    scenes     -> [] — the ACCEPTED contract default. There is no durable scene
+                  store, so an empty list is the true answer, never fabricated
+                  scene data (which is why the editor must accept []).
+    edl        -> the durable recipe (canonical range + framing) that the editor
+                  already builds from the bootstrap.
+    """
+    out = {"source": "durable", "asset_version": durable.get("asset_version")}
+    if kind == "scenes":
+        out["scenes"] = []
+        return out
+    if kind == "transcript":
+        captions = []
+        for c in (durable.get("captions") or []):
+            if not isinstance(c, dict):
+                continue
+            captions.append({
+                "text": c.get("text") or c.get("word") or "",
+                "startMs": c.get("startMs"),
+                "endMs": c.get("endMs"),
+            })
+        out["captions"] = captions
+        out["durationSec"] = durable.get("duration_seconds")
+        return out
+    src = durable.get("source_range") or {}
+    out["canonical_range"] = {"start": src.get("start"), "end": src.get("end")}
+    out["source"] = {"duration": durable.get("duration_seconds")}
+    out["framing"] = durable.get("framing") or "auto"
+    out["durable"] = True
+    return out
+
+
+def resolve_durable_bootstrap_diag(tenant_id, clip_id, source_asset_version):
+    """(durable_or_None, reason) — distinguishes WHY a bootstrap could not be
+    resolved, so a 404 can be told apart from an auth failure or a lookup
+    failure. reason is one of: missing_identity, lookup_failed, no_versions,
+    version_not_found, missing_durable_fields, ok."""
+    if not (tenant_id and clip_id):
+        return None, "missing_identity"
+    try:
+        media_rows = supabase_filter_get("loom_media",
+                                         {"tenant_id": tenant_id, "clip_id": clip_id})
+    except Exception as e:  # noqa: BLE001
+        print(f"[bootstrap] media lookup failed for {clip_id}: {type(e).__name__}", flush=True)
+        return None, "lookup_failed"
+    version, _mode, reason = resolve_asset_version_selection(media_rows, source_asset_version)
+    if not version:
+        return None, reason
+    durable = resolve_durable_bootstrap(tenant_id, clip_id, version)
+    if not durable:
+        return None, "missing_durable_fields"
+    return durable, "ok"
+
+
 def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
     """Resolve the durable editor bootstrap from LOOM media/version records —
     independent of the transient OpenShorts /api/status runtime state. Returns
     a dict with the durable preview/media URL, duration, trim/source range,
     framing, title, hook, social caption, spoken captions, transcript and
     scenes; or None if the REQUIRED durable fields (a media URL + a valid
-    trim/source range) do not exist."""
+    trim/source range) do not exist.
+
+    The version to hydrate is PINNED by the caller (a Discord Edit is tied to
+    one asset_version). Only 'latest'/'*'/empty selects the newest version, and
+    that choice is deterministic. An unknown pinned version is NOT substituted."""
     if not (tenant_id and clip_id and source_asset_version):
         return None
 
@@ -775,6 +1152,13 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
     media_rows = supabase_filter_get("loom_media", {
         "tenant_id": tenant_id, "clip_id": clip_id,
     })
+    version, version_mode, version_reason = resolve_asset_version_selection(
+        media_rows, source_asset_version)
+    if not version:
+        print(f"[bootstrap] version selection failed for {clip_id}: "
+              f"requested={source_asset_version!r} reason={version_reason}", flush=True)
+        return None
+    source_asset_version = version
     by_version = {r.get("asset_version"): r for r in (media_rows or []) if isinstance(r, dict)}
     canonical_url = None
     source_filename = None
@@ -866,6 +1250,10 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
         "captions": captions,
         "transcript": captions,
         "scenes": [],
+        # The version actually hydrated, and how it was chosen. Lets a caller
+        # (and a test) prove that no silent substitution happened.
+        "asset_version": source_asset_version,
+        "version_mode": version_mode,
     }
 
 
@@ -1762,6 +2150,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send_json(200, {"status": "ok", "acquisition": acquisition_health()})
             return
+        # DELIBERATELY PUBLIC, non-sensitive: /api/config reports server
+        # FEATURE FLAGS (billing on/off, managed mode, job retention, local-LLM
+        # availability). It carries no tenant, clip, media, token or secret
+        # data, and the OpenShorts client fetches it BEFORE any editor session
+        # exists (AuthContext on first load; MediaInput on the landing page) with
+        # no Authorization header. It is therefore allow-listed here, ahead of
+        # the editor gateway, instead of being answered with a misleading 401.
+        # Everything else under /api/ stays session-authenticated.
+        if self.path.split("?", 1)[0] == "/api/config":
+            self._handle_public_config()
+            return
         # Authenticated editor API (read endpoints).
         if self.path.startswith("/api/"):
             self._handle_editor_api("GET")
@@ -2379,6 +2778,16 @@ class Handler(BaseHTTPRequestHandler):
         with urlopen(req, timeout=15) as resp:
             resp.read()
 
+    def _handle_public_config(self):
+        """Public, non-sensitive feature-flag passthrough (see do_GET).
+
+        Contract: GET /api/config is answered WITHOUT an editor session
+        credential. It exposes only server feature flags and is safe to read
+        before any session exists. It is NOT an authentication bypass for any
+        other route: every other /api/* endpoint still requires a valid, active
+        editor session token."""
+        self._forward_to_backend("GET", "/api/config", b"")
+
     def _handle_editor_bootstrap(self):
         """Durable editor bootstrap (GET, session-token auth). Resolves the
         exact review asset (media URL, duration, trim/source range, framing,
@@ -2395,25 +2804,36 @@ class Handler(BaseHTTPRequestHandler):
         session, reason = resolve_editor_session_token_diag(auth[len("Bearer "):].strip())
         if not session:
             print(f"[bootstrap] reject={reason}", flush=True)
-            self._send_json(401, {"error": "invalid or expired session"})
+            self._send_json(401, {"error": "invalid or expired session", "reason": reason})
             return
 
         tenant_id = session.get("tenant_id")
         clip_id = session.get("clip_id")
+        # The version this EDIT is tied to. It is honoured exactly (or resolved
+        # deterministically when the session asks for 'latest'); an unknown
+        # version is reported, never silently replaced by an older one.
         source_asset_version = session.get("source_asset_version")
-        durable = resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version)
+        durable, reason = resolve_durable_bootstrap_diag(
+            tenant_id, clip_id, source_asset_version)
         if not durable:
-            print(f"[bootstrap] missing durable data for {clip_id}@{source_asset_version}", flush=True)
+            print(f"[bootstrap] missing durable data for {clip_id}@"
+                  f"{source_asset_version} reason={reason}", flush=True)
             self._send_json(404, {
                 "error": "missing_data",
+                "reason": reason,
+                "requested_asset_version": source_asset_version,
                 "detail": "No durable media or trim range for this clip version.",
             })
             return
 
+        resolved_version = durable.get("asset_version")
         durable["tenant_id"] = tenant_id
         durable["clip_id"] = clip_id
-        durable["asset_version"] = source_asset_version
-        print(f"[bootstrap] durable data ok for {clip_id}@{source_asset_version}", flush=True)
+        durable["asset_version"] = resolved_version
+        durable["requested_asset_version"] = source_asset_version
+        print(f"[bootstrap] durable data ok for {clip_id}@{resolved_version} "
+              f"(requested={source_asset_version}, mode={durable.get('version_mode')})",
+              flush=True)
         self._send_json(200, durable)
 
     def _handle_editor_exchange(self):
@@ -2443,9 +2863,21 @@ class Handler(BaseHTTPRequestHandler):
         session["job_id"] = job_id
         session["clip_index"] = clip_index
         # Mint the short-lived editor session token (authenticates /api/* calls).
-        session_token = mint_session_token(session["edit_session_id"])
+        # Minting NEVER rebinds an existing credential — a second mint for the
+        # same session would orphan the editor that already holds the first one.
+        session_token, code = mint_session_token_diag(session["edit_session_id"])
         if not session_token:
-            self._send_json(502, {"ok": False, "error": "could not mint session token"})
+            if code == "already_authenticated":
+                self._send_json(409, {
+                    "ok": False,
+                    "code": "already_authenticated",
+                    "error": "this edit session is already authenticated — reuse the "
+                             "open editor, or click Edit again on the review card for "
+                             "a fresh session",
+                })
+                return
+            self._send_json(502, {"ok": False, "code": code or "mint_failed",
+                                  "error": "could not mint session token"})
             return
         session["session_token"] = session_token
         self._send_json(200, {"ok": True, "session": session})
@@ -2505,9 +2937,20 @@ class Handler(BaseHTTPRequestHandler):
             print(f"[pending] no active session for user {launch_user_id}", flush=True)
             self._send_json(200, {"ok": True, "pending": False})
             return
-        session_token = mint_session_token(session["edit_session_id"])
+        session_token, code = mint_session_token_diag(session["edit_session_id"])
         if not session_token:
-            self._send_json(502, {"ok": False, "error": "could not mint session token"})
+            if code == "already_authenticated":
+                # Truthful: there IS a pending edit, but this session already
+                # holds a live credential. Handing out a second token would
+                # break whichever editor holds the first one, so we report the
+                # state instead of rebinding.
+                print(f"[pending] already authenticated -> {session['clip_id']}", flush=True)
+                self._send_json(200, {"ok": True, "pending": True,
+                                      "already_authenticated": True,
+                                      "session": session})
+                return
+            self._send_json(502, {"ok": False, "code": code or "mint_failed",
+                                  "error": "could not mint session token"})
             return
         clip_id = session["clip_id"]
         job_id, sep, clip_index = clip_id.rpartition(":")
@@ -2531,7 +2974,8 @@ class Handler(BaseHTTPRequestHandler):
         session, reason = resolve_editor_session_token_diag(auth[len("Bearer "):].strip())
         if not session:
             print(f"[draft] reject={reason}", flush=True)
-            self._send_json(401, {"ok": False, "error": "invalid or expired session"})
+            self._send_json(401, {"ok": False, "error": "invalid or expired session",
+                                  "reason": reason})
             return
         try:
             raw = self._read_body()
@@ -2574,14 +3018,19 @@ class Handler(BaseHTTPRequestHandler):
         req_fp = "none"
         if not auth.startswith("Bearer "):
             print(f"[api-auth] {self.path} reject=missing_token", flush=True)
-            self._send_json(401, {"error": "missing session token"})
+            self._send_json(401, {"error": "missing session token",
+                                  "reason": "missing_token"})
             return
         raw_token = auth[len("Bearer "):].strip()
         req_fp = token_fp(raw_token)
         session, reason = resolve_editor_session_token_diag(raw_token)
         if not session:
             print(f"[api-auth] {self.path} reject={reason} fp={req_fp}", flush=True)
-            self._send_json(401, {"error": "invalid or expired session"})
+            # The reason is part of the response so the editor can tell an
+            # expired credential (re-acquire) from a completed session (already
+            # finished) from a lookup failure — never guessed from a bare 401.
+            self._send_json(401, {"error": "invalid or expired session",
+                                  "reason": reason})
             return
         print(f"[api-auth] {self.path} ok fp={req_fp} session={session['edit_session_id']}", flush=True)
 
@@ -2598,9 +3047,20 @@ class Handler(BaseHTTPRequestHandler):
         temp_job_id, _temp_clip = rehydrate_edit_job(
             session["edit_session_id"], session["tenant_id"],
             session["clip_id"], session["source_asset_version"])
+        clip_res = CLIP_SUBRESOURCE_RE.match(self.path) if method == "GET" else None
         if not temp_job_id:
+            if clip_res:
+                # No live workspace for this clip (evicted job, or a rehydration
+                # that never materialised one). The three durable clip reads are
+                # still answerable from LOOM's own records — serve those and say
+                # so, instead of a bare failure that reads like an auth error.
+                print(f"[api] no live workspace fp={req_fp}; serving durable "
+                      f"{clip_res.group(3)}", flush=True)
+                self._forward_clip_subresource(None, clip_res.group(3), session)
+                return
             print(f"[api] rehydrate failed fp={req_fp}", flush=True)
-            self._send_json(502, {"error": "could not rehydrate edit job"})
+            self._send_json(502, {"error": "could not rehydrate edit job",
+                                  "code": "live_job_unavailable"})
             return
 
         target = self._authorize_editor_path(method, self.path, raw_body,
@@ -2608,6 +3068,11 @@ class Handler(BaseHTTPRequestHandler):
                                              temp_job_id)
         if target is None:
             self._send_json(403, {"error": "forbidden"})
+            return
+
+        # Clip sub-resources get the truthful live-else-durable answer.
+        if clip_res:
+            self._forward_clip_subresource(target, clip_res.group(3), session)
             return
 
         # Rewrite the POST body's job identity to the rehydrated temp job
@@ -2644,7 +3109,7 @@ class Handler(BaseHTTPRequestHandler):
         if m and method == "GET":
             return path  # render status (read-only; render_id is a UUID)
         # POST body endpoints: job_id + clip_index must match the session.
-        if method == "POST" and path in ("/api/subtitle", "/api/clip/rerender", "/api/clip/reframe", "/api/hook", "/api/edit"):
+        if method == "POST" and path in ("/api/subtitle", "/api/clip/rerender", "/api/clip/reframe", "/api/hook", "/api/edit", "/api/header"):
             try:
                 body = json.loads(raw_body.decode() or "{}")
             except Exception:
@@ -2654,26 +3119,73 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return None
 
-    def _forward_to_backend(self, method, target, raw_body):
-        """Forward the authorized request to the loopback OpenShorts backend.
-        (The backend is bound to 127.0.0.1:8000 only — never directly public.)"""
+    def _backend_request(self, method, target, raw_body):
+        """One request to the loopback OpenShorts backend. Returns (status, body)
+        or (None, None) when the backend could not be reached."""
         url = f"http://127.0.0.1:8000{target}"
         headers = {"Content-Type": self.headers.get("Content-Type", "application/json")}
         req = Request(url, data=(raw_body or None), headers=headers, method=method)
         try:
             with urlopen(req, timeout=300) as resp:
-                status, body = resp.status, resp.read()
+                return resp.status, resp.read()
         except HTTPError as e:
-            status, body = e.code, e.read()
-        except Exception as e:
-            self._send_json(502, {"error": f"backend error: {e}"})
-            return
+            return e.code, e.read()
+        except Exception:
+            return None, None
+
+    def _send_bytes(self, status, body):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self._emit_cors()
         self.end_headers()
-        self.wfile.write(body)
+        if body:
+            self.wfile.write(body)
+
+    def _forward_to_backend(self, method, target, raw_body):
+        """Forward the authorized request to the loopback OpenShorts backend.
+        (The backend is bound to 127.0.0.1:8000 only — never directly public.)"""
+        status, body = self._backend_request(method, target, raw_body)
+        if status is None:
+            self._send_json(502, {"error": "backend unreachable"})
+            return
+        self._send_bytes(status, body)
+
+    def _forward_clip_subresource(self, target, kind, session):
+        """Serve a clip sub-resource (transcript|edl|scenes) for the editor.
+
+        Prefers the live backend. When the live job cannot answer (404 — the
+        render job was evicted, or a per-session rehydration never materialised a
+        workspace) the DURABLE record answers instead and the response says so.
+        The three outcomes are deliberately distinguishable:
+          * live 200            -> live data
+          * durable 200         -> {"source": "durable", ...}
+          * 404 durable_data_missing -> legitimately absent (never auth)
+        An auth failure still comes back as 401 from the gateway, before this point.
+        """
+        status, body = (self._backend_request("GET", target, b"") if target else (None, None))
+        if status is not None and status != 404:
+            self._send_bytes(status, body)
+            return
+        durable, reason = resolve_durable_bootstrap_diag(
+            session.get("tenant_id"), session.get("clip_id"),
+            session.get("source_asset_version"))
+        if not durable:
+            print(f"[api] {kind} unavailable: live={status} durable={reason} "
+                  f"clip={session.get('clip_id')}", flush=True)
+            self._send_json(404, {
+                "error": "durable_data_missing",
+                "kind": kind,
+                "source": "durable",
+                "reason": reason,
+                "live_status": status,
+            })
+            return
+        payload = durable_clip_payload(kind, durable)
+        print(f"[api] {kind} served from durable record "
+              f"({session.get('clip_id')}@{durable.get('asset_version')}, "
+              f"live_status={status})", flush=True)
+        self._send_json(200, payload)
 
     def _handle_editor_complete(self):
         """Finalize an edit: atomically register the new asset_version (RPC) and
@@ -2681,6 +3193,33 @@ class Handler(BaseHTTPRequestHandler):
         edited render is NOT promoted/approved/distributed — it is
         final_review_pending until the new card is approved. Replay-safe:
         completed sessions resolve idempotently and never duplicate a card."""
+        # Authenticate BEFORE reading or validating the body. A bogus or absent
+        # credential must never reach body validation: it previously produced a
+        # 400 "missing edit_session_id" instead of an auth verdict, which
+        # exposed request-shape behaviour to unauthenticated callers.
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            print("[complete] reject=missing_token", flush=True)
+            self._send_json(401, {"ok": False, "error": "missing session token",
+                                  "reason": "missing_token"})
+            return
+        try:
+            token_row, _token_source = lookup_editor_token(
+                hash_token(auth[len("Bearer "):].strip()))
+        except SupabaseLookupError:
+            print("[complete] reject=lookup_failed", flush=True)
+            self._send_json(502, {"ok": False, "error": "credential lookup failed",
+                                  "reason": "lookup_failed"})
+            return
+        if not token_row:
+            # Unknown credential. A TERMINAL session still authenticates here:
+            # its credential stays valid so an idempotent replay can resolve;
+            # only a token matching no session is rejected.
+            print("[complete] reject=hash_mismatch", flush=True)
+            self._send_json(401, {"ok": False, "error": "invalid session token",
+                                  "reason": "hash_mismatch"})
+            return
+
         try:
             raw = self._read_body()
             body = json.loads(raw.decode() or "{}")
@@ -2692,12 +3231,71 @@ class Handler(BaseHTTPRequestHandler):
         if not edit_session_id:
             self._send_json(400, {"ok": False, "error": "missing edit_session_id"})
             return
+        if token_row.get("id") != edit_session_id:
+            print("[complete] reject=session_mismatch", flush=True)
+            self._send_json(403, {"ok": False, "error": "session mismatch",
+                                  "reason": "session_mismatch"})
+            return
 
         # Resolve the session (active OR completed for idempotent replay).
         session = resolve_edit_session(edit_session_id)
         if not session:
             self._send_json(403, {"ok": False, "error": "invalid or inactive editor session"})
             return
+
+        # Idempotency is keyed to the SUBMISSION's identity, not to the job/clip.
+        # A replay of the same submission must add nothing, and a different
+        # submission must never be mistaken for a replay.
+        incoming_fp = submission_fingerprint(body)
+        if session.get("status") == "completed" and session.get("target_asset_version"):
+            recorded_fp = stored_submission_fingerprint(edit_session_id)
+            completed_version = session.get("target_asset_version")
+            if recorded_fp and recorded_fp == incoming_fp:
+                existing = check_existing_card(session.get("tenant_id"),
+                                               session.get("clip_id"),
+                                               completed_version)
+                delivered = ([c for c in existing if c.get("discord_message_id")]
+                             if isinstance(existing, list) else [])
+                print(f"[complete] idempotent replay of {edit_session_id} "
+                      f"-> {completed_version}", flush=True)
+                self._send_json(200, {
+                    "ok": True,
+                    "idempotent": True,
+                    "submission": {
+                        "edit_session_id": edit_session_id,
+                        "fingerprint": incoming_fp,
+                        "asset_version": completed_version,
+                        "already_completed": True,
+                    },
+                    "card": ({"already_delivered": True,
+                              "message_id": delivered[0].get("discord_message_id")}
+                             if delivered else {"already_delivered": False}),
+                })
+                return
+            # A DIFFERENT submission on an already-finalized session is a
+            # conflict — never a second version for one session, and never a
+            # silent no-op. A genuinely new submission arrives on a new session.
+            print(f"[complete] submission_conflict for {edit_session_id} "
+                  f"(completed as {completed_version})", flush=True)
+            self._send_json(409, {
+                "ok": False,
+                "code": "submission_conflict",
+                "error": ("this edit session already completed a different "
+                          f"submission as {completed_version} — open a new edit "
+                          "session to submit new changes"),
+                "submission": {
+                    "edit_session_id": edit_session_id,
+                    "fingerprint": incoming_fp,
+                    "asset_version": completed_version,
+                },
+            })
+            return
+
+        edl_metadata = body.get("edl_metadata")
+        if not isinstance(edl_metadata, dict):
+            edl_metadata = {} if edl_metadata is None else {"value": edl_metadata}
+        edl_metadata = dict(edl_metadata)
+        edl_metadata["submission_fingerprint"] = incoming_fp
 
         rpc_payload = {
             "p_edit_session_id": edit_session_id,
@@ -2710,7 +3308,7 @@ class Handler(BaseHTTPRequestHandler):
             "p_crop_reframe_changes": body.get("crop_reframe_changes"),
             "p_instruction": body.get("instruction"),
             "p_llm_assist_used": bool(body.get("llm_assist_used")),
-            "p_edl_metadata": body.get("edl_metadata"),
+            "p_edl_metadata": edl_metadata,
         }
         try:
             status, result = register_edited_asset_rpc(rpc_payload)
@@ -2732,10 +3330,15 @@ class Handler(BaseHTTPRequestHandler):
 
         # Card dedup: if a final_publication card already exists for this exact
         # tenant/clip/asset_version, return the existing delivery — no duplicate.
+        # Scoped to THIS version only, so a distinct submission that allocated a
+        # new version is never suppressed by this guard.
         existing = check_existing_card(tenant_id, clip_id, target_version)
         delivered = [c for c in existing if c.get("discord_message_id")] if isinstance(existing, list) else []
         if delivered:
             self._send_json(200, {"ok": True, "idempotent": True,
+                                 "submission": {"edit_session_id": edit_session_id,
+                                                "fingerprint": incoming_fp,
+                                                "asset_version": target_version},
                                  "card": {"already_delivered": True,
                                           "message_id": delivered[0].get("discord_message_id")},
                                  "result": result})

@@ -4,9 +4,56 @@
 
 ---
 
+## EDITOR GATE — CLOSED · 2026-09-20 ~02:44 EDT — HUMAN ACCEPTANCE PASS
+
+**Editor acceptance is complete and locked. Do not re-audit, re-test, or add Editor feature work.**
+
+Bryan completed the final live human acceptance. The returned Discord FINAL REVIEW card
+proves in **one** transaction: dedicated black Header region rendered, video composition below it
+rendered, Header text persisted, rich/range Header styling persisted, Hook change persisted,
+subtitle font-size control worked, submission completed, a new asset version was created, and the
+edited asset automatically returned to Discord for re-review.
+
+### Accepted lineage — `loom-clean-fixture:0`
+
+| version | previous | publication_status | reviewer session | review card |
+|---|---|---|---|---|
+| `render-1.0` | — | `not_approved` | `bentley-clean-fixture` (fixture seed) | `1551050602602172506` |
+| `render-1.1` | `render-1.0` | `final_review_pending` | `e8f22ef1-8237-479b-8406-ad86aa8ee0e1` | `1551055785641902110` |
+| **`render-1.2`** | `render-1.1` | `final_review_pending` | **`39e3babc-1332-4726-ab48-cf15ede6fe63`** | **`1551061184483168386`** |
+
+Chain verified in `loom_media.previous_asset_version` and `loom_edit_corrections`
+(`render-1.0→1.1` and `render-1.1→1.2`, both attributed to the human reviewer).
+The v1.2 media row is `storage_status='not_applicable'` (correct: the edit path registers no media),
+`canonical_url=NULL`, `final_review_pending` — not approved, not distributed.
+
+### Fixes preserved (accepted — do not revert)
+
+1. **`/api/header` adapter allowlist** — `infra/discord-review/adapter.py`
+   `_authorize_editor_path()` POST allowlist was missing `/api/header`, so the adapter returned its own
+   `403 {"error":"forbidden"}` and never forwarded. Because the editor's `failStep(...)` then `return`s,
+   this ALSO aborted the submit before `/discord/editor/complete` — one bug, two symptoms (header 403
+   **and** no card returning to Discord).
+2. **Header region autosave dependency** — `dashboard/src/components/ManualTrimEditor.jsx`
+   `headerRegion` was absent from the autosave `useEffect` deps, so a region-only change never saved a
+   draft and any reload reverted it to the `overlay` default.
+3. **HeaderModal region propagation** — `dashboard/src/components/HeaderModal.jsx` omitted `region`
+   from `onApply`, and the apply handler had no `setHeaderRegion`.
+4. **Subtitle font-size control** — `dashboard/src/components/SubtitleModal.jsx` had
+   `const [fontSize] = useState(24)` (no setter, no control). Added setter + `initialFontSize` prop +
+   range/number control wired to `captionFontSize`; preview and render payload both track it.
+5. **Regression coverage** — `infra/discord-review/tests/test_editor_reliability.py`
+   (`EditorEndpointAllowlistTests` + `DurableMediaRehydrationTests`).
+
+### Note for future debugging
+
+The editor is served by the **Vite dev server** (`openshorts-frontend`, `build.target: dev`,
+`./dashboard:/app` bind-mounted) reached via Caddy → `host.docker.internal:5175`.
+**`dashboard/dist` is NOT served** — a stale `dist` mtime is a red herring, and `/assets/*.js` 404s on
+`:8081` in dev mode by design. Do not diagnose frontend behaviour from `dist/`.
+
 ---
 
-## STOP STATE — 2026-09-18 ~21:15 EDT — TWITCH RUNTIME-PROVEN (clip whole-item + VOD bounded window)
 
 Both signed Approve & Acquire interactions are fulfilled; **no further human click was required**.
 
