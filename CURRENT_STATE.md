@@ -1823,3 +1823,69 @@ the only paid step and is unchanged.
 is unreachable. Left unchanged deliberately — fixing it would alter a contract
 the acceptance tests encode — but it is real and should be revisited if a
 salient final second ever goes missing.
+
+---
+
+## 14. Segment 5C.1 — WhisperX evaluation (2026-09-20)
+
+**Verdict: ADOPT WITH LIMITATIONS — adopt the alignment step only.**
+
+Question: does WhisperX materially improve LOOM's timestamp/alignment quality
+enough to adopt it?
+
+Harness lives at `infra/whisperx-eval/` (isolated; **not** wired into the
+production pipeline). Method, full numbers and the reproduce command are in
+`infra/whisperx-eval/README.md` with raw output in `results.json`.
+
+### Environment
+
+Isolated Python 3.11 venv at `~/.venvs/loom-whisperx-eval` (outside the repo).
+System Python here is 3.14, which has no torch/ctranslate2 wheels, so a separate
+interpreter was required. whisperx **3.8.6**, faster-whisper **1.2.1** —
+identical to `openshorts/requirements.txt`, which makes this an apples-to-apples
+comparison — ctranslate2 4.8.2 (CPU `int8`), torch 2.8.0, pyannote-audio 4.0.7
+(pulled in, not used).
+
+### Measured (316 s of audio, 9 clips, `small`/int8, **$0**)
+
+- baseline faster-whisper with **LOOM's real parameters** RTF **0.111**;
+  WhisperX RTF **0.167** (~51% more compute); **alignment alone RTF 0.019**
+  (5.9 s to align 316 s of audio).
+- **0 alignment errors, 0 unaligned words** on every clip.
+- Median word-boundary shift vs LOOM's *existing* word timestamps:
+  **79 ms start / 52 ms end**.
+- Boundary opportunity (pre-alignment segment edges vs aligned spoken span):
+  candidate windows contain seconds of dead air in places — worst tail 13.6 s /
+  9.7 s / 5.6 s and lead 11.3 s / 3.8 s / 3.2 s — but ~0 on the cleanest speech
+  clip, so the gain is **content-dependent, not universal**.
+- Song/lyrics: baseline produced **0** words on the James Brown performance,
+  WhisperX produced 15 — but misheard (`"This is a man's way"` for *"This is a
+  man's world"*).
+
+### Findings that drove the verdict
+
+1. **The precision gain over LOOM's current word timestamps is NOT established.**
+   Median shift is only ~50–80 ms and this harness has no ground truth, so
+   "different" is not "more accurate".
+2. **Alignment is not uniformly good.** On the rapid-energetic clip it stretched
+   single words implausibly (`mean` 5.48–8.84 s — 3.36 s for one word).
+3. **The risk is the transcription/VAD switch, not the alignment.** WhisperX's
+   default pyannote VAD **dropped an entire opening sentence** that LOOM's config
+   captured, removed 33 of 78 words on the background-noise clip, and
+   **hallucinated** `Hi Tom! Hi Tom! Hi Tom!` on the ambiguous control.
+   Adopting WhisperX wholesale trades small timestamp precision for real content
+   drift and loss.
+4. **Footprint/ops:** ~2–3 GB of dependencies; `torchcodec` is broken against
+   current Homebrew ffmpeg (harmless here — WhisperX's `load_audio` shells out to
+   the ffmpeg binary); CTranslate2 is **CPU-only on Apple Silicon**, so no GPU
+   acceleration is available.
+
+### Decision
+
+Adopt **alignment over LOOM's existing transcript**, keeping LOOM's own
+VAD/decoder configuration. Do **not** replace LOOM's transcription with
+WhisperX's path. Do **not** treat aligned timings as ground truth. The boundary
+payoff is the part worth pursuing, and it belongs to **5C.2**, where promotion
+from proposal to automatic is a trust ramp backed by acceptance evidence.
+
+**Not started:** DeepFilterNet A/B, timestamp-primitive decision, 5C.2.

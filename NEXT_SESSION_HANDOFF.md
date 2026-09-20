@@ -443,3 +443,28 @@ The intermediate state described above is closed. Final reality:
 **Next authorized step: STOP.** Segment 5B is complete. The next workstream in the
 authorized sequence is **5C.1 — WhisperX evaluation**, which has **not** been
 started.
+
+---
+
+## 12. Segment 5C.1 CLOSED — WhisperX evaluated (2026-09-20)
+
+- **Verdict: `ADOPT WITH LIMITATIONS`** — adopt **alignment only**, over LOOM's
+  existing transcript; keep LOOM's own VAD/decoder configuration.
+- Artifacts: `infra/whisperx-eval/` (`README.md`, `evaluate.py`, `results.json`).
+  Environment: `~/.venvs/loom-whisperx-eval` (outside the repo; system Python
+  3.14 has no torch wheels, so 3.11 was required).
+- Headline: alignment is cheap and reliable (align RTF **0.019**, 0 failures,
+  0 unaligned words) and would trim seconds of dead air inside candidate windows
+  on some clips — but the **precision gain over LOOM's existing word timestamps
+  is unproven** (median shift ~50–80 ms, no ground truth), alignment stretched
+  single words implausibly on one clip, and WhisperX's own VAD/decoder path
+  **changed or lost content on 3 of 7 speech clips** (including dropping an
+  opening sentence) and hallucinated on the ambiguous control.
+- **Do NOT wholesale-replace LOOM's transcription with WhisperX.**
+- Editor remains **CLOSED**; Segment 5B remains complete and pushed (`8b4e65c`).
+- **Next authorized step:** per §9 — the **timestamp-primitive decision** (5C.1's
+  verdict feeds directly into it) and/or the bounded **DeepFilterNet A/B**.
+  **5C.2 (Complete-Thought Boundary Refiner) is NOT authorized yet** — the
+  boundary payoff is the strongest argument for aligned timestamps, but it needs
+  its own go-ahead, and promotion from proposal → automatic must remain a trust
+  ramp backed by acceptance evidence.
