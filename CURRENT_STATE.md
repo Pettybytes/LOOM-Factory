@@ -2295,3 +2295,69 @@ Measured across this work: A/B $0.001348 + unanchored diagnostic $0.000324 +
 non-thinking experiment $0.000265 + budget probes ~$0.0012 + failed thinking-mode
 runs ~$0.0015 = **~$0.0047**. The key's own counter reported $0.007956 in total
 usage (including earlier activity). No paid service beyond the existing route.
+
+---
+
+## 20. Qwen provider hardening (2026-09-20)
+
+Narrow provider fix for the live defect found during the Relative-Qwen evaluation.
+Not a reranker change; the A/B verdict stands (ADOPT WITH LIMITATIONS, advisory).
+
+### Defect
+The pinned route is OpenRouter + `qwen/qwen3.5-9b`, a **reasoning model**. With
+thinking left on, it consumed the whole output budget before emitting any answer:
+`finish_reason="length"`, empty completion, surfacing as `INVALID_RESPONSE` —
+**100% of observed calls at the provider default** (`max_output_tokens=1200`), and
+still unreliable at 6000/16000 (a successful thinking call used 5464 output/
+reasoning tokens in 60.9 s).
+
+### Affected production caller
+`infra/content_intelligence/pipeline.py` → `Pass1Pipeline._score_candidate`:
+`build_provider(self.provider_name, _load_provider_key(self.provider_name))` →
+`QwenProvider.assess(...)`. Reachable whenever `provider_name="qwen"`;
+`Pass1Config.provider_name` still defaults to `"gemini"`, and nothing in
+discord-review or `run.sh` selects qwen, so the route was broken but not yet the
+default path — i.e. this is route hardening as well as a live-defect fix.
+
+### Change (scoped to `QwenProvider` only)
+1. **Thinking explicitly disabled**: the request body always carries
+   `"reasoning": {"enabled": false}`. It is opt-out-able only by explicit
+   construction (`reasoning_enabled=True`), never by omission — so it cannot
+   silently fall back to the broken default.
+2. **Structured output**: `response_format = {"type": "json_schema", ...}` using
+   `QWEN_RESPONSE_SCHEMA`, which mirrors EXACTLY the shape `_build_prompt` always
+   demanded (`scores`, `content_worthiness_score`, `candidate_timestamps`,
+   `recommended_content_format`, `recommended_angle`, `reasons`). Verified real:
+   json_schema was accepted by the route, so the strongest constraint is in use.
+   `structured_output="json_object"` remains available; an unknown value raises
+   `BAD_CONFIG` **before** any HTTP call.
+3. **Bounded budget**: `max_output_tokens` stays **1200** — sized to the schema,
+   not to reasoning. Measured need for this exact prompt with thinking off is
+   337-665 tokens (arm A) and 534 in the smoke test.
+
+**Preserved unchanged**: the prompt, scoring semantics, response contract and
+downstream validation (`assess_content`), thresholds, evidence contracts, error
+codes, usage/model-identity capture, and fallback behaviour.
+
+### Runtime proof (real provider, established production path)
+`build_provider("qwen", …)` → `provider.assess()` → `assess_content()`:
+
+| | |
+|---|---|
+| provider / model | `qwen` / `qwen/qwen3.5-9b` |
+| reasoning_enabled / structured_output | **False** / **json_schema** |
+| content_worthiness_score | **68** (14 dimensions scored) |
+| input / output tokens | **410 / 534** |
+| latency | **7.9 s** |
+| cost | **$0.00004** |
+| assessment accepted | worthiness 68, confidence 0.3333, format `reaction_single` |
+
+### Tests
+`infra/content_intelligence` — **171 OK** (13 new contract tests pin the request:
+non-thinking is always present, structured output is set, the budget stays
+bounded, thinking is opt-in, the prompt is unchanged, and `INVALID_RESPONSE` /
+`AUTH` behaviour is intact). `infra/discord-review` — 232 OK.
+
+**Deliberately unchanged**: the Gemini provider, the reranker (advisory, unwired),
+candidate generation, Editor, discovery, tenant queues, Segment 5 final
+acceptance, Segment 6.

@@ -582,3 +582,23 @@ ramp backed by acceptance evidence**, not a permanent human gate.
   Artifacts: `relative_rerank.py`, `complete_ab_non_thinking.py`,
   `experiment_non_thinking.py`, `experiment_unanchored_rerank.py`.
 * Cost of this work: **~$0.0047** measured.
+
+---
+
+## 17. Qwen provider hardening DONE — runtime-proven (2026-09-20)
+
+* Defect: pinned reasoning model + thinking on + default budget = 100%
+  `INVALID_RESPONSE` (empty completion, `finish_reason="length"`).
+* Affected production caller: `Pass1Pipeline._score_candidate` →
+  `build_provider(provider_name)` → `QwenProvider.assess` (reachable when
+  `provider_name="qwen"`; default is still `"gemini"`).
+* Fix, scoped to `QwenProvider`: always sends `reasoning: {"enabled": false}`
+  (opt-in `reasoning_enabled=True` only), always sets `response_format`
+  (`json_schema` by default, mirroring the existing response contract exactly),
+  and keeps the bounded `max_output_tokens=1200` (measured need 337-665).
+* Smoke through the real production path: worthiness **68**, 14 dims,
+  **410 in / 534 out tokens**, **7.9 s**, **$0.00004**, assessment accepted.
+* Tests: `content_intelligence` **171 OK** (13 new), `discord-review` 232 OK.
+* Preserved: prompt, scoring semantics, contract, validation, thresholds, error
+  codes, fallback. Untouched: Gemini provider, reranker, candidate generation,
+  Editor, discovery, tenant queues, Segment 5/6.

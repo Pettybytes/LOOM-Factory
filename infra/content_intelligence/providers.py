@@ -252,6 +252,50 @@ class GeminiProvider:
         return parsed
 
 
+# Structured-output schema for the Qwen assessment response. Mirrors EXACTLY the
+# shape `_build_prompt` has always demanded, so the contract is unchanged:
+#   {"scores", "content_worthiness_score", "candidate_timestamps",
+#    "recommended_content_format", "recommended_angle", "reasons"}
+QWEN_RESPONSE_SCHEMA: dict[str, Any] = {
+    "name": "content_assessment",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "scores": {"type": "object", "additionalProperties": {"type": "integer"}},
+            "content_worthiness_score": {"type": "integer"},
+            "candidate_timestamps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"start_s": {"type": "number"},
+                                   "end_s": {"type": "number"},
+                                   "basis": {"type": "string"}},
+                    "required": ["start_s", "end_s", "basis"],
+                    "additionalProperties": False,
+                },
+            },
+            "recommended_content_format": {"type": "string"},
+            "recommended_angle": {"type": "string"},
+            "reasons": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"},
+                                   "signal": {"type": "string"},
+                                   "message": {"type": "string"}},
+                    "required": ["code", "signal", "message"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["scores", "content_worthiness_score",
+                     "recommended_content_format", "recommended_angle", "reasons"],
+        "additionalProperties": False,
+    },
+}
+
+
 class QwenProvider:
     """OpenRouter Qwen transcript-triage provider (pinned model)."""
 
@@ -260,13 +304,28 @@ class QwenProvider:
 
     def __init__(self, api_key: str, model: str = QWEN_PINNED_MODEL,
                  temperature: float = 0.2, max_output_tokens: int = 1200,
-                 timeout: float = 180.0, max_transcript_chars: int = 12000) -> None:
+                 timeout: float = 180.0, max_transcript_chars: int = 12000,
+                 reasoning_enabled: bool = False,
+                 structured_output: str = "json_schema") -> None:
+        """Pinned-model provider for structured transcript triage.
+
+        `reasoning_enabled=False` is deliberate and scoped to this provider: the
+        pinned model is a REASONING model, and with thinking on it consumed the
+        entire output budget before emitting any answer (empty completion ->
+        INVALID_RESPONSE), failing 100% of observed calls at the default budget
+        and remaining unreliable at 6000/16000. Non-thinking was measured at
+        337-665 output tokens for this exact prompt, so the bounded
+        `max_output_tokens` is sized to the schema rather than to reasoning.
+        Callers with genuinely reasoning-shaped work can opt in explicitly.
+        """
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
         self.timeout = timeout
         self.max_transcript_chars = max_transcript_chars
+        self.reasoning_enabled = reasoning_enabled
+        self.structured_output = structured_output
 
     def assess(self, evidence_bundle: Any, brief: Any) -> dict[str, Any]:
         if not self.api_key:
@@ -278,7 +337,19 @@ class QwenProvider:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": self.temperature,
             "max_tokens": self.max_output_tokens,
+            # Explicit, always present: the request can never silently fall back
+            # to thinking-on with a reasoning-sized budget.
+            "reasoning": {"enabled": bool(self.reasoning_enabled)},
         }
+        if self.structured_output == "json_schema":
+            body["response_format"] = {"type": "json_schema",
+                                      "json_schema": QWEN_RESPONSE_SCHEMA}
+        elif self.structured_output == "json_object":
+            body["response_format"] = {"type": "json_object"}
+        else:
+            raise ProviderError("BAD_CONFIG",
+                                f"unsupported structured_output {self.structured_output!r}",
+                                retryable=False)
         t0 = time.time()
         try:
             req = urllib.request.Request(
