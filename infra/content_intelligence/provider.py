@@ -56,6 +56,7 @@ class Evidence:
     thumbnail_available: bool = False
     thumbnail_reference: str = ""
     bounded_media_windows: list[dict[str, Any]] = field(default_factory=list)
+    signal_windows: list[dict[str, Any]] = field(default_factory=list)
     candidate_timestamps: list[dict[str, Any]] = field(default_factory=list)
     market_metrics: dict[str, Any] = field(default_factory=dict)
 

@@ -125,13 +125,34 @@ idempotent Supabase persistence. Hard limits (candidates / transcript chars /
 tokens / cost ceiling). `selection_queue()` returns only completed selections
 eligible for the future Source Review queue.
 
+## Runtime requirements
+
+- **Python 3 — standard library only.** No third-party packages. The multimodal
+  signal layer deliberately carries no numpy dependency so the deterministic
+  path needs no install step.
+- **`ffmpeg` on PATH** — required only by the multimodal signal layer
+  (`multimodal_signals.py`) to decode audio/video. `ffprobe` is not used;
+  duration is derived from decoded sample counts. Every ffmpeg call is bounded
+  by a hard 300s timeout and by `max_seconds`, and a killed decode raises
+  rather than silently reporting empty media.
+- **$0, no model call.** Signal extraction is local and deterministic; the
+  semantic provider is still the only thing that judges content.
+
 ## Tests
 
 ```sh
 python3 -m unittest discover -s infra/content_intelligence/tests -v
 ```
 
-42 deterministic tests: evidence gating, validation (reject malformed /
+Also runnable from inside this directory as `python3 -m unittest discover -s tests`.
+
+97 deterministic tests: evidence gating, validation (reject malformed /
 out-of-bounds / evidence-exceeding), idempotent replay, versioned assessments,
 decision rules, format fit, bounded-probe cleanup + failure, proof-profile
-exclusion, boundary guards (no OpenShorts/Discord/GHL imports).
+exclusion, boundary guards (no OpenShorts/Discord/GHL imports), the
+candidate-window contract (normalize / salience gate / peaks / windows /
+fusion-with-provenance), real-media extraction, and acceptance items A-F on real
+bytes.
+
+The suite REQUIRES `fixtures/test.mp4`; if it is missing those tests FAIL rather
+than skip, so a green run always means the media path actually executed.

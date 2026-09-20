@@ -21,6 +21,7 @@ from content_intelligence.pipeline import (  # noqa: E402
 )
 from content_intelligence.providers import ProviderError, GeminiProvider  # noqa: E402
 from content_intelligence.providers import _build_prompt  # noqa: E402
+from content_intelligence.provider import Evidence  # noqa: E402
 
 
 class _Record:
@@ -83,6 +84,18 @@ class _FakeProvider:
             "model_identity": self.identity,
             "usage": self.usage,
         }
+
+
+class _CapturingProvider(_FakeProvider):
+    """A _FakeProvider that records the evidence bundle it was handed."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_evidence = None
+
+    def assess(self, evidence_bundle, brief):
+        self.last_evidence = evidence_bundle
+        return super().assess(evidence_bundle, brief)
 
 
 class _FakeStore:
@@ -200,6 +213,103 @@ class TestPass1Pipeline(unittest.TestCase):
         with _patched_fetch(segs):
             result = pipe.run(recs, store)
         self.assertEqual(len(result.candidates), 2)
+
+    def test_signal_windows_flow_to_provider_through_the_fused_contract(self):
+        config = Pass1Config(extract_multimodal_signals=True)
+        provider = _CapturingProvider()
+        pipe = Pass1Pipeline(config, _Brief(), _FakeTopic(score=70), provider=provider)
+        store = _FakeStore()
+        segs = [{"start_s": 0.0, "end_s": 5.0, "text": "hello"}]
+        fake_windows = [{"start_s": 0.0, "end_s": 10.0, "peak_s": 5.0,
+                         "basis": "visual_motion", "source": "signal_peak"}]
+        with _patched_fetch(segs), mock.patch.object(
+                pipeline, "fetch_media_and_signals", return_value=fake_windows):
+            result = pipe.run([_Record()], store)
+        self.assertEqual(result.scored, 1)
+        self.assertIsNotNone(provider.last_evidence)
+        # Signals reach the provider only via the Evidence bundle, already fused
+        # onto the single candidate-window contract.
+        self.assertEqual(provider.last_evidence.signal_windows,
+                         pipeline.fuse_candidates([], fake_windows))
+        self.assertEqual(provider.last_evidence.signal_windows[0]["origin"], "signal")
+        self.assertEqual(provider.last_evidence.signal_windows[0]["supported_by"],
+                         ["visual_motion"])
+        self.assertEqual(result.candidates[0].signal_status, "extracted:1")
+
+    def test_overlapping_signal_windows_are_deduped_before_the_provider(self):
+        config = Pass1Config(extract_multimodal_signals=True)
+        provider = _CapturingProvider()
+        pipe = Pass1Pipeline(config, _Brief(), _FakeTopic(score=70), provider=provider)
+        store = _FakeStore()
+        segs = [{"start_s": 0.0, "end_s": 5.0, "text": "hello"}]
+        overlapping = [
+            {"start_s": 0.0, "end_s": 10.0, "peak_s": 2.0,
+             "basis": "visual_motion", "source": "signal_peak"},
+            {"start_s": 0.0, "end_s": 10.0, "peak_s": 1.0,
+             "basis": "scene_cut", "source": "signal_peak"},
+        ]
+        with _patched_fetch(segs), mock.patch.object(
+                pipeline, "fetch_media_and_signals", return_value=overlapping):
+            result = pipe.run([_Record()], store)
+        self.assertEqual(result.scored, 1)
+        windows = provider.last_evidence.signal_windows
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(sorted(windows[0]["supported_by"]), ["scene_cut", "visual_motion"])
+        self.assertEqual(result.candidates[0].signal_status, "extracted:1")
+
+    def test_multimodal_signals_off_by_default(self):
+        pipe, provider = self._pipeline()  # extract_multimodal_signals defaults False
+        store = _FakeStore()
+        segs = [{"start_s": 0.0, "end_s": 5.0, "text": "hello"}]
+        with _patched_fetch(segs), mock.patch.object(
+                pipeline, "fetch_media_and_signals") as fm:
+            result = pipe.run([_Record()], store)
+        fm.assert_not_called()
+        self.assertEqual(result.scored, 1)
+        self.assertEqual(result.candidates[0].signal_status, "disabled")
+        self.assertEqual(provider.calls, 1)
+
+    def test_signal_failure_is_non_fatal_and_recorded(self):
+        config = Pass1Config(extract_multimodal_signals=True)
+        provider = _CapturingProvider()
+        pipe = Pass1Pipeline(config, _Brief(), _FakeTopic(score=70), provider=provider)
+        store = _FakeStore()
+        segs = [{"start_s": 0.0, "end_s": 5.0, "text": "hello"}]
+        with _patched_fetch(segs), mock.patch.object(
+                pipeline, "fetch_media_and_signals",
+                side_effect=RuntimeError("media decode failed")):
+            result = pipe.run([_Record()], store)
+        # Non-fatal: the transcript-only assessment still completes...
+        self.assertEqual(result.scored, 1)
+        self.assertEqual(result.candidates[0].status, "scored")
+        self.assertEqual(provider.last_evidence.signal_windows, [])
+        # ...and is NOT silent about it.
+        self.assertEqual(result.candidates[0].signal_status, "failed:RuntimeError")
+
+    def test_provider_assess_is_called_with_two_positional_arguments(self):
+        """Guard: the multimodal work must not reintroduce a call-site-only
+        ``provider.assess(..., signal_windows=...)`` kwarg. Every provider takes
+        ``(evidence_bundle, brief)``."""
+        calls = []
+
+        class _StrictProvider(_FakeProvider):
+            def assess(self, evidence_bundle, brief):
+                calls.append((evidence_bundle, brief))
+                return super().assess(evidence_bundle, brief)
+
+        config = Pass1Config(extract_multimodal_signals=True)
+        pipe = Pass1Pipeline(config, _Brief(), _FakeTopic(score=70),
+                             provider=_StrictProvider())
+        store = _FakeStore()
+        segs = [{"start_s": 0.0, "end_s": 5.0, "text": "hello"}]
+        with _patched_fetch(segs), mock.patch.object(
+                pipeline, "fetch_media_and_signals", return_value=[]):
+            result = pipe.run([_Record()], store)
+        self.assertEqual(result.scored, 1)
+        self.assertEqual(len(calls), 1)
+        evidence, brief = calls[0]
+        self.assertIsInstance(evidence, Evidence)
+        self.assertTrue(hasattr(evidence, "signal_windows"))
 
 
 class TestTranscriptFetch(unittest.TestCase):

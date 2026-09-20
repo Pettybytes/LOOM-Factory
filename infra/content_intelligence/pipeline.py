@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .candidate_fusion import fuse_candidates
 from .contract import ContentAssessment, TRANSCRIPT_AUTO, TRANSCRIPT_CREATOR, TRANSCRIPT_NONE
 from .provider import Evidence, assess_content
 from .providers import ProviderError, build_provider
@@ -56,6 +57,7 @@ class Pass1Config:
     cost_ceiling_usd: float = 0.05
     provider_name: str = "gemini"
     transcript_languages: str = "en.*"
+    extract_multimodal_signals: bool = False
 
 
 @dataclass
@@ -71,6 +73,10 @@ class Pass1CandidateResult:
     transcript_type: str = TRANSCRIPT_NONE
     cost_usd: float = 0.0
     error: str = ""
+    # Multimodal signal provenance: "" (not attempted) | "disabled" |
+    # "extracted:<n>" | "failed:<ExceptionType>". Recorded so a non-fatal signal
+    # failure is visible in the run result instead of silently swallowed.
+    signal_status: str = ""
 
 
 @dataclass
@@ -116,6 +122,34 @@ def fetch_transcript(url: str, languages: str = "en.*") -> tuple[list[dict[str, 
         return [], TRANSCRIPT_NONE
     finally:
         import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def fetch_media_and_signals(url: str, max_duration: int = 600) -> list:
+    """Download worst-quality media to a temp file, extract deterministic
+    audio/visual candidate signals, and delete the temp media. Bounded three
+    ways: lowest available quality, a duration cap enforced by yt-dlp AND again
+    at decode time, and a hard subprocess timeout. $0 model cost. Non-fatal at
+    the call site — the caller records the failure rather than aborting."""
+    import shutil
+    from .multimodal_signals import analyze_media_signals
+
+    _SIDECAR = {".json", ".vtt", ".part", ".ytdl", ".temp"}
+    tmp = tempfile.mkdtemp(prefix="loom-pass1-media-")
+    try:
+        subprocess.run(
+            ["yt-dlp", "-f", "worstvideo+worstaudio/worst", "--no-playlist", "--no-update",
+             "--match-filter", f"duration <= {max_duration}",
+             "-o", f"{tmp}/%(id)s.%(ext)s", url],
+            capture_output=True, text=True, timeout=300,
+        )
+        media = [p for p in Path(tmp).glob("*")
+                 if p.is_file() and p.suffix.lower() not in _SIDECAR]
+        if not media:
+            return []
+        res = analyze_media_signals(str(media[0]), max_seconds=max_duration)
+        return res.get("signal_windows", [])
+    finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -212,11 +246,31 @@ class Pass1Pipeline:
         c.transcript_type = ttype
         transcript_text = " ".join(s["text"] for s in segments)
 
+        # 3.5 Multimodal signals (deterministic, local, opt-in, $0 model cost).
+        # Signals reach the model ONLY through the Evidence bundle built below.
+        # Fusion collapses overlapping signal peaks onto the one candidate-window
+        # contract; at this stage no transcript window exists yet (the model has not
+        # run), so fusion here is the dedup step, not a transcript merge.
+        signal_windows: list = []
+        if not self.config.extract_multimodal_signals:
+            c.signal_status = "disabled"
+        else:
+            try:
+                raw_windows = fetch_media_and_signals(rec.canonical_url)
+                signal_windows = fuse_candidates([], raw_windows)
+                c.signal_status = f"extracted:{len(signal_windows)}"
+            except Exception as e:
+                # Non-fatal, and deliberately not silent: a transcript-only
+                # assessment still proceeds and the failure is recorded.
+                signal_windows = []
+                c.signal_status = f"failed:{type(e).__name__}"
+
         # 4. Content Intelligence (model call — shortlisted only).
         try:
             provider = self.provider or build_provider(self.provider_name, _load_provider_key(self.provider_name))
             ev = Evidence(platform=rec.platform, content_type="video", title=rec.title,
-                          transcript_text=transcript_text, transcript_availability=ttype)
+                          transcript_text=transcript_text, transcript_availability=ttype,
+                          signal_windows=signal_windows)
             raw = provider.assess(ev, self.brief)
             assessment = assess_content(
                 record=rec, brief=self.brief, evidence_bundle=ev, provider=provider,

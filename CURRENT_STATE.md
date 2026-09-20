@@ -1732,3 +1732,94 @@ to date:**
 
 Unproven behaviour is stated as unproven above and is not claimed as complete: age-gated
 Reddit acquisition, crosspost identity, GIF/GIFV, and Kick VOD/ranged.
+
+---
+
+## 13. Segment 5B — Multi-Source Moment Mining (2026-09-19)
+
+Deterministic, local, **$0** audio + visual salience signals, so a candidate
+moment no longer has to come from the transcript alone. This targets the
+`talking → talking → VISUAL PAYOFF → talking` failure.
+
+### Architecture (as built)
+
+```
+acquired media → ffmpeg decode (bounded) → per-second signals
+  → percentile-rank WITHIN the source → salience floor → peak detection
+  → provenance-tagged candidate windows → fusion/dedup
+  → Evidence.signal_windows → existing provider.assess(evidence, brief) → Qwen/Gemini
+```
+
+`candidate_fusion` is the **single owner** of the window math (normalize, gate,
+peaks, windows, fusion). `multimodal_signals` only turns media into raw
+per-second signals and consumes that contract — it does not reimplement it.
+
+Signals reach the model **only** through the `Evidence` bundle. The provider
+signature stays `assess(evidence_bundle, brief)`; there is no call-site
+`signal_windows=` kwarg (that mismatch is what broke an earlier attempt — see §11
+of `NEXT_SESSION_HANDOFF.md`).
+
+Candidate provenance: `transcript | audio_spike | visual_motion | scene_cut`,
+with `origin: hybrid` + `supported_by[]` when several fire on one moment.
+Signal windows are **additive** — they never displace a transcript window.
+
+### Files
+
+| | |
+|---|---|
+| NEW | `infra/content_intelligence/candidate_fusion.py` (window contract + `gate_by_magnitude`) |
+| NEW | `infra/content_intelligence/multimodal_signals.py` (stdlib-only extraction) |
+| NEW | `tests/test_candidate_fusion.py`, `tests/test_multimodal_signals.py`, `tests/test_signal_integration.py` |
+| NEW | `fixtures/test.mp4` — committed 10s fixture, **REQUIRED** (missing = hard failure, never a skip) |
+| MOD | `pipeline.py` — `Pass1Config.extract_multimodal_signals` (default **False**), `fetch_media_and_signals()`, `signal_status` provenance per candidate |
+| MOD | `provider.py` — `Evidence.signal_windows` |
+| MOD | `providers.py` — signal context in `_build_prompt`; Gemini **and** Qwen read it via `getattr` |
+
+`extract_multimodal_signals=False` is the default: with no multimodal evidence
+present, existing behaviour is unchanged.
+
+### The defect that had to be fixed (runtime, not theory)
+
+Percentile ranking **alone can never report "nothing salient"**: the largest
+sample of any non-constant signal ranks 1.0, so `find_peaks(threshold=0.9)`
+always fires. Measured on a steady, *non-silent* control (constant 220 Hz tone):
+per-second RMS 144.5–144.8 with spikes of ±0.1 — pure float noise — and the
+detector still reported a peak at **t=2s**. Any real source with room tone or a
+music bed would manufacture audio candidates that mean nothing.
+
+**Fix:** `gate_by_magnitude()` plus floors expressed relative to the source's own
+level — `AUDIO_SALIENCE_FLOOR = 0.10` (spike ≥ 10% of the source's median
+loudness) and `VISUAL_SALIENCE_FLOOR = 1.0` (≥ 1 gray level of mean abs change at
+64×64). Calibrated against real media on this machine: steady tone `0.0008×`
+(gated), fixture `0.018×` (gated), real boxing/render clips `0.28×–1.46×` (kept),
+3s burst `19×` (kept); static frames `0` gray levels (gated) vs `7–79` for real
+footage (kept). The floors are recorded in every `signal_manifest.json`.
+
+### Runtime acceptance — real media, observed output
+
+| | Item | Observed |
+|---|---|---|
+| A | transcript-driven moment surfaces | transcript `[40–60s]` preserved untouched; fixture signal window `[0–10s]` kept separately |
+| B | audio-salient moment surfaces | audio peak at **6s** in a 5–8s burst (RMS 145 → 2896); window `[1–12s] audio_spike` |
+| C | visual-salient moment surfaces without transcript | fixture: `audio_spike` peaks `[]`, yet visual window `[0–10s]` surfaces standalone as `origin: signal` |
+| D | hybrid evidence surfaces | transcript window on the detected moment → one `origin: hybrid` window carrying both bases |
+| E | overlaps deduplicate | 2 overlapping raw windows → **1** fused, `supported_by: [scene_cut, visual_motion]` |
+| F | quiet/control media does not inflate | silent+black → 0 windows; **steady non-silent tone (RMS 145) → 0 windows, 0 peaks** |
+
+### Tests
+
+- `infra/content_intelligence` — **97 OK** (55 pre-existing tests preserved unmodified: `test_content_intelligence.py` untouched, `test_pipeline.py` additions only)
+- `infra/discord-review` — **232 OK** (unchanged; it imports content_intelligence)
+- Both documented invocation forms pass (from inside the suite and from the repo root)
+
+### Cost
+
+**$0.** No model call anywhere in the signal path; the semantic provider remains
+the only paid step and is unchanged.
+
+### Known limitation (stated, not hidden)
+
+`find_peaks` scans `range(1, len(signal) - 1)`, so a peak on the **final second**
+is unreachable. Left unchanged deliberately — fixing it would alter a contract
+the acceptance tests encode — but it is real and should be revisited if a
+salient final second ever goes missing.

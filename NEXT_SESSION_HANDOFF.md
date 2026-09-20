@@ -369,3 +369,77 @@ START HERE NEXT SESSION: Human visual acceptance for Header render parity is rea
 Open ~/Desktop/LOOM-EDITOR-ACCEPTANCE.txt to access the single-use editor link.
 Turn on the Header ("on-video title / header -> enabled"), select some text to style it, change to 'dedicated black region', hit 'auto edit', and view the Discord #re-review card output to confirm final render fidelity matches your exact selection geometry.
 Then begin Segment 5B.
+---
+
+## 11. RECOVERY STATE — 5B partial integration reverted, baseline restored
+
+*Appended 2026-09-19. Read this before resuming Segment 5B.*
+
+- A failed Gemini-backed Segment 5B attempt left a **partial integration** in `infra/content_intelligence` (pipeline/provider wiring, debug `print()` instrumentation, scratch `patch_*.py` scripts).
+- **Recovery was completed on DeepSeek Flash.**
+- **Baseline restored.**
+- `infra/content_intelligence`: **70 tests OK**
+  - **55 pre-existing**
+  - **15 isolated 5B tests**
+- **No existing assertions were weakened, skipped, or deleted.**
+- `pipeline.py` and `providers.py` **restored to HEAD**.
+- Scratch/debug patch files **removed** (`patch_pipeline*.py`, `patch_provider*.py`, root `test_signals.py`, orphaned `prompt_builder.py`).
+- **Preserved isolated 5B work:**
+  - `multimodal_signals.py`
+  - `candidate_fusion.py`
+  - `tests/test_multimodal_signals.py`
+  - `tests/test_candidate_fusion.py`
+  - `tests/test_signal_integration.py`
+  - `fixtures/test.mp4`
+- **Regression root cause:** `pipeline.py` called `provider.assess(..., signal_windows=...)` while every provider at HEAD takes `(evidence_bundle, brief)`; the resulting `TypeError` was swallowed into `c.status = "error"`, so `scored == 0` and nothing reached the store. The companion provider-side patch was never applied.
+- **Do NOT resurrect the failed `signal_windows=` provider call.**
+- **Editor remains CLOSED.**
+
+### Known deficiencies in the preserved 5B work (clear before integrating)
+
+1. Fixture-dependent tests can **false-green via `skipTest`**.
+2. **Duplicate** signal/fusion implementations (`candidate_fusion.py` vs `multimodal_signals.py`).
+3. Runtime acceptance **A–F not proven**.
+4. **numpy + ffmpeg/ffprobe dependencies undeclared**.
+5. New files carry **incorrect 0600 modes**.
+
+### Authorized architecture for completing 5B
+
+Keep the existing provider contract. Route multimodal provenance/evidence through the existing Content Intelligence **Evidence/candidate contract** — do NOT add a call-site-only `provider.assess(..., signal_windows=...)` kwarg and do NOT broadly widen every provider signature.
+
+```
+local deterministic signals -> candidate windows -> fusion/dedup
+-> Evidence/candidate representation -> existing provider semantic assessment
+-> ranked/stored result
+```
+
+Qwen/provider stays the semantic judge; the local deterministic layer only supplies better evidence.
+
+### 11.1 RESOLUTION — 5B reconciled, completed and accepted (2026-09-19)
+
+The intermediate state described above is closed. Final reality:
+
+- The uncommitted integration was **not** inherited blindly: every hunk of the four
+  tracked files was read against HEAD and kept, repaired, or reverted on merit.
+- **One canonical contract.** `candidate_fusion.py` is the single owner of the
+  window math (normalize, salience gate, peaks, windows, fusion).
+  `multimodal_signals.py` no longer duplicates it and no longer imports numpy —
+  the signal layer is **standard library only**.
+- **False-green eliminated.** Media tests now **FAIL** when `fixtures/test.mp4` is
+  missing (`require_fixture`) instead of skipping; the fixture is committed.
+- **Dependency question answered by removal, not documentation:** numpy is gone.
+  The only external requirement is `ffmpeg` on PATH, now documented in the suite
+  README along with the bounding/timeout behaviour.
+- **Modes fixed** — everything is `0644`.
+- **Defect found and fixed at runtime:** percentile ranking alone can never report
+  "nothing salient" (the max always ranks 1.0), so a *steady non-silent* source
+  manufactured a phantom audio peak. Fixed with a salience floor relative to the
+  source's own level; full calibration in `CURRENT_STATE.md` §13.
+- **Acceptance A–F proven on real media**, not asserted — see §13.
+- Tests: `infra/content_intelligence` **97 OK** (55 pre-existing preserved
+  unmodified) · `infra/discord-review` **232 OK**.
+- Cost: **$0**; no model call in the signal path.
+
+**Next authorized step: STOP.** Segment 5B is complete. The next workstream in the
+authorized sequence is **5C.1 — WhisperX evaluation**, which has **not** been
+started.

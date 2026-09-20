@@ -116,19 +116,66 @@ def _parse_json(text: str):
     return json.loads(m.group(0))
 
 
-def _build_prompt(transcript_text: str, max_chars: int) -> str:
+def _build_prompt(transcript_text: str, max_chars: int, signal_windows: list | None = None) -> str:
     dims = ["hook", "emotion", "conflict_tension", "surprise", "humor", "relatability",
             "stakes", "story_progression", "payoff", "narrative_completeness",
             "context_independence", "reaction_potential", "commentary_value", "originality_novelty"]
     formats = ["reaction_single", "reaction_compilation", "commentary_story",
                "ranking_top5", "stream_highlight", "hold_unassigned"]
     excerpt = transcript_text[:max_chars]
+
+    signal_context = ""
+    if signal_windows:
+        signal_context = (
+            "Several moments of unusually high audio or visual intensity "
+            "(relative to the rest of this video, deterministic and within-source "
+            "only — not a claim of importance or virality) were also detected and "
+            "may not be apparent from the transcript alone. Use them to inform "
+            "candidate_timestamps and reasons where they align with, or provide a "
+            "visual payoff to, the spoken content. These signals are RELATIVE "
+            "intensity measurements inside this source only; they are never "
+            "evidence that a moment is important, high quality, or viral, and "
+            "they do not replace your reading of the transcript.\n"
+            "Signal windows:\n"
+        )
+        for w in signal_windows:
+            peak = w.get("peak_s")
+            if peak is not None:
+                signal_context += (
+                    f"- {w['start_s']:.1f}s to {w['end_s']:.1f}s "
+                    f"(peak {peak:.1f}s): {w.get('basis', 'signal')}\n"
+                )
+            else:
+                signal_context += (
+                    f"- {w['start_s']:.1f}s to {w['end_s']:.1f}s: "
+                    f"{w.get('basis', 'signal')}\n"
+                )
+        signal_context += "\n"
+
+    # The transcript-only framing (no media evidence inspected) stays exactly as
+    # it was: with no signal windows the model must not infer audio/visual
+    # qualities it cannot observe. Only when deterministic media signals were
+    # actually extracted does the instruction admit them, and then only as
+    # relative within-source intensity.
+    if signal_windows:
+        scoring_rule = (
+            "Score each dimension as an integer 0-100, based primarily on the "
+            "transcript text and informed by the deterministic audio/visual "
+            "salience signals listed below where they add evidence (within-source "
+            "relative intensity only, never a claim of semantic importance).\n\n"
+        )
+    else:
+        scoring_rule = (
+            "Score each dimension as an integer 0-100, based ONLY on the transcript text "
+            "(do NOT infer visual or audio qualities you cannot observe from text).\n\n"
+        )
+
     return (
         "You are a content analyst for a short-form video operation. Analyze the "
         "following video TRANSCRIPT (with timestamps) for short-form content potential.\n\n"
-        "Score each dimension as an integer 0-100, based ONLY on the transcript text "
-        "(do NOT infer visual or audio qualities you cannot observe from text).\n\n"
+        f"{scoring_rule}"
         f"Dimensions: {', '.join(dims)}.\n\n"
+        f"{signal_context}"
         "Also provide:\n"
         "- content_worthiness_score: overall 0-100 for a short clip.\n"
         "- candidate_timestamps: up to 5 {start_s, end_s, basis} for the most promising clip moments.\n"
@@ -163,7 +210,8 @@ class GeminiProvider:
     def assess(self, evidence_bundle: Any, brief: Any) -> dict[str, Any]:
         if not self.api_key:
             raise ProviderError("AUTH", "LOOM_GEMINI_KEY absent", retryable=False)
-        prompt = _build_prompt(evidence_bundle.transcript_text, self.max_transcript_chars)
+        prompt = _build_prompt(evidence_bundle.transcript_text, self.max_transcript_chars,
+                              getattr(evidence_bundle, "signal_windows", None))
         url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                + self.model + ":generateContent?key=" + self.api_key)
         body = {
@@ -223,7 +271,8 @@ class QwenProvider:
     def assess(self, evidence_bundle: Any, brief: Any) -> dict[str, Any]:
         if not self.api_key:
             raise ProviderError("AUTH", "LOOM_OPENROUTER_API_KEY absent", retryable=False)
-        prompt = _build_prompt(evidence_bundle.transcript_text, self.max_transcript_chars)
+        prompt = _build_prompt(evidence_bundle.transcript_text, self.max_transcript_chars,
+                              getattr(evidence_bundle, "signal_windows", None))
         body = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
