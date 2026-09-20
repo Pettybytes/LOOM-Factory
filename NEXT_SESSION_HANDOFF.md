@@ -468,3 +468,23 @@ started.
   boundary payoff is the strongest argument for aligned timestamps, but it needs
   its own go-ahead, and promotion from proposal → automatic must remain a trust
   ramp backed by acceptance evidence.
+
+---
+
+## 13. DeepFilterNet A/B CLOSED — DO NOT ADOPT (2026-09-20)
+
+- **Verdict: `DO NOT ADOPT`** as an automatic preprocessing stage.
+- Artifacts: `infra/deepfilter-eval/` (`README.md`, `clean_audio.py`,
+  `evaluate_ab.py`, `results_ab.json`). DFN lives in its own venv
+  (`~/.venvs/loom-deepfilter-eval`) because it pins `numpy<2`.
+- **Env warning worth remembering:** installing DeepFilterNet into the WhisperX
+  venv silently downgraded `numpy 2.4.6 → 1.26.4` + `packaging 26.3 → 23.2`, i.e.
+  it changed the environment behind the committed 5C.1 results. Restored and
+  re-verified (`ENV_MATCHES_5C1 = True`). Keep eval environments separate.
+- Evidence: no transcription gain on any difficult clip (net word loss on 4 of 5),
+  substitutions are degradations, and loud-region energy is attenuated on the
+  eventful content LOOM cares about (shouting 74 %, singing 73 %, music 33 %,
+  low-SNR 21 %). Clean control untouched → harmless, not helpful.
+- **Next authorized step:** the **timestamp-primitive decision**, then **5C.2
+  (Complete-Thought Boundary Refiner)** — both still need explicit go-ahead.
+  ​5C.1's alignment verdict stands: alignment-only, never a wholesale ASR swap.

@@ -1889,3 +1889,73 @@ payoff is the part worth pursuing, and it belongs to **5C.2**, where promotion
 from proposal to automatic is a trust ramp backed by acceptance evidence.
 
 **Not started:** DeepFilterNet A/B, timestamp-primitive decision, 5C.2.
+
+---
+
+## 15. DeepFilterNet bounded A/B (2026-09-20)
+
+**Verdict: DO NOT ADOPT as an automatic preprocessing stage.**
+
+Question: does local DeepFilterNet audio cleanup materially improve LOOM's
+existing transcription (and the approved WhisperX alignment-only step) on
+difficult audio? Harness: `infra/deepfilter-eval/` (isolated; **not** wired into
+production). Method, numbers and reproduce command: its `README.md` +
+`results_ab.json`.
+
+### Method
+
+Everything except the cleanup is held constant — `evaluate_ab.py` imports the
+5C.1 harness rather than re-implementing it, so A and B share LOOM's exact
+transcription config and the same WhisperX align step:
+
+```
+A  original 16 kHz mono  -> LOOM config -> WhisperX align
+B  DeepFilterNet-cleaned -> SAME        -> SAME
+```
+
+### Environment (isolation was necessary, not cosmetic)
+
+Installing DeepFilterNet into the WhisperX evaluation venv **downgraded
+`numpy 2.4.6 → 1.26.4` and `packaging 26.3 → 23.2`** — i.e. it altered the exact
+environment behind the committed 5C.1 `results.json`. Both were restored and
+re-verified (`ENV_MATCHES_5C1 = True`), and DeepFilterNet now lives in its own
+venv (`~/.venvs/loom-deepfilter-eval`). DeepFilterNet 0.5.6 / DeepFilterNet3,
+model cache 8.3 MB, `numpy<2` pin. cp311 arm64 wheels exist, so no Rust
+toolchain was required. Cleanup I/O uses the ffmpeg binary + stdlib `wave`
+because torchaudio 2.8 needs torchcodec and torchcodec cannot load against
+current Homebrew ffmpeg.
+
+### Measured (254 s of audio, 6 clips, $0)
+
+| case | words A→B | lost/recov | similarity | loud-region energy kept |
+|---|---|---|---|---|
+| background noise | 78→64 | 25/11 | 0.75 | 90 % |
+| speech with music | 41→34 | 22/15 | 0.51 | 33 % |
+| difficult low-SNR | 1→0 | 1/0 | 0.00 | 21 % |
+| rapid energetic shouting | 170→154 | 27/11 | 0.88 | 74 % |
+| singing / lyrics | 0→7 | 0/7 | 0.00 | 73 % |
+| clean control | 129→129 | 0/0 | **1.00** | 97 % |
+
+Cleanup is fast (RTF 0.046–0.086) and the model is tiny. Alignment succeeded in
+every case (0 unaligned words) — alignment is not the bottleneck here.
+
+### Findings
+
+1. **No transcription improvement on any difficult case** — cleanup lost more
+   words than it recovered on 4 of 5 non-clean clips.
+2. **Substitutions are degradations, not corrections** (`raised → rage`,
+   `trey's → trays`, `lifestyle → last time`, and a whole phrase collapsing to
+   `it's it's it's it's`).
+3. **The content-preservation guardrail fails on exactly the content LOOM
+   targets:** shouting retains 74 % of loud-region energy, singing 73 %, music
+   33 %, low-SNR 21 % (peak 0.597 → 0.246). This is the "optimize away the event"
+   failure the brief warned about.
+4. **The clean control is untouched** (similarity 1.00, identical boundaries) —
+   the stage is harmless but not helpful.
+5. **Only gain is singing** (0 → 7 words), and they are fragments, not a usable
+   transcript.
+6. **Segmentation drift dominates on music**: median timestamp movement is
+   0.009–0.016 s but the max is **43.6 s**; the large combined overheads
+   (+20.8 s, +15.7 s) come from re-segmentation, not from the cleanup itself.
+
+**Not started:** timestamp-primitive decision, 5C.2 Boundary Refiner.
