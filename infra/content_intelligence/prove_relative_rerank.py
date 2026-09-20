@@ -28,6 +28,13 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
+# The existing provider must be imported as part of the PACKAGE: provider.py uses
+# relative imports (`from . import evidence`, `from .contract import ...`) and
+# cannot load as a top-level module. Adding infra/ makes content_intelligence.*
+# importable alongside the suite-local modules.
+_INFRA = _HERE.parent
+if str(_INFRA) not in sys.path:
+    sys.path.insert(0, str(_INFRA))
 
 from relative_rerank import (  # noqa: E402
     Finalist,
@@ -129,15 +136,22 @@ def rank_by_score(fs: list[Finalist]) -> None:
 # ---------------------------------------------------------------------------
 # path A: existing independent scoring (one call per candidate)
 # ---------------------------------------------------------------------------
-def independent_scores(fs: list[Finalist], brief, timeout: float) -> tuple[bool, list[str]]:
-    """Score each candidate ALONE with the existing provider + prompt."""
-    from provider import Evidence
-    from providers import ProviderError, QwenProvider, build_provider
+def independent_scores(fs: list[Finalist], brief, timeout: float,
+                       max_output_tokens: int) -> tuple[bool, list[str]]:
+    """Score each candidate ALONE with the existing provider + prompt.
+
+    The route (endpoint, pinned model, key, prompt) is untouched; only the output
+    budget is set explicitly, because the pinned model is a reasoning model that
+    exhausts a small budget before emitting any content.
+    """
+    from content_intelligence.provider import Evidence
+    from content_intelligence.providers import ProviderError, build_provider
 
     key = os.environ.get(QWEN_KEY_ENV, "")
     if not key:
         return False, [f"{QWEN_KEY_ENV} absent"]
-    provider = build_provider("qwen", key, timeout=timeout)
+    provider = build_provider("qwen", key, timeout=timeout,
+                              max_output_tokens=max_output_tokens)
     notes: list[str] = []
     for f in fs:
         ev = Evidence(platform="local", content_type="video", title=f.candidate_id,
@@ -238,7 +252,8 @@ def main() -> int:
     else:
         print("    (credential present — real A/B would run here)")
         for c, fs2 in sets:
-            ok, notes = independent_scores(fs2, _Brief(), cfg.timeout)
+            ok, notes = independent_scores(fs2, _Brief(), cfg.timeout,
+                                           cfg.max_output_tokens)
             if not ok:
                 unproven(f"A-E for {c['name'][:30]}", "; ".join(notes))
                 continue
