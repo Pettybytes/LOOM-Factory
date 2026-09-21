@@ -2602,3 +2602,23 @@ Policy docs still need the durable reconciliation edit.
   still to be built.
 
 **Segment 5 is NOT closed.** RECUT on hold. Segment 6 locked. Migration 038 preserved.
+
+### 23.1 Reddit delivery fixed + both existing platforms now delivered
+* Root cause confirmed: the earlier run scored via the **content** store and never
+  persisted **discovery** records, so `loom_discovered_sources` had no row for the
+  Reddit fingerprint while `loom_source_selections` did. Fixed by persisting
+  through the discovery store (`SupabaseStore.upsert_source`) — **inserted=25**.
+* A transient Reddit **HTTP 429** occurred on retry (correctly flagged
+  `retryable=True` by the connector); one bounded backoff cleared it. No code
+  defect.
+* **Real cards now live in `#source-review`:** YouTube `1551690676578681015`,
+  Reddit `1551691414914601003`.
+* **Candidate-quality caveat (recorded honestly):** the surfaced Reddit item is
+  `Rule 1 of this subreddit: why it exists.` — a real discovered candidate routed
+  correctly, but it is a subreddit sticky/announcement, not reaction-worthy
+  material. The connector's "first record from the feed" selection picks stickies;
+  worth=82 / market=13 shows the low market score. Candidate *selection* quality
+  needs work; delivery mechanics are proven.
+
+**Cost this pass:** $0.000739 (YouTube) + $0.000414 (Reddit) = **$0.001153**.
+**Apify spend: $0.00** — no actor was invoked. No acquisition, no media download.
