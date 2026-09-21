@@ -825,3 +825,40 @@ architecture end-to-end. Full evidence: `CURRENT_STATE.md` §21.
 **Next authorized workstream: Segment 6 (Lean Ranking Composer) — may now be
 unlocked.** Part B (bounded OpenShorts RECUT integration) is separate and
 documented in its own section.
+
+---
+
+## 21. Segment 5 — FINAL DISCOVERY ACCEPTANCE REOPENED (2026-09-21)
+
+Treat Segment 5 as **ENGINEERING SPINE PROVEN, FINAL DISCOVERY ACCEPTANCE
+REOPENED**. §20's spine results stand and were not re-run. Full detail:
+`CURRENT_STATE.md` §22.
+
+**Platform discovery status (honest):**
+* 🟢 YouTube — first-party RSS, runtime-proven
+* 🟢 Reddit — runtime-proven
+* 🟡 Twitch — implemented; **blocked on `LOOM_TWITCH_CLIENT_ID` +
+  `LOOM_TWITCH_CLIENT_SECRET` (both absent)**
+* 🔴 TikTok — no discovery path (URL rejects `/search`, `/discover`, `/tag`)
+* 🔴 Instagram — no discovery path (Apify actor evaluated for acquisition only)
+* 🔴 Kick — no discovery path (acquisition-only; VOD 404 documented)
+
+**Two things must NOT be inferred:** acquisition ≠ discovery, and "can expand
+later" never meant "basic autonomous discovery may be postponed".
+
+**Blocking policy conflict:** `APIFY_PROVIDER_BOUNDARY.md` rule 3 forbids invoking
+Apify during **discovery**; rule 2 requires a per-platform evaluation +
+authorization first. Using Apify for TikTok/IG discovery would amend that policy
+and create a recurring paid lane at discovery time — a material architecture +
+recurring-cost change — so **it was not built** and is escalated instead.
+
+**Outstanding operator acceptance:** no real candidate has reached Bryan's actual
+`#source-review`, because proof profiles are excluded from production queues by
+design and no real (non-proof) sourcing profile is defined. Fabricating or
+bypassing that exclusion was refused.
+
+**Awaiting Bryan:** (1) Twitch client id/secret; (2) a decision on a paid vs free
+TikTok/Instagram discovery mechanism; (3) the intended Kick discovery surface;
+(4) the real tenant sourcing profile id.
+
+RECUT remains on hold. Segment 6 not started. Migration 038 preserved.

@@ -2471,3 +2471,91 @@ the production logic behaved correctly in every case:
     route is not yet the default.
   * Discovery was proven on a **bounded** set (15 candidates); this was an
     architecture/runtime acceptance, not a load test.
+
+---
+
+## 22. Segment 5 state CORRECTION — spine proven, FINAL DISCOVERY ACCEPTANCE REOPENED (2026-09-21)
+
+Bryan re-opened the *acceptance* (not the engineering). Segment 5 must now be read
+as **ENGINEERING SPINE PROVEN, FINAL DISCOVERY ACCEPTANCE REOPENED**. Nothing in
+§21 is undone or re-audited: the spine results there remain accepted and were NOT
+re-run.
+
+### 22.1 Still accepted (do not re-litigate)
+15 real YouTube candidates via first-party RSS · one real candidate through the
+deeper intelligence spine · discovery/acquisition separation · tenant
+routing/isolation · Source Review machinery + tests · idempotency · Content
+Intelligence · multimodal signal wiring · persistence/provenance · existing
+regression results (`content_intelligence` 172 OK, `discord-review` 232 OK) ·
+existing commits.
+
+### 22.2 Missing acceptance #1 — REAL DISCORD DELIVERY (NOT YET DONE)
+
+Bryan did not see any discovered candidate in his actual `#source-review`
+operator experience. **This remains outstanding**, and I deliberately did NOT
+fabricate it or bypass a safety control to force it:
+
+* The card path only accepts candidates with a COMPLETED combined selection, and
+  **proof profiles are excluded from production queues by design** (`eligible_selection`
+  + `store.production_selections()`). The one scored candidate
+  (`GaX0frxNwfQ`, `market=61`, `worthiness=62`, `selection=68`,
+  `standard_review`) lives under the non-production profile
+  `pass1-pipeline-proof` and is therefore correctly EXCLUDED.
+* Posting a real card requires scoring under a **real (non-proof) tenant sourcing
+  profile**, and no such production profile is defined yet. Bypassing the
+  proof-profile exclusion would defeat a deliberate safety control, so I did not.
+* **Ask:** confirm the real tenant sourcing profile (tenant `dreemzy`, a
+  non-proof `profile_id`) to score one real candidate under. After that, one real
+  candidate can travel discovery → qualification → `#source-review` for an actual
+  button click.
+
+### 22.3 Missing acceptance #2 — MULTI-PLATFORM DISCOVERY (honest matrix)
+
+| Platform | Discovery mechanism | Status |
+|---|---|---|
+| YouTube | `discovery/connectors/youtube.py` (first-party RSS, no credential) | 🟢 RUNTIME-PROVEN AUTONOMOUS DISCOVERY |
+| Reddit | `discovery/connectors/reddit.py` | 🟢 RUNTIME-PROVEN AUTONOMOUS DISCOVERY |
+| Twitch | `discovery/connectors/twitch.py` implemented (Helix app token) | 🟡 IMPLEMENTED, RUNTIME BLOCKED — `required_credentials = ("LOOM_TWITCH_CLIENT_ID", "LOOM_TWITCH_CLIENT_SECRET")`, both ABSENT; `health()` fails closed naming them |
+| TikTok | none — `tiktok_url.py` explicitly rejects `/search`, `/discover`, `/tag` as `NOT_A_MEDIA_URL`; only an acquisition adapter exists | 🔴 NO DISCOVERY PATH |
+| Instagram | none — the vetted Apify actor was evaluated for **acquisition** only | 🔴 NO DISCOVERY PATH |
+| Kick | none — `KickAdapter` is acquisition-only (clip proven; VOD HTTP 404 documented) | 🔴 NO DISCOVERY PATH |
+
+**Acquisition capability is NOT discovery capability** and is not reported as such.
+
+### 22.4 Blocking policy conflict (requires Bryan's explicit decision)
+
+`infra/acquisition/APIFY_PROVIDER_BOUNDARY.md` is standing architecture policy:
+
+* rule 2 — a paid provider is used only when the local path is unsupported, and
+  **every platform's paid Actor requires a separate evaluation + authorization
+  before activation**; only Instagram was evaluated, and for acquisition.
+* **rule 3 — "Never invoke Apify during discovery, qualification, scoring, Source
+  Review rendering, Hold, Reject, or Save Link Only."**
+
+The request to use Apify for TikTok/Instagram *discovery* therefore conflicts with
+standing policy and would additionally create a **NEW PAID LANE AT DISCOVERY
+TIME** (recurring cost on every sourcing cycle, not a one-off). That is a material
+architecture + recurring-cost change, and both are explicit stop-and-ask
+conditions — so **no paid discovery lane was built**. TikTok's actor has also not
+had the per-platform evaluation rule 2 requires.
+
+### 22.5 Exact blockers (what Bryan must provide or decide)
+
+1. **Twitch** — provide `LOOM_TWITCH_CLIENT_ID` and `LOOM_TWITCH_CLIENT_SECRET`
+   (values into `~/.openclaw/.env`; names only in chat). The connector is already
+   implemented; this is the only thing missing.
+2. **TikTok + Instagram** — either (a) explicitly authorize a **paid Apify
+   discovery lane** (including which actor and a hard per-run budget cap), which
+   amends policy rule 3, or (b) designate a free mechanism. Instagram's local
+   adapter previously failed the agreed proof threshold.
+3. **Kick** — no discovery mechanism exists in the architecture. Decide the
+   intended Kick discovery surface; the acquisition adapter stays clip-only
+   (VOD 404 documented).
+4. **Real Discord delivery** — define the real (non-proof) tenant sourcing
+   profile so the candidate can be scored and carded legitimately.
+
+### 22.6 Unchanged
+Migration **038 remains preserved** (untracked, on disk, 2729 B, mode 600).
+**RECUT is on hold — not started.** **Segment 6 — not started.** No code was
+changed in this pass; this is a recon + state-correction record only, so no
+regression run was required.
