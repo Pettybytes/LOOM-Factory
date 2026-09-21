@@ -80,6 +80,8 @@ class Pass1CandidateResult:
     evidence_depth: str = ""
     market_gate_passed: bool = False
     market_evidence: dict | None = None
+    tenant_fit_verdict: str = ""
+    tenant_fit_reasons: tuple[str, ...] = ()
     rejection_reason: str = ""
 
 
@@ -261,6 +263,20 @@ class Pass1Pipeline:
         if not decision.passed:
             c.status = "filtered_market"
             c.rejection_reason = ",".join(decision.reasons)
+            return c
+
+        # 2.6 EARLY TENANT FIT — cheap metadata only, still BEFORE expensive work.
+        # Ambiguous candidates PROCEED: only a clear mismatch stops the pipeline,
+        # because inventing a rejection is worse than spending inspection budget.
+        from .tenant_fit import tenant_fit
+        fit = tenant_fit(title=getattr(rec, "title", "") or "",
+                         description=getattr(rec, "body_excerpt", "") or "",
+                         creator=getattr(rec, "creator_channel_identity", "") or "")
+        c.tenant_fit_verdict = fit.verdict
+        c.tenant_fit_reasons = tuple(fit.reasons)
+        if fit.failed:
+            c.status = "filtered_tenant"
+            c.rejection_reason = ",".join(fit.reasons)
             return c
 
         # 3. Transcript-only retrieval.

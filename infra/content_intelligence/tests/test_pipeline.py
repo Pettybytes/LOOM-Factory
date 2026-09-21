@@ -25,6 +25,7 @@ from content_intelligence.provider import Evidence  # noqa: E402
 
 
 import datetime as _dt  # noqa: E402
+import content_intelligence.pipeline as pipeline_mod  # noqa: E402
 
 
 class _Record:
@@ -193,6 +194,61 @@ class TestPass1Pipeline(unittest.TestCase):
         self.assertTrue(c.market_gate_passed)
         self.assertNotEqual(c.status, "filtered_market")
         self.assertEqual(provider.calls, 1)
+
+    def test_pipeline_order_weak_market_never_reaches_tenant_or_model(self):
+        """DISCOVERY -> MARKET FAIL -> tenant gate NOT called -> model NOT called."""
+        import datetime as _dt
+        from unittest import mock
+        pipe, provider = self._pipeline()
+        store = _FakeStore()
+        rec = _Record(platform="tiktok", cid="tt84b")
+        rec.observed_metrics = {"playCount": 84, "diggCount": 2}
+        rec.publication_timestamp = (_dt.datetime.now(_dt.timezone.utc)
+                                     - _dt.timedelta(hours=30)).isoformat()
+        called = []
+        with mock.patch.object(pipeline_mod, "tenant_fit_marker", create=True), \
+                mock.patch("content_intelligence.tenant_fit.tenant_fit",
+                           side_effect=lambda **k: called.append(k) or None):
+            with _patched_fetch([]):
+                result = pipe.run([rec], store)
+        c = result.candidates[0]
+        self.assertEqual(c.status, "filtered_market")
+        self.assertIn("LOW_VIEWS", c.rejection_reason)
+        self.assertEqual(called, [])                 # tenant gate never consulted
+        self.assertEqual(provider.calls, 0)          # no model work
+        self.assertEqual(store.assessments, {})      # nothing persisted
+
+    def test_pipeline_order_strong_but_wrong_tenant_is_filtered(self):
+        """MARKET PASS -> TENANT FAIL -> no transcript/media/model, no card."""
+        pipe, provider = self._pipeline()
+        store = _FakeStore()
+        rec = _Record(platform="youtube", title="I Thought These Guys Made Cables",
+                      cid="linusplumb")
+        rec.observed_metrics = {"viewCount": 800_000, "likeCount": 40_000, "commentCount": 3_000}
+        # creator identity is the grounded category signal (not a blacklist)
+        rec.creator_channel_identity = "Linus Tech Tips"
+        with _patched_fetch([{"start_s": 0.0, "end_s": 5.0, "text": "hello"}]):
+            result = pipe.run([rec], store)
+        c = result.candidates[0]
+        self.assertEqual(c.status, "filtered_tenant")
+        self.assertEqual(c.tenant_fit_verdict, "FAIL")
+        self.assertTrue(any("off_universe" in r for r in c.tenant_fit_reasons), c.tenant_fit_reasons)
+        self.assertEqual(provider.calls, 0)
+        self.assertEqual(store.assessments, {})
+
+    def test_pipeline_order_strong_and_relevant_proceeds(self):
+        """MARKET PASS -> TENANT PASS -> reaches the next boundary."""
+        pipe, provider = self._pipeline()
+        store = _FakeStore()
+        rec = _Record(platform="youtube", title="wild fan interaction on stream",
+                      cid="moment01")
+        pipe.run  # noqa: B018
+        with _patched_fetch([]):
+            result = pipe.run([rec], store)
+        c = result.candidates[0]
+        self.assertTrue(c.market_gate_passed)
+        self.assertEqual(c.tenant_fit_verdict, "PASS")
+        self.assertNotIn(c.status, ("filtered_market", "filtered_tenant"))
 
     def test_captions_unavailable_assesses_from_metadata_only(self):
         """Platform Evidence Resolver: no transcript is NOT terminal.

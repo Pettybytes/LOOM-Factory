@@ -3008,3 +3008,68 @@ payoff evidence; **Evidence Confidence** with the metadata-only ceiling; the
 **FIRE gate** (Market ≥75 / Content ≥80 / Selection ≥85 / Confidence ≥85%); the
 visual Source Review card; Instagram + Kick discovery; the bounded six-platform
 runtime proof. vidIQ remains unspent at 24 credits.
+
+## 33. BASELINES → SEED YIELD → MOMENTCANDIDATE → TENANT FIT (2026-09-21)
+
+Production chain after this pass:
+`REAL DISCOVERY → REAL PLATFORM METRICS → MARKET GATE → DURABLE BASELINE/OUTLIER
+EVIDENCE → TENANT FIT → ⛔ NEXT BOUNDARY: BOUNDED MOMENT INSPECTION`
+
+### 1. Durable creator baseline history
+`infra/supabase/039_loom_creator_observations_and_seed_yield.sql` adds
+`loom_creator_observations` — **two tables in the existing store, not a second
+database** — with a unique key on
+`(tenant_id, platform, creator_id, source_content_id)` so **re-observing the same
+source updates rather than duplicates**.
+`content_intelligence/creator_history.py` computes baselines with **MEDIAN not
+mean**, a **bounded recent window**, **pinned/admin excluded**, and explicit
+states `known | unavailable | insufficient_history` (<5 usable samples). A
+baseline is **never fabricated**, and `relative_evidence()` can never present a
+missing baseline as an ordinary performer. Outlier interpretation unchanged:
+<2x ordinary · 2–5x outlier · 5–10x strong outlier · ≥10x breakout.
+
+### 2. Seed/query yield persistence
+`discovery/seed_yield.py` + `loom_seed_yield` track, per
+`(tenant_id, platform, provider, seed_key)`: discovered, market_passed/rejected,
+tenant_passed/rejected, inspected, fire_passed, carded, approved, held, rejected,
+provider_cost_usd, vidiq_credits — with derived market/tenant pass rates, fire
+yield, approval rate, cost-per-fire and cost-per-approved-moment. **Instrumentation
+only: no ML, no automatic query mutation, no ranking change.** `seed_key` reuses
+`moment_queries.MomentQuery.seed_key` (one key scheme).
+
+### 3. MomentCandidate
+`content_intelligence/moment_candidate.py` — the single canonical object carrying
+identity + market + moment evidence + fit/scoring, assembled from **existing**
+contracts (DiscoveryRecord, MarketEvidence/Evidence, SourceBrief, Topic/Content
+Intelligence, Combined Selection). Every not-yet-available field is explicitly
+None/`unavailable` (moment evidence, FIRE result), so **missing can never read as
+zero**.
+
+### 4. Early tenant fit — wired into the pipeline
+`content_intelligence/tenant_fit.py` runs as **step 2.6, after market
+qualification and still before any transcript/media/model work**. It returns
+PASS / FAIL / AMBIGUOUS with grounded reasons; **only clear FAIL stops the
+pipeline** (ambiguity proceeds — inventing a rejection is worse than spending
+inspection budget). Universe terms are derived from `moment_queries` (one source
+of truth), and off-universe detection uses **uniform category terms applied to
+every source — NOT a creator blacklist**. The Linus-style plumbing candidate fails
+because the *category* signal ("tech") is off-universe with no moment evidence.
+
+### Proof (order tests)
+* Weak market (84-view TikTok) → `filtered_market`, **tenant gate never called**,
+  **model never called**, nothing persisted.
+* Strong-but-wrong-tenant (800k-view consumer-tech) → market PASS → **tenant
+  FAIL** → no transcript/media/model work, no card.
+* Strong + relevant → market PASS → tenant PASS → proceeds to the next boundary.
+
+### Tests
+`content_intelligence` **228 OK**, `discovery` **107 OK** (incl. median/window/
+pinned/insufficient/isolation/replay-dedupe baselines, seed-yield counters and
+derived metrics, and the three pipeline-order proofs).
+
+### Next boundary (NOT started)
+Bounded moment inspection (0–3 s hook / action / payoff evidence) → Evidence
+Confidence (metadata-only ceiling) → **FIRE gate** (Market ≥75 / Content ≥80 /
+Selection ≥85 / Confidence ≥85%) → visual Source Review card; Instagram/Kick
+discovery; six-platform runtime proof. vidIQ remains unspent at 24 credits.
+RECUT on hold. Segment 6 locked. Migration 038 untouched.
