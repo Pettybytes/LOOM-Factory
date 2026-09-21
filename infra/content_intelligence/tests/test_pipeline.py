@@ -148,13 +148,24 @@ class TestPass1Pipeline(unittest.TestCase):
         self.assertEqual(provider.calls, 0)
         self.assertEqual(store.assessments, {})  # nothing persisted
 
-    def test_captions_unavailable(self):
+    def test_captions_unavailable_assesses_from_metadata_only(self):
+        """Platform Evidence Resolver: no transcript is NOT terminal.
+
+        Under the OLD contract the candidate was discarded as
+        `captions_unavailable`, which is why a qualified non-YouTube candidate
+        could never complete a selection and never reached Source Review. It is
+        now assessed from platform metadata alone, with evidence depth recorded
+        honestly, and the model still receives exactly one call.
+        """
         pipe, provider = self._pipeline()
         store = _FakeStore()
         with _patched_fetch([], "unavailable"):
             result = pipe.run([_Record()], store)
-        self.assertEqual(result.candidates[0].status, "captions_unavailable")
-        self.assertEqual(provider.calls, 0)
+        c = result.candidates[0]
+        self.assertEqual(c.status, "scored")
+        self.assertEqual(c.evidence_depth, "metadata_only")
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(provider.last_evidence.transcript_text, "")
 
     def test_caption_fetch_failure(self):
         pipe, provider = self._pipeline()
