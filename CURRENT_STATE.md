@@ -2902,3 +2902,52 @@ Docs updated so Cloudflare is canonical: `LOOM_SOURCE_OF_TRUTH.md`,
 `NEXT_SESSION_HANDOFF.md`, `CURRENT_STATE.md` (§30), and the stale public constant
 in `infra/supabase/prove_e2e_review.py`. Historical narrative lines were left
 intact; §30 supersedes them.
+
+## 31. MOMENT SOURCING PASS — donors, market math, Twitch fix (2026-09-21)
+
+### Donors pulled locally — REFERENCE ONLY
+Cloned (shallow) into `.research/donors/` which is now **gitignored** (`.gitignore`
+`.research/`), so donor source can never enter LOOM history:
+`niche-finder`, `youtube-outlier-finder`, `instagram-outlier`,
+`instagram-reel-outlier-finder`, `TikTok-Api`.
+
+**Every one of the five ships NO licence file**, so per policy they are
+**REFERENCE ONLY — no implementation code was copied.** Concepts extracted:
+creator-relative `views ÷ creator median` (median NOT mean, so one viral post
+cannot drag the baseline), "3× the account's median of its last 30", pinned posts
+excluded from baselines, an absolute views floor, VPH/velocity, and
+metadata-first filtering with deeper analysis only on survivors. `TikTok-Api` is a
+transport/API wrapper (no baseline/velocity logic) — evaluated as a possible free
+supplemental scout later; **Apify remains the production transport**.
+
+### Implemented (LOOM-native, tested)
+* `infra/discovery/moment_queries.py` — configurable **moment** seed library
+  (streamer/creator, public/human, animals) + `creator + moment type` composition
+  (e.g. `IShowSpeed + wild fan interaction`), with `BANNED_GENERIC_SEEDS` and an
+  `assert_no_banned_defaults()` guard. Generic seeds ("streamer reaction",
+  "streamer fails", "streamer rage") are **excluded and actively rejected**.
+  Adds a stable `seed_key` for **per-seed yield tracking**.
+* `infra/content_intelligence/market_math.py` — deterministic, pure, no network,
+  no model: `median`, `views_per_hour` (not claimed under 1 h of life),
+  `creator_baseline` (pinned excluded, windowed), `outlier_multiple`,
+  `engagement_rate`, age-bucketed `age_adjusted_floor`, and **`market_gate`** —
+  cheap market rejection *before* any content analysis, returning explicit
+  reasons for every rejection. Tests cover the explicit requirement: an
+  **84-view candidate dies at the market gate**.
+* Tests: `test_moment_queries.py` **10 OK**, `test_market_math.py` **23 OK**.
+
+### Twitch name→ID resolver — FIXED and runtime-proven
+`game:Just Chatting` → `/helix/games?name=` → numeric id; `channel:kaicenat` →
+`/helix/users?login=` → broadcaster id; numeric ids still pass through.
+Live proof: `game:Just Chatting` → **3 clips** (previously HTTP 400),
+`channel:kaicenat` → **3 clips** (*"Kevin Hart gets drenched"*,
+*"TRAVIS SCOTT WANTS TO DO A 24 HOUR STREAM"*), and an unknown game fails closed
+with `UNKNOWN_GAME`.
+
+### Still to wire (next)
+Market gate + baseline into the discovery→review path (so the funnel runs
+raw discovery → floors → VPH → engagement → creator-relative outlier →
+tenant fit → bounded content inspection → FIRE gate → Discord);
+baseline **storage/history**; platform-specific normalization; query/seed yield
+tracking persistence; Instagram/Kick discovery; vidIQ remains unspent
+(24 credits) pending calibration use.

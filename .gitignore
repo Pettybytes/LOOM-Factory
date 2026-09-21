@@ -47,3 +47,6 @@ infra/discord-review/youtube-cards-fixed.json
 *__*__*.mp4
 *__*__*.part
 infra/discord-review/.reddit-acceptance-state.json
+
+# donor research clones - NEVER committed
+.research/

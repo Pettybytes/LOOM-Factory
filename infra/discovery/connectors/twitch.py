@@ -110,13 +110,17 @@ class TwitchConnector(Connector):
     def discover(self, request: DiscoveryRequest) -> Iterator[DiscoveryRecord]:
         query = (request.query or "").strip()
         if query.startswith("game:"):
+            # Human-readable first: 'Just Chatting' -> /helix/games?name= -> id.
+            # A numeric id still passes straight through (backwards compatible).
             yield from self._discover_listing(
-                request, "game_id", query[len("game:"):].strip()
+                request, "game_id", self._resolve_game_id(query[len("game:"):].strip())
             )
             return
         if query.startswith("channel:"):
+            # 'kaicenat' -> /helix/users?login= -> broadcaster id.
             yield from self._discover_listing(
-                request, "broadcaster_id", query[len("channel:"):].strip()
+                request, "broadcaster_id",
+                self._resolve_broadcaster_id(query[len("channel:"):].strip())
             )
             return
         raise ConnectorError(
@@ -124,6 +128,43 @@ class TwitchConnector(Connector):
             "twitch query must start with 'game:' or 'channel:'",
             retryable=False,
         )
+
+    # -- human-readable value -> numeric Helix id ------------------------
+
+    @staticmethod
+    def _is_numeric_id(value: str) -> bool:
+        return bool(value) and value.isdigit()
+
+    def _resolve_game_id(self, value: str) -> str:
+        """Twitch game NAME -> numeric game id (numeric ids pass through).
+
+        Helix clip listing takes a numeric game_id, so 'game:Just Chatting'
+        previously reached Helix as a name and returned HTTP 400. This resolves
+        it through the documented /helix/games endpoint first.
+        """
+        value = (value or "").strip()
+        if not value:
+            raise ConnectorError("INVALID_QUERY", "empty game", retryable=False)
+        if self._is_numeric_id(value):
+            return value
+        url = f"{_HELIX_BASE}/games?{urllib.parse.urlencode({'name': value})}"
+        rows = (self._helix_get(url).get("data") or [])
+        if not rows or not isinstance(rows[0], dict) or not rows[0].get("id"):
+            raise ConnectorError("UNKNOWN_GAME", f"no Twitch game named {value!r}", retryable=False)
+        return str(rows[0]["id"])
+
+    def _resolve_broadcaster_id(self, value: str) -> str:
+        """Creator LOGIN -> numeric broadcaster id (numeric ids pass through)."""
+        value = (value or "").strip()
+        if not value:
+            raise ConnectorError("INVALID_QUERY", "empty channel", retryable=False)
+        if self._is_numeric_id(value):
+            return value
+        url = f"{_HELIX_BASE}/users?{urllib.parse.urlencode({'login': value})}"
+        rows = (self._helix_get(url).get("data") or [])
+        if not rows or not isinstance(rows[0], dict) or not rows[0].get("id"):
+            raise ConnectorError("UNKNOWN_CHANNEL", f"no Twitch channel with login {value!r}", retryable=False)
+        return str(rows[0]["id"])
 
     # -- discovery (Helix listing) ----------------------------------------
 
