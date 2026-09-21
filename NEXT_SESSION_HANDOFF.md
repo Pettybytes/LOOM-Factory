@@ -72,7 +72,7 @@ Commits this session, all pushed: `8df2054` (Twitch connector) · `88814bd` (Cad
 | Logs | `infra/discord-review/adapter.log` (adapter stdout+stderr), `supervisor.log`, and `docker logs loom-tunnel-proxy` (Caddy access log, enabled this session). |
 
 ### Discord ingress
-* **Current endpoint:** `https://users-macbook-pro-1.taild000b2.ts.net/discord/interactions` (**Tailscale Funnel**)
+* **Current endpoint:** `https://app.loomz.stream/discord/interactions` (**Tailscale Funnel**)
 * `TAILSCALE_ENDPOINT_VALIDATION = PASS` — Discord's real PING returned **200** at 17:10:21 from egress IP `35.196.132.85`.
 * `CLOUDFLARE_ENDPOINT_VALIDATION = NOT EXERCISED BY DISCORD`. A $0 Cloudflare **Quick Tunnel** (`cloudflared tunnel --url http://127.0.0.1:8081`, PID was 43004, hostname was `magical-learners-known-superior.trycloudflare.com`) is **temporary — the hostname changes on restart**. Discord never used it; only manual tests did.
 * The earlier Tailscale verification FAILURE is **unexplained**. A Caddy reload correlates in time but is not proven causal (manual curls reached the adapter before *and* after it).

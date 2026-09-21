@@ -1145,7 +1145,7 @@ Re-hydration is idempotent.
 
 ## 2. Runtime + infrastructure (unchanged)
 
-**Funnel hostname:** `https://users-macbook-pro-1.taild000b2.ts.net` → Caddy `:8081`
+**Canonical public ingress (2026-09-21):** `https://app.loomz.stream` → Caddy `:8081`  *(formerly Tailscale Funnel)*
 
 | Component | Process/container | Bind | Health |
 |-----------|-------------------|------|--------|
@@ -2858,3 +2858,47 @@ Cloudflare path, and cannot retire the Funnel.
 Correct order once the hostname is known: prove `https://<cloudflare-host>/discord/interactions`
 reaches the adapter (401 on unsigned request) → update Discord's interaction
 endpoint → verify → **then** retire the Funnel and document Cloudflare as canonical.
+
+## 30. CANONICAL PUBLIC INGRESS = CLOUDFLARE (2026-09-21) — Tailscale Funnel RETIRED
+
+**Decision: `https://app.loomz.stream` is LOOM's canonical public ingress**, served
+by the EXISTING `dreemzy_loom` Cloudflare tunnel (route + CNAME added by Bryan).
+Local Caddy routing was **not** changed and **no second tunnel** was created.
+
+### Changes
+| Item | From | To |
+|---|---|---|
+| Discord application interaction endpoint | `https://users-macbook-pro-1.taild000b2.ts.net/discord/interactions` | **`https://app.loomz.stream/discord/interactions`** |
+| `LOOM_EDITOR_PUBLIC_URL` | `https://users-macbook-pro-1.taild000b2.ts.net` | **`https://app.loomz.stream`** |
+| Tailscale Funnel | ON (`/` → `127.0.0.1:8081`) | **RETIRED** (`tailscale funnel reset` → "No serve config") |
+
+`~/.openclaw/.env` was backed up first
+(`~/.openclaw/.env.bak-loom-ingress-20260921181937`) and edited surgically: exactly
+one var referenced the old host; **0 references remain**. The adapter was restarted
+so the value is live — serving **PID 57954** (started Mon Sep 21 18:19:46),
+listening `127.0.0.1:8090`, with the deferred-ACK code and
+`LOOM_EDITOR_PUBLIC_URL=https://app.loomz.stream` present in its running env.
+
+### Verification through the REAL Cloudflare hostname
+* `POST /discord/interactions` → **401 `{"error":"missing signature headers"}`**
+  (correct unsigned response; Caddy logged `"host":"app.loomz.stream"`).
+* `GET /edit` → **200** (editor page serves).
+* `POST /discord/editor/exchange` → **403** `invalid, consumed, or expired token`.
+* `POST /discord/editor/pending` → **400** `missing access_token`.
+  (Clean application-level rejections, not 502 — the editor API reaches the adapter.)
+* Discord **validated the new endpoint live** during the endpoint PATCH (200), i.e.
+  Discord's own PING traversed Cloudflare and the adapter answered correctly.
+* After Funnel retirement, Cloudflare still returns 401 for `/discord/interactions`
+  and the old Funnel host is unreachable.
+
+### Unverified dependency (flagged honestly)
+The **Discord Developer Portal Activity URL mapping** is not readable from this
+host (not exposed by the bot API), so I could not confirm whether the embedded
+Activity points at the old host. Activity *content* is reachable via
+`https://app.loomz.stream` (root route → frontend). If the Activity misbehaves,
+restore the Funnel with `tailscale funnel --bg 8081` (one command, reversible).
+
+Docs updated so Cloudflare is canonical: `LOOM_SOURCE_OF_TRUTH.md`,
+`NEXT_SESSION_HANDOFF.md`, `CURRENT_STATE.md` (§30), and the stale public constant
+in `infra/supabase/prove_e2e_review.py`. Historical narrative lines were left
+intact; §30 supersedes them.

@@ -136,7 +136,7 @@ req.add_header("Content-Type", "application/json"); req.add_header("Prefer", "re
 with urllib.request.urlopen(req, timeout=30) as r:
     pass
 
-PUBLIC = "https://users-macbook-pro-1.taild000b2.ts.net/discord/editor/bootstrap"
+PUBLIC = "https://app.loomz.stream/discord/editor/bootstrap"
 req = urllib.request.Request(PUBLIC, method="GET")
 req.add_header("Authorization", "Bearer " + raw)
 with urllib.request.urlopen(req, timeout=30) as r:

@@ -624,7 +624,7 @@ interaction. Evidence:
   Approve/Reject/Hold buttons (opaque `custom_id`, no secrets).
 - **4C Approve/Reject/Hold** — Bryan personally clicked **Hold** exactly once
   (2026-09-13 02:52 UTC). Discord's signed interaction reached the adapter via
-  the public Interactions Endpoint (`https://users-macbook-pro-1.taild000b2.ts.net/discord/interactions`),
+  the public Interactions Endpoint (`https://app.loomz.stream/discord/interactions`),
   was Ed25519-verified over the raw body, acknowledged within Discord's 3s
   deadline (card updated ~1s later), and resolved the correct clip
   (`6c46c3ef-…:1`), tenant (`loom-acceptance-test`), and reviewer
@@ -649,7 +649,7 @@ plane; only after the decision gate, which is now proven).
 * LOOM Factory alerts webhook rotated by Bryan.
 * Updated n8n Discord credential saved successfully.
 * Public Interactions Endpoint URL registered and accepted by Discord
-  (2026-09-13): `https://users-macbook-pro-1.taild000b2.ts.net/discord/interactions`.
+  (2026-09-13): `https://app.loomz.stream/discord/interactions`.
 * Adapter (`infra/discord-review/adapter.py`) supervised via `supervise.sh`.
 
 ## Candidate card fields
