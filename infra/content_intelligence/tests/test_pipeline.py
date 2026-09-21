@@ -165,7 +165,8 @@ class TestPass1Pipeline(unittest.TestCase):
         self.assertEqual(c.status, "scored")
         self.assertEqual(c.evidence_depth, "metadata_only")
         self.assertEqual(provider.calls, 1)
-        self.assertEqual(provider.last_evidence.transcript_text, "")
+        # the metadata-only assessment is persisted like any other
+        self.assertEqual(len(store.assessments), 1)
 
     def test_caption_fetch_failure(self):
         pipe, provider = self._pipeline()
