@@ -58,6 +58,7 @@ class Pass1Config:
     provider_name: str = "gemini"
     transcript_languages: str = "en.*"
     extract_multimodal_signals: bool = False
+    enable_fire_gate: bool = True
 
 
 @dataclass
@@ -82,6 +83,12 @@ class Pass1CandidateResult:
     market_evidence: dict | None = None
     tenant_fit_verdict: str = ""
     tenant_fit_reasons: tuple[str, ...] = ()
+    fire_passed: bool = False
+    fire_reasons: tuple[str, ...] = ()
+    content_score_recalibrated: int | None = None
+    evidence_confidence: int | None = None
+    moment_evidence: dict | None = None
+    moment_candidate: dict | None = None
     rejection_reason: str = ""
 
 
@@ -206,6 +213,15 @@ def eligible_selection(s: dict[str, Any] | None) -> bool:
                 and isinstance(s.get("source_selection_confidence"), (int, float)))
 
 
+def production_review_queue(selections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Source Review receives FIRE-PASSING candidates ONLY.
+
+    Non-FIRE candidates stay internally available for analytics, query yield and
+    learning; Bryan's producer inbox is not the junk filter.
+    """
+    return [s for s in selection_queue(selections) if isinstance(s, dict) and s.get("fire_passed")]
+
+
 def selection_queue(selections: list[dict[str, Any]],
                     outcome_filter: set[str] | None = None) -> list[dict[str, Any]]:
     """Return only completed selections eligible for the Source Review queue."""
@@ -234,6 +250,74 @@ class Pass1Pipeline:
             if result.total_cost_usd >= self.config.cost_ceiling_usd:
                 break  # hard run-level ceiling
         return result
+
+    def _apply_fire(self, c: Any, rec: Any) -> None:
+        """Bounded inspection -> assessments -> confidence -> FIRE decision.
+
+        Reuses the EXISTING contracts end to end: the tenant-fit + market results
+        already computed, the canonical MomentCandidate, the deterministic
+        assessors, and the single FIRE gate. No new model stage.
+        """
+        from .fire import evidence_confidence, fire_gate, recalibrate_content_score, selection_score
+        from .moment_candidate import from_market_and_market_evidence
+        from .moment_inspection import (assess_activity, assess_escalation, assess_payoff,
+                                        assess_reaction_angle, assess_setup, assess_stop,
+                                        inspect_bounded, populate_from_inspection)
+        from .platform_metrics import normalize_market_evidence
+        from .tenant_fit import tenant_fit as _tenant_fit
+
+        market_ev = normalize_market_evidence(rec)
+        fit = _tenant_fit(title=getattr(rec, "title", "") or "",
+                          creator=getattr(rec, "creator_channel_identity", "") or "")
+        mc = from_market_and_market_evidence(rec, market_ev, tenant_fit_result=fit)
+
+        ev = inspect_bounded(
+            rec,
+            fetch_captions=getattr(self, "_inspection_captions", None),
+            fetch_signals=getattr(self, "_inspection_signals", None),
+            provider_hints={},
+        )
+        a = {"stop": assess_stop(ev), "activity": assess_activity(ev), "setup": assess_setup(ev),
+             "escalation": assess_escalation(ev), "payoff": assess_payoff(ev),
+             "reaction_angle": assess_reaction_angle(ev)}
+        populate_from_inspection(mc, ev, a)
+
+        reaction_ok = bool(a["reaction_angle"].passed)
+        payoff_ok = bool(a["payoff"].passed)
+        hook_ok = bool(a["stop"].passed)
+        conf_ev = ev.as_confidence_evidence(immediate_hook=hook_ok, payoff=payoff_ok,
+                                            reaction_angle=mc.moment_evidence.get("reaction_angle") or "")
+        # The market evidence this candidate already carries IS confidence
+        # evidence; it must not be omitted, or a fully-inspected candidate would
+        # be scored as if its metrics were missing.
+        conf_ev["market_metrics"] = market_ev.views is not None
+        conf_ev["age"] = market_ev.age_hours is not None
+        conf_ev["engagement"] = market_ev.engagement is not None
+        conf = evidence_confidence(platform=rec.platform, evidence=conf_ev)
+        content = recalibrate_content_score(c.content_worthiness, conf_ev)
+        sel = selection_score(market=int(c.market_score or 0), content=content,
+                              tenant_fit_verdict=c.tenant_fit_verdict,
+                              reaction_opportunity=reaction_ok,
+                              evidence_completeness=conf.score,
+                              duplicate_risk=False)
+        decision = fire_gate(
+            market_score=int(c.market_score or 0), content_score=content, selection=sel,
+            confidence=conf.score,
+            market_gate_pass=bool(c.market_gate_passed),
+            tenant_fit_pass=(c.tenant_fit_verdict == "PASS"),
+            immediate_hook=hook_ok,
+            action_activity=bool(a["activity"].passed),
+            payoff_present=payoff_ok,
+            duplicate_risk=False,
+            reaction_opportunity=reaction_ok,
+        )
+        c.fire_passed = decision.passed
+        c.fire_reasons = decision.reasons
+        c.content_score_recalibrated = content
+        c.evidence_confidence = conf.score
+        c.moment_evidence = dict(mc.moment_evidence)
+        c.moment_candidate = mc.to_dict()
+        c.evidence_depth = mc.evidence_depth
 
     def _process(self, rec: Any, store: Any, run: Pass1RunResult) -> Pass1CandidateResult:
         c = Pass1CandidateResult(
@@ -386,6 +470,12 @@ class Pass1Pipeline:
         c.content_worthiness = assessment.content_worthiness_score
         c.selection_score = sel.source_selection_score
         c.selection_outcome = sel.outcome
+        # 5. BOUNDED MOMENT INSPECTION -> grounded assessments -> EVIDENCE
+        # CONFIDENCE -> FIRE. Only candidates that already passed Market and
+        # Tenant Fit reach this point. A FIRE failure records explicit reasons
+        # and the candidate is never carded.
+        if self.config.enable_fire_gate:
+            self._apply_fire(c, rec)
         return c
 
 

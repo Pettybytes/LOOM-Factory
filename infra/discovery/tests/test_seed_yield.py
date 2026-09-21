@@ -86,3 +86,39 @@ class DerivedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IdempotencyTests(unittest.TestCase):
+    """Replay safety: the same event applied twice must count once (SS19)."""
+
+    def _event(self):
+        return event(discovered=10, market_passed=3, market_rejected=7,
+                     provider_cost_usd=0.01, vidiq_credits=0)
+
+    def test_same_event_replayed_twice_increments_once(self):
+        from discovery.seed_yield import accumulate_idempotent, event_id
+        ident = {"tenant_id": "dreemzy", "platform": "youtube", "provider": "rss", "seed_key": "k1"}
+        ev = self._event()
+        row, ids = accumulate_idempotent(None, [dict(ev, **ident)], ident, applied_ids=None)
+        self.assertEqual(row["discovered"], 10)
+        row2, ids2 = accumulate_idempotent(row, [dict(ev, **ident)], ident, applied_ids=ids)
+        self.assertEqual(row2["discovered"], 10)          # NOT 20
+        self.assertEqual(len(ids2), 1)
+        self.assertEqual(event_id(dict(ev, **ident)), event_id(dict(ev, **ident)))
+
+    def test_distinct_events_still_accumulate(self):
+        from discovery.seed_yield import accumulate_idempotent
+        ident = {"tenant_id": "dreemzy", "platform": "youtube", "provider": "rss", "seed_key": "k2"}
+        a = dict(event(discovered=5), **ident)
+        b = dict(event(discovered=7), **ident)
+        row, ids = accumulate_idempotent(None, [a, b], ident)
+        self.assertEqual(row["discovered"], 12)
+        self.assertEqual(len(ids), 2)
+
+    def test_replay_reports_no_new_ids(self):
+        from discovery.seed_yield import accumulate_idempotent
+        ident = {"tenant_id": "t", "platform": "p", "provider": "x", "seed_key": "k3"}
+        ev = dict(self._event(), **ident)
+        row, ids = accumulate_idempotent(None, [ev], ident)
+        _, again = accumulate_idempotent(row, [ev], ident, applied_ids=ids)
+        self.assertEqual(again, ids)

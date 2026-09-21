@@ -105,3 +105,44 @@ def event(**counts_and_spend: Any) -> dict[str, Any]:
     if unknown:
         raise KeyError(f"unknown seed-yield fields: {', '.join(sorted(unknown))}")
     return dict(counts_and_spend)
+
+
+def event_id(payload: dict[str, Any]) -> str:
+    """Stable identity for one sourcing event.
+
+    Retries, callback replays and workflow replays all re-deliver the SAME event,
+    so callers pass the id back on the next accumulate and it is applied once.
+    Identity is the event's meaningful content (identity fields + deltas), so two
+    genuinely different events never collide.
+    """
+    import hashlib
+    import json as _json
+    ident = {k: payload.get(k) for k in
+             ("tenant_id", "platform", "provider", "seed_key", "query_text", "creator_seed")}
+    deltas = {k: payload.get(k, 0) for k in (*COUNTERS, *SPEND)}
+    deltas = {k: v for k, v in deltas.items() if v}
+    blob = _json.dumps({"i": ident, "d": deltas}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def accumulate_idempotent(existing: dict[str, Any] | None, events: Iterable[dict[str, Any]],
+                          identity: dict[str, Any] | None = None,
+                          applied_ids: Iterable[str] | None = None,
+                          ) -> tuple[dict[str, Any], set[str]]:
+    """Replay-safe accumulate: each distinct event is applied at most once.
+
+    Returns the updated row plus the set of applied event ids, which the caller
+    persists and passes back on replay. Smallest change that removes
+    double-counting without redesigning the event system.
+    """
+    seen = set(applied_ids or ())
+    fresh: list[dict[str, Any]] = []
+    for ev in events or []:
+        if not isinstance(ev, dict):
+            continue
+        eid = ev.get("event_id") or event_id(ev)
+        if eid in seen:
+            continue
+        seen.add(eid)
+        fresh.append(ev)
+    return accumulate(existing, fresh, identity), seen

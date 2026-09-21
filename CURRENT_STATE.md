@@ -3073,3 +3073,69 @@ Confidence (metadata-only ceiling) → **FIRE gate** (Market ≥75 / Content ≥
 Selection ≥85 / Confidence ≥85%) → visual Source Review card; Instagram/Kick
 discovery; six-platform runtime proof. vidIQ remains unspent at 24 credits.
 RECUT on hold. Segment 6 locked. Migration 038 untouched.
+
+## 34. FIRE DECISION LAYER (2026-09-21)
+
+Chain now: `DISCOVERY → PLATFORM METRICS → MARKET GATE → BASELINE/OUTLIER →
+TENANT FIT → BOUNDED INSPECTION → STOP/ACTIVITY/SETUP/ESCALATION/PAYOFF →
+EVIDENCE CONFIDENCE → FIRE GATE → FIRE-ONLY SOURCE REVIEW`
+
+### Bounded moment inspection (`moment_inspection.py`)
+Enters ONLY after Market + Tenant PASS. Cheapest-sufficient evidence order
+(provider hints → preview → captions → bounded media segment → existing 5B
+signals → semantic last), windows 0–3s then 8s then 12s. Grounded assessors:
+`assess_stop` (0–3s reason not to swipe), `assess_activity` (deterministic
+signals only), `assess_setup`, `assess_escalation`, `assess_payoff`,
+`assess_reaction_angle`. **Activity is never credited from title/hashtags/
+creator/"viral"/"crazy" alone** — with no signals the verdict is FAIL. Unsupported
+fields stay unavailable; escalation can legitimately remain AMBIGUOUS.
+`populate_from_inspection` fills the MomentCandidate moment fields that the
+evidence actually supports.
+
+### Evidence Confidence (`fire.py`)
+Completeness/reliability, NOT model certainty. Platform-aware
+(`PLATFORM_EXPECTED`): Reddit is judged on score/rank/comments and is **not**
+punished for having no view counts; Twitch on category/thumbnail. `creator_baseline`
+is **OPTIONAL** and no longer dilutes the score when history genuinely does not
+exist. **Structural metadata-only ceiling: without a visual opening, confidence
+cannot exceed 60 and therefore can never reach the 85 FIRE bar.** Content is
+similarly capped at 70 without visual evidence, and Selection multiplies
+market × content (so high-market/boring and good-content/no-traction both fail).
+
+### FIRE gate
+Thresholds fixed: Market ≥75, Content ≥80, Selection ≥85, Confidence ≥85, plus
+required booleans (market_gate, tenant_fit, immediate_hook, action_activity,
+payoff, duplicate policy). Any failure ⇒ **no production card**, with an explicit
+reason code (LOW_MARKET, LOW_CONTENT, LOW_SELECTION, LOW_CONFIDENCE,
+NO_IMMEDIATE_HOOK, LOW_ACTIVITY, NO_PAYOFF, WEAK_REACTION_OPPORTUNITY,
+WRONG_TENANT, DUPLICATE, INSUFFICIENT_VISUAL_EVIDENCE, INSUFFICIENT_CONTEXT).
+`production_review_queue()` makes Source Review **FIRE-only** — non-FIRE
+candidates remain available internally for analytics/query yield/learning, so
+Bryan is no longer the system's quality filter.
+
+### Seed-yield idempotency (SS19 hardening)
+`event_id()` + `accumulate_idempotent()`: each distinct event is applied at most
+once, so retries/callback/workflow replays cannot double-count sourcing
+statistics. Smallest change; existing `accumulate` behaviour unchanged.
+
+### Tests
+`content_intelligence` **251 OK**, `discovery` **110 OK** — including the four
+known-bad regressions (84-view TikTok dies at Market with no inspection/model/
+card; transcript-only dramatic story cannot reach 85 confidence; consumer-tech
+fails tenant fit; Reddit meta hygiene), a strong candidate that genuinely reaches
+FIRE PASS, the metadata-only ceiling, platform-aware confidence, every FIRE
+boolean reason, FIRE-only queueing, and replay idempotency.
+
+### Accepted (do not reopen)
+**CLOUDFLARE + DEFERRED ACK HUMAN RUNTIME ACCEPTANCE = PASSED** — Bryan's real
+Source Review Reject press produced no timeout, Discord acknowledged, the decision
+persisted, and no acquisition occurred.
+
+### Remaining boundary (honest)
+A genuinely bounded **0–3s visual inspection adapter** does not exist yet: the
+existing `fetch_media_and_signals` is bounded by *video duration* (up to ~600s
+worst-quality), not by the 0–3s window. Because a visual opening is required for
+confidence ≥85, **production FIRE cannot PASS until that adapter exists**, and a
+runtime pass would honestly report `NO FIRE CANDIDATE FOUND`. Also not started:
+Instagram, Kick, donor research, vidIQ spend (24 credits intact), RECUT,
+Segment 6. Migration 038 untouched.
