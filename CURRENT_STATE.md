@@ -2798,3 +2798,63 @@ process is indistinguishable to the user from a broken fix.
 
 **Still required:** Bryan pressing one real action → no timeout → decision
 persisted → card updated → no acquisition. Not yet runtime-accepted.
+
+## 29. Canonical public ingress — EVIDENCE AUDIT (2026-09-21)
+
+**Audited because Discord interactions were still arriving with
+`Tailscale-Funnel-Request`.** Question asked: why, after the accepted Discord/
+editor ingress supposedly moved to Cloudflare?
+
+### What the evidence actually shows (not memory)
+
+| Surface | Actual public host today | Source |
+|---|---|---|
+| Discord interaction endpoint | **`https://users-macbook-pro-1.taild000b2.ts.net/discord/interactions`** | Discord API `/applications/@me` (authoritative) |
+| `LOOM_EDITOR_PUBLIC_URL` (accepted Editor work) | **`https://users-macbook-pro-1.taild000b2.ts.net`** | live env |
+| Tailscale Funnel | **ON**, `https://users-macbook-pro-1.taild000b2.ts.net` → `/ proxy http://127.0.0.1:8081` | `tailscale funnel status` |
+
+**Conclusion: the Cloudflare cut-over never happened for these surfaces.** Both
+the Discord interaction endpoint AND the accepted editor's own public URL are on
+the Tailscale Funnel host. There is therefore no "split-brain after migration";
+rather, **nothing accepted is served by Cloudflare yet.**
+
+### Cloudflare state
+* A **named** tunnel runs (`cloudflared tunnel run --token-file …/com.cloudflare.cloudflared/token`,
+  PID 40558) — **token-configured, so its hostname lives in the Cloudflare
+  dashboard and is NOT discoverable locally**. No `cert.pem` exists, so
+  `cloudflared tunnel list/info` cannot enumerate it.
+* A **Quick** tunnel also runs (`--url http://127.0.0.1:8081`, PID 43004). Its
+  hostname is temporary and the docs already state **Discord never used it; only
+  manual tests did**.
+* **No Cloudflare hostname is recorded anywhere**: not in env (no
+  `CLOUDFLARE_*`/`CF_*` credential at all), not in durable docs, and
+  `infra/tunnel-proxy/docker-compose.yml` declares only `caddy:2-alpine` plus
+  `LOOM_TUNNEL_TOKEN` (the Caddy bearer token, not a Cloudflare API token).
+
+### Runtime verified (§7)
+Adapter **PID 70066**, started **Mon Sep 21 17:28:46**, listening
+`127.0.0.1:8090`; **no stale Sep 19 process**; deferred-ACK code present in the
+serving file. Caddy (`loom-tunnel-proxy`, up) routes **host-agnostically** on
+`:8081`: `/discord/interactions*` → `host.docker.internal:8090`, `/discord/editor/*`
+→ 8090, `/discord/card*` (tunnel-token) → 8090, `/api/*` → 8090, catch-all → 5175
+(OpenShorts frontend); `:8082` relays to n8n.
+
+Proven end-to-end on the LOCAL hop: `POST http://127.0.0.1:8081/discord/interactions`
+→ **401 `missing signature headers`**, recorded in both the adapter and Caddy logs.
+
+### Blocker (needs Bryan)
+The **Cloudflare public hostname** cannot be determined on this host. Without it we
+cannot point Discord's interaction endpoint at Cloudflare, cannot prove the public
+Cloudflare path, and cannot retire the Funnel.
+
+### Explicitly NOT done, and why
+* **Tailscale Funnel was NOT disabled.** The removal condition ("no accepted
+  component still depends on it") is **NOT met**: Discord's live interaction
+  endpoint *and* the accepted editor's public URL both depend on it. Disabling it
+  now would break interactions and the editor and would block testing.
+* **Discord's endpoint URL was NOT changed.** There is no verified Cloudflare host
+  to move it to; an unverified move would break the live interaction path.
+
+Correct order once the hostname is known: prove `https://<cloudflare-host>/discord/interactions`
+reaches the adapter (401 on unsigned request) → update Discord's interaction
+endpoint → verify → **then** retire the Funnel and document Cloudflare as canonical.
