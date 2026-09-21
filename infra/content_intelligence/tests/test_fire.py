@@ -225,10 +225,16 @@ class PipelineRegressionTests(unittest.TestCase):
         rec = _Record(platform="youtube", title="wild fan interaction on stream", cid="strong01")
         rec.thumbnail_reference = "https://cdn.example/cover.jpg"
         ev = _strong_evidence()
+        # inject the TRUE bounded hooks: preview (0-3s artifact) + signals on that
+        # bounded artifact. No real download happens in tests.
+        from test_bounded_preview import _Recorder
+        rec_prev = _Recorder(signals_by_end={3.0: [
+            {"basis": k, "start_s": 1.0, "end_s": 3.0}
+            for k in ("motion", "scene_change", "audio_spike")]})
+        pipe._inspection_preview = rec_prev
+        pipe._inspection_analyze = rec_prev.signals
         pipe._inspection_captions = lambda url: ([{"start_s": 0.0, "end_s": 3.0,
                                                    "text": ev.caption_text}], "auto_generated")
-        pipe._inspection_signals = lambda url: [{"basis": k, "start_s": 1.0, "end_s": 3.0}
-                                                for k in ("motion", "scene_change", "audio_spike")]
         with _patched_fetch([{"start_s": 0.0, "end_s": 3.0, "text": ev.caption_text}]):
             r = pipe.run([rec], store)
         c = r.candidates[0]

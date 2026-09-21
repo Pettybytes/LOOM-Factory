@@ -89,6 +89,7 @@ class Pass1CandidateResult:
     evidence_confidence: int | None = None
     moment_evidence: dict | None = None
     moment_candidate: dict | None = None
+    inspection_attempts: tuple = ()
     rejection_reason: str = ""
 
 
@@ -262,7 +263,8 @@ class Pass1Pipeline:
         from .moment_candidate import from_market_and_market_evidence
         from .moment_inspection import (assess_activity, assess_escalation, assess_payoff,
                                         assess_reaction_angle, assess_setup, assess_stop,
-                                        inspect_bounded, populate_from_inspection)
+                                        inspect_bounded, inspect_with_escalation,
+                                        populate_from_inspection)
         from .platform_metrics import normalize_market_evidence
         from .tenant_fit import tenant_fit as _tenant_fit
 
@@ -271,12 +273,26 @@ class Pass1Pipeline:
                           creator=getattr(rec, "creator_channel_identity", "") or "")
         mc = from_market_and_market_evidence(rec, market_ev, tenant_fit_result=fit)
 
-        ev = inspect_bounded(
+        # TRUE bounded inspection: 0-3s, extended to 8s then 12s only while the
+        # decision is ambiguous. Never the full source. Both the preview fetch and
+        # the signal pass operate on the bounded artifact only, and are injectable
+        # so boundedness is testable without any real download.
+        from .bounded_preview import fetch_bounded_preview
+        from .multimodal_signals import analyze_media_signals
+
+        def _decide(e: Any) -> str:
+            decisive = (assess_stop(e).passed and assess_activity(e).passed
+                        and assess_payoff(e).passed)
+            return "decisive" if decisive else "ambiguous"
+
+        ev, attempts = inspect_with_escalation(
             rec,
-            fetch_captions=getattr(self, "_inspection_captions", None),
-            fetch_signals=getattr(self, "_inspection_signals", None),
-            provider_hints={},
+            fetch_preview=getattr(self, "_inspection_preview", fetch_bounded_preview),
+            analyze_signals=getattr(self, "_inspection_analyze", analyze_media_signals),
+            decide=_decide,
+            fetch_captions=getattr(self, "_inspection_captions", fetch_transcript),
         )
+        c.inspection_attempts = attempts
         a = {"stop": assess_stop(ev), "activity": assess_activity(ev), "setup": assess_setup(ev),
              "escalation": assess_escalation(ev), "payoff": assess_payoff(ev),
              "reaction_angle": assess_reaction_angle(ev)}

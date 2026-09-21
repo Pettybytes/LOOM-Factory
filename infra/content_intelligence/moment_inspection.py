@@ -289,3 +289,76 @@ def populate_from_inspection(candidate: Any, ev: InspectionEvidence,
     if getattr(candidate, "source_duration", None) is None and ev.window_seconds:
         candidate.source_duration = ev.window_seconds
     return candidate
+
+
+def inspect_with_escalation(record: Any, *, fetch_preview: Callable[..., Any],
+                            analyze_signals: Callable[..., Any] | None = None,
+                            decide: Callable[[InspectionEvidence], str] | None = None,
+                            windows: tuple[float, ...] = WINDOWS,
+                            fetch_captions: Callable[[str], Any] | None = None,
+                            max_window: float = 12.0,
+                            ) -> tuple[InspectionEvidence, tuple[dict[str, Any], ...]]:
+    """0-3s first; extend to 8s then 12s ONLY while the decision is ambiguous.
+
+    Never continues past ``max_window`` and never processes the full source.
+    Returns the evidence plus a per-window attempt log for honest reporting.
+    """
+    import time as _time
+    url = str(getattr(record, "canonical_url", "") or "")
+    ev = InspectionEvidence(preview_reference=str(getattr(record, "thumbnail_reference", "") or ""))
+    prov: list[str] = []
+    log: list[dict[str, Any]] = []
+
+    if fetch_captions is not None:
+        try:
+            segments, _t = fetch_captions(url)
+            if segments:
+                ev.caption_text = " ".join(x.get("text", "") for x in segments[:40])[:2000]
+                ev.spoken_hook = ev.caption_text[:200]
+                prov.append("captions")
+        except Exception as exc:  # noqa: BLE001
+            prov.append(f"captions_failed:{type(exc).__name__}")
+
+    for end in windows:
+        if end > max_window:
+            break
+        started = _time.time()
+        try:
+            preview = fetch_preview(url, end=end)
+        except Exception as exc:  # noqa: BLE001
+            log.append({"end": end, "error": type(exc).__name__})
+            break
+        entry = {"end": end, "method": getattr(preview, "method", ""),
+                 "bytes": int(getattr(preview, "artifact_bytes", 0) or 0),
+                 "available": bool(getattr(preview, "available", False)),
+                 "fallback": bool(getattr(preview, "fallback_used", False)),
+                 "reason": getattr(preview, "reason", "")}
+        try:
+            if analyze_signals is not None and getattr(preview, "available", False):
+                manifest = analyze_signals(getattr(preview, "artifact_path"), max_seconds=int(end)) or {}
+                kinds = {w.get("basis"): True for w in (manifest.get("signal_windows") or [])
+                         if isinstance(w, dict) and w.get("basis")}
+                ev.signals = kinds
+                ev.timestamps = tuple({"start_s": w.get("start_s"), "end_s": w.get("end_s"),
+                                       "basis": w.get("basis")}
+                                      for w in (manifest.get("signal_windows") or [])
+                                      if isinstance(w, dict) and w.get("basis"))
+                entry["signals"] = sorted(kinds)
+            if getattr(preview, "available", False):
+                ev.visual_opening = True
+                ev.window_seconds = end
+                ev.media_segment_seconds = end
+                prov.append(f"bounded_preview_0_{int(end)}s")
+            else:
+                prov.append("bounded_preview_unavailable")
+        except Exception as exc:  # noqa: BLE001
+            entry["signal_error"] = type(exc).__name__
+        entry["duration_ms"] = int((_time.time() - started) * 1000)
+        log.append(entry)
+
+        if not getattr(preview, "available", False):
+            break                      # nothing to inspect further from
+        verdict = decide(ev) if decide is not None else "decisive"
+        if verdict == "decisive":
+            break
+    return ev, tuple(log)

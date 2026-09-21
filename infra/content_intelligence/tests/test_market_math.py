@@ -132,5 +132,32 @@ class MarketGateTests(unittest.TestCase):
         self.assertTrue(d.reasons)
 
 
+
+
+class AbsentEngagementTests(unittest.TestCase):
+    """A platform that exposes views but no action counts must not be failed for
+    engagement it never published (found by the real runtime proof)."""
+
+    def test_engagement_is_none_when_no_action_counts_exist(self):
+        self.assertIsNone(engagement_rate(None, None, None, 500_000))
+
+    def test_real_zero_engagement_still_counts_as_known(self):
+        self.assertEqual(engagement_rate(0, 0, 0, 10_000), 0.0)
+
+    def test_partial_action_data_still_yields_a_rate(self):
+        self.assertEqual(engagement_rate(500, None, None, 10_000), 0.05)
+
+    def test_views_only_candidate_is_not_rejected_for_low_engagement(self):
+        d = market_gate(views=500_000, likes=None, comments=None, shares=None,
+                        published_at=_ago(48), now=NOW)
+        self.assertFalse(any("engagement" in r for r in d.reasons), d.reasons)
+
+    def test_genuine_zero_engagement_is_still_rejected(self):
+        d = market_gate(views=500_000, likes=0, comments=0, shares=0,
+                        published_at=_ago(48), now=NOW)
+        self.assertFalse(d.passed)
+        self.assertTrue(any("engagement" in r for r in d.reasons), d.reasons)
+
+
 if __name__ == "__main__":
     unittest.main()

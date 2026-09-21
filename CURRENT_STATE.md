@@ -3139,3 +3139,63 @@ confidence ≥85, **production FIRE cannot PASS until that adapter exists**, and
 runtime pass would honestly report `NO FIRE CANDIDATE FOUND`. Also not started:
 Instagram, Kick, donor research, vidIQ spend (24 credits intact), RECUT,
 Segment 6. Migration 038 untouched.
+
+## 35. TRUE BOUNDED INSPECTION + RUNTIME PROOF (2026-09-21)
+
+### Bounded preview adapter (`bounded_preview.py`)
+Downloads ONLY the requested section via yt-dlp `--download-sections "*0-N"`
+(ffmpeg-backed) plus `--force-keyframes-at-cuts`, measures the artifact, and
+deletes it. **A section-limited fetch that is impossible REFUSES and records the
+reason — it never silently degrades into a full-source download** (`fallback_used`
+stays false, `artifact_bytes` 0, `method="unavailable"`). Hard cap `MAX_WINDOW =
+12s` even if a caller asks for 600s. DISCOVERY/INSPECTION != ACQUISITION: nothing
+here authorizes acquiring the source.
+
+### Escalation wired (3s → 8s → 12s)
+`inspect_with_escalation()` tries **0–3s first**, extends to **8s** then **12s**
+ONLY while the decision is ambiguous, and **never continues past 12s or processes
+the full source**. Every window is logged (requested seconds, artifact bytes,
+method, fallback flag, signals found, latency ms) for honest reporting, feeding
+the efficiency metrics (preview requests, inspected seconds, bytes, escalation).
+
+### DEFECT FOUND BY THE REAL RUNTIME PROOF (and fixed)
+First real run: **every** candidate died at the market gate with `LOW_ENGAGEMENT`.
+Cause: YouTube's first-party RSS exposes **views but no like/comment counts**, and
+`engagement_rate` treated an **absent** counter as **zero** — punishing a platform
+for data it never publishes. Fixed: engagement is `None` (unknown) unless at least
+one action counter is genuinely present (a real 0 still counts as known). Without
+this, **no YouTube RSS candidate could ever reach inspection**. Regression tests
+added, including "views-only candidate is not rejected for low engagement".
+
+### Runtime proof result (SS12/SS18) — answer to the opening question
+`REAL DISCOVERY: 15` (free first-party RSS, no credential; sample metrics
+`{"content_type":"video","views":46382805}` — views only, which is what exposed the
+defect).
+
+Funnel: **raw 15 → market passed 3 → tenant PASS 0 (3 AMBIGUOUS) → inspected 3 →
+stop 0 → payoff 0 → confidence≥85 0 → FIRE 0 → carded 0.** Model cost
+**$0.000434**.
+
+**Can LOOM inspect a real candidate without downloading the whole source?** The
+mechanism is correct — each attempt was a bounded 0–3s request with **0 bytes
+transferred and no fallback** — but the inspection is **not yet effective**:
+
+> `ERROR: [youtube] <id>: Sign in to confirm you're not a bot. Use
+> --cookies-from-browser or --cookies for the authentication.`
+
+So the honest answer is **NO FIRE CANDIDATE FOUND**, and the blocker is **external:
+YouTube bot-checking yt-dlp without cookies**. The adapter correctly refused
+instead of over-downloading. Next step is authenticated bounded extraction
+(cookies), which is a credential/authorization decision, not a code change.
+
+### Tests
+`content_intelligence` **267 OK**, `discovery` **110 OK** — including all eight
+boundedness cases (3s decisive never escalates; 8s decisive never reaches 12s;
+ambiguous reaches 12s; 12s still ambiguous stops; unavailable artifact stops
+immediately; market fail and tenant fail make **zero** media requests; unavailable
+visual artifact cannot reach FIRE confidence; metadata-only ceiling preserved).
+
+### Unchanged
+vidIQ unspent (24 credits). No donor research. No Instagram/Kick. No RECUT. No
+Segment 6. Migration 038 untouched. Cloudflare + deferred-ACK acceptance remains
+passed.

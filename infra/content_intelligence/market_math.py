@@ -106,9 +106,19 @@ def outlier_multiple(views: int | None, baseline_median: float | None) -> float 
 
 def engagement_rate(likes: int | None, comments: int | None, shares: int | None,
                     views: int | None) -> float | None:
+    """Engagement rate, or None when the platform does not expose it.
+
+    ABSENT is not ZERO: a platform that publishes views but no like/comment counts
+    must not be scored as 0% engagement, or every such candidate would be rejected
+    for a fact that was never observed. At least one action counter must be
+    genuinely present (including a real 0) before a rate is claimed.
+    """
     if not views or views <= 0:
         return None
-    total = sum(int(x) for x in (likes, comments, shares) if isinstance(x, (int, float)))
+    known = [x for x in (likes, comments, shares) if isinstance(x, (int, float))]
+    if not known:
+        return None
+    total = sum(int(x) for x in known)
     return round(total / float(views), 6)
 
 
