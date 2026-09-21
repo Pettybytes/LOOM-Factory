@@ -2559,3 +2559,46 @@ Migration **038 remains preserved** (untracked, on disk, 2729 B, mode 600).
 **RECUT is on hold — not started.** **Segment 6 — not started.** No code was
 changed in this pass; this is a recon + state-correction record only, so no
 regression run was required.
+
+---
+
+## 23. Six-platform discovery acceptance — PARTIAL (2026-09-21)
+
+Apify discovery for TikTok/Instagram is now EXPLICITLY AUTHORIZED by Bryan, which
+supersedes the older blanket prohibition in `APIFY_PROVIDER_BOUNDARY.md` rule 3.
+Policy docs still need the durable reconciliation edit.
+
+### Created
+* **Production sourcing profile `dreemzy-main`** (NON-proof) for tenant `dreemzy`,
+  broad reaction/content sourcing intent, persisted to `source_briefs` via
+  `SupabaseStore.upsert_brief`.
+
+### Real candidates found (genuine autonomous discovery, no pasted URLs)
+| Platform | Candidate | market | worthiness | selection | outcome | cost |
+|---|---|---:|---:|---:|---|---:|
+| YouTube | `GaX0frxNwfQ` | 54 | 62 | 51 | standard_review | $0.000739 |
+| Reddit | `1ic7vdt` | 13 | 82 | 45 | emerging | $0.000414 |
+
+### Discord cards
+* **YouTube card POSTED to the real `#source-review`** — msg_id
+  `1551690676578681015` (real title + URL).
+* Reddit card posted but rendered with EMPTY title/URL and was **deleted**
+  (204) rather than leave noise. Root cause: the run scored via the content store
+  but never persisted the discovery records, so `loom_discovered_sources` has no
+  row for that fingerprint (the selection row does exist). **Fix:** persist
+  discovery records through the discovery store before carding.
+
+### Still blocked / not implemented
+* **TikTok** — `clockworks~tiktok-scraper` DOES expose genuine discovery inputs
+  (`searchQueries`, `hashtags`, `resultsPerPage`, `shouldDownloadVideos:false`).
+  An Apify→`DiscoveryRecord` adapter must be written before it can enter the one
+  normalized contract. Real spend applies.
+* **Instagram** — `apify~instagram-reel-scraper` has **no hashtag/search input at
+  all** (only `username` → reels, $0.0023/reel). Discovery is therefore
+  profile-driven, not keyword-driven; this limitation must be recorded, not hidden.
+* **Twitch** — **TWITCH WAITING FOR LOCAL CREDENTIALS**
+  (`LOOM_TWITCH_CLIENT_ID`, `LOOM_TWITCH_CLIENT_SECRET`).
+* **Kick** — no discovery connector; smallest viable free clip-discovery surface
+  still to be built.
+
+**Segment 5 is NOT closed.** RECUT on hold. Segment 6 locked. Migration 038 preserved.
