@@ -78,6 +78,9 @@ class Pass1CandidateResult:
     # failure is visible in the run result instead of silently swallowed.
     signal_status: str = ""
     evidence_depth: str = ""
+    market_gate_passed: bool = False
+    market_evidence: dict | None = None
+    rejection_reason: str = ""
 
 
 @dataclass
@@ -244,6 +247,20 @@ class Pass1Pipeline:
         # 2. Market shortlist threshold.
         if c.market_score < self.config.market_shortlist_threshold:
             c.status = "skipped_market"
+            return c
+
+        # 2.5 DETERMINISTIC MARKET GATE — runs BEFORE any expensive work.
+        # A market failure must not reach transcript retrieval, visual
+        # inspection, model scoring, or Source Review. The reason is always
+        # persisted so a rejection is explainable, never silent.
+        from .platform_metrics import normalize_market_evidence, platform_market_gate
+        market_ev = normalize_market_evidence(rec)
+        decision = platform_market_gate(market_ev)
+        c.market_gate_passed = decision.passed
+        c.market_evidence = decision.evidence
+        if not decision.passed:
+            c.status = "filtered_market"
+            c.rejection_reason = ",".join(decision.reasons)
             return c
 
         # 3. Transcript-only retrieval.

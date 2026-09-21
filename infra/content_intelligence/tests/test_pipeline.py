@@ -24,6 +24,9 @@ from content_intelligence.providers import _build_prompt  # noqa: E402
 from content_intelligence.provider import Evidence  # noqa: E402
 
 
+import datetime as _dt  # noqa: E402
+
+
 class _Record:
     def __init__(self, fp="fp1", platform="youtube", title="Puppy rescue", cid="aaaaaaaaaaa"):
         self.duplicate_fingerprint = fp
@@ -33,6 +36,13 @@ class _Record:
         self.tenant_id = "dreemzy"
         self.profile_id = "bryan-face-reaction"
         self.platform = platform
+        # Realistic market evidence so the deterministic market gate (which now
+        # runs before any expensive work) passes by default. Tests that need a
+        # weak candidate override these explicitly.
+        self.observed_metrics = {"viewCount": 500_000, "likeCount": 40_000,
+                                 "commentCount": 2_000, "shareCount": 1_000}
+        self.publication_timestamp = (
+            _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=24)).isoformat()
 
 
 class _Brief:
@@ -147,6 +157,42 @@ class TestPass1Pipeline(unittest.TestCase):
         self.assertEqual(result.candidates[0].status, "skipped_market")
         self.assertEqual(provider.calls, 0)
         self.assertEqual(store.assessments, {})  # nothing persisted
+
+    def test_market_gate_rejects_before_any_expensive_work(self):
+        """The acceptance requirement: an 84-view TikTok dies BEFORE Content
+        Intelligence — no transcript, no model call, no card. Reason persisted."""
+        import datetime as _dt
+        pipe, provider = self._pipeline()
+        store = _FakeStore()
+        rec = _Record(platform="tiktok", cid="tt84")
+        rec.observed_metrics = {"playCount": 84, "diggCount": 2, "commentCount": 0, "shareCount": 0}
+        rec.publication_timestamp = (_dt.datetime.now(_dt.timezone.utc)
+                                     - _dt.timedelta(hours=30)).isoformat()
+        with _patched_fetch([]):
+            result = pipe.run([rec], store)
+        c = result.candidates[0]
+        self.assertEqual(c.status, "filtered_market")
+        self.assertFalse(c.market_gate_passed)
+        self.assertIn("LOW_VIEWS", c.rejection_reason)
+        self.assertEqual(provider.calls, 0)          # no model work
+        self.assertEqual(store.assessments, {})      # nothing persisted
+        self.assertEqual(result.scored, 0)
+
+    def test_market_gate_passes_a_strong_candidate_through(self):
+        import datetime as _dt
+        pipe, provider = self._pipeline()
+        store = _FakeStore()
+        rec = _Record(platform="tiktok", cid="ttbig")
+        rec.observed_metrics = {"playCount": 900_000, "diggCount": 80_000,
+                                "commentCount": 4_000, "shareCount": 9_000}
+        rec.publication_timestamp = (_dt.datetime.now(_dt.timezone.utc)
+                                     - _dt.timedelta(hours=48)).isoformat()
+        with _patched_fetch([]):
+            result = pipe.run([rec], store)
+        c = result.candidates[0]
+        self.assertTrue(c.market_gate_passed)
+        self.assertNotEqual(c.status, "filtered_market")
+        self.assertEqual(provider.calls, 1)
 
     def test_captions_unavailable_assesses_from_metadata_only(self):
         """Platform Evidence Resolver: no transcript is NOT terminal.

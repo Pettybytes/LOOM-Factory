@@ -2951,3 +2951,60 @@ tenant fit → bounded content inspection → FIRE gate → Discord);
 baseline **storage/history**; platform-specific normalization; query/seed yield
 tracking persistence; Instagram/Kick discovery; vidIQ remains unspent
 (24 credits) pending calibration use.
+
+## 32. MARKET GATE WIRED INTO THE PRODUCTION FUNNEL (2026-09-21)
+
+The primitives now run in the REAL path, not only in tests.
+
+### Production sequence (implemented)
+DISCOVERY → PLATFORM NORMALIZATION → **MARKET GATE** → TENANT FIT →
+BOUNDED CONTENT INSPECTION → CONTENT/MOMENT INTELLIGENCE → **FIRE GATE** →
+DISCORD SOURCE REVIEW
+
+`Pass1Pipeline._process` now runs the deterministic market gate as **step 2.5,
+before any expensive work**: before transcript retrieval, before bounded media
+download, before any model call, and therefore before any Source Review card.
+
+A market failure returns immediately with:
+* `status = "filtered_market"`
+* `market_gate_passed = False`
+* `rejection_reason` = the explicit code list
+* `market_evidence` = the normalized evidence that produced the decision
+
+No transcript work, no visual inspection, no Qwen scoring, no card.
+
+### Platform normalization (`content_intelligence/platform_metrics.py`)
+One normalized `MarketEvidence` shape from raw per-platform fields, with
+platform-native evidence preserved rather than flattened:
+* **YouTube** — viewCount/likeCount/commentCount + subscribers
+* **TikTok/Apify** — playCount/diggCount/commentCount/shareCount/collectCount
+* **Instagram** — videoPlayCount/likesCount/commentsCount/sharesCount
+* **Twitch** — view_count + native category, duration, thumbnail
+* **Kick** — only genuinely available fields (missing stays missing)
+* **Reddit** — **score**, score/hour, comments/hour, subreddit, rank — and is
+  **deliberately NOT judged by TikTok/YouTube view floors**.
+
+Missing metrics are never fabricated. Unknown evidence fails closed with
+`INSUFFICIENT_MARKET_EVIDENCE`.
+
+### Rejection vocabulary (explicit, never silent)
+`LOW_VIEWS`, `LOW_LIKES`, `LOW_VELOCITY`, `LOW_ENGAGEMENT`,
+`ORDINARY_PERFORMANCE`, `STALE`, `INSUFFICIENT_MARKET_EVIDENCE`,
+`LOW_SCORE`, `LOW_SCORE_VELOCITY`, `SUBREDDIT_META`.
+
+### Tests (green)
+* **The acceptance case is proven end-to-end**: an **84-view TikTok dies at the
+  market gate** — `status=filtered_market`, `LOW_VIEWS`, **provider.calls == 0**,
+  **nothing persisted**, `scored == 0`. It cannot reach Content Intelligence.
+* A strong TikTok passes the gate and does reach exactly one model call.
+* Normalization per platform, Reddit score-gate (not view floors), Reddit
+  subreddit/meta suppression, staleness, and fail-closed missing evidence.
+* `content_intelligence` **212 OK**, `discovery` **97 OK**.
+
+### Still to wire (next)
+Tenant-fit early gate; baseline **storage/history**; seed-yield persistence;
+`MomentCandidate` assembly; bounded 0–3 s inspection feeding real hook/action/
+payoff evidence; **Evidence Confidence** with the metadata-only ceiling; the
+**FIRE gate** (Market ≥75 / Content ≥80 / Selection ≥85 / Confidence ≥85%); the
+visual Source Review card; Instagram + Kick discovery; the bounded six-platform
+runtime proof. vidIQ remains unspent at 24 credits.
