@@ -125,6 +125,17 @@ def fetch_transcript(url: str, languages: str = "en.*") -> tuple[list[dict[str, 
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+class MediaNotFetched(RuntimeError):
+    """Bounded media retrieval declined or failed, and the REASON is preserved.
+
+    `--match-filter "duration <= 600"` refusing a longer video is CORRECT
+    bounding, but returning a bare empty list made that indistinguishable from
+    "analysed successfully and found no salient peaks" — the caller recorded
+    `extracted:0` for both. Raising this keeps the cause visible while the call
+    site still treats signal extraction as non-fatal.
+    """
+
+
 def fetch_media_and_signals(url: str, max_duration: int = 600) -> list:
     """Download worst-quality media to a temp file, extract deterministic
     audio/visual candidate signals, and delete the temp media. Bounded three
@@ -137,7 +148,7 @@ def fetch_media_and_signals(url: str, max_duration: int = 600) -> list:
     _SIDECAR = {".json", ".vtt", ".part", ".ytdl", ".temp"}
     tmp = tempfile.mkdtemp(prefix="loom-pass1-media-")
     try:
-        subprocess.run(
+        proc = subprocess.run(
             ["yt-dlp", "-f", "worstvideo+worstaudio/worst", "--no-playlist", "--no-update",
              "--match-filter", f"duration <= {max_duration}",
              "-o", f"{tmp}/%(id)s.%(ext)s", url],
@@ -146,7 +157,9 @@ def fetch_media_and_signals(url: str, max_duration: int = 600) -> list:
         media = [p for p in Path(tmp).glob("*")
                  if p.is_file() and p.suffix.lower() not in _SIDECAR]
         if not media:
-            return []
+            lines = [l for l in (proc.stderr or proc.stdout or "").strip().splitlines() if l.strip()]
+            reason = lines[-1][:160] if lines else f"yt-dlp exit {proc.returncode}"
+            raise MediaNotFetched(reason)
         res = analyze_media_signals(str(media[0]), max_seconds=max_duration)
         return res.get("signal_windows", [])
     finally:
@@ -259,6 +272,11 @@ class Pass1Pipeline:
                 raw_windows = fetch_media_and_signals(rec.canonical_url)
                 signal_windows = fuse_candidates([], raw_windows)
                 c.signal_status = f"extracted:{len(signal_windows)}"
+            except MediaNotFetched as e:
+                # Bounded out or unavailable — the reason is recorded, so this is
+                # never confused with "extracted and found nothing salient".
+                signal_windows = []
+                c.signal_status = f"not_fetched:{str(e)[:80]}"
             except Exception as e:
                 # Non-fatal, and deliberately not silent: a transcript-only
                 # assessment still proceeds and the failure is recorded.

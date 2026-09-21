@@ -76,6 +76,21 @@ def _sb(url, key, method, path, body=None):
         raise RuntimeError(f"SB {e.code}: {e.read().decode()[:200]}")
 
 
+def _sb_delete(url, key, path):
+    """DELETE returning a representation, so the proof can report exactly what it
+    removed. Used only for this proof's OWN non-production fixture rows."""
+    req = urllib.request.Request(
+        f"{url}/rest/v1/{path}",
+        headers={"apikey": key, "Authorization": f"Bearer {key}", "User-Agent": "x",
+                 "Prefer": "return=representation"},
+        method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode() or "[]")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"SB {e.code}: {e.read().decode()[:200]}")
+
+
 def main() -> int:
     env = _load_env()
     token = env.get("LOOM_DISCORD_BOT_TOKEN", "")
@@ -109,6 +124,24 @@ def main() -> int:
         active_tenants=active,
     )
     fp = payload["duplicate_fingerprint"]
+
+    # [3a] Fixture hygiene. This proof reuses ONE fixed URL, so its fingerprint is
+    # stable run to run while its rows are not removed on exit. Prior runs left a
+    # dreemzy submission row (which made step 4 report `collision` instead of
+    # `assign`) and an approved_for_acquisition review row (which made step 6's
+    # reassign report `blocked: downstream work already started`). Both are the
+    # CORRECT production behaviours — the proof was simply not self-cleaning.
+    # Scoped strictly to this proof's own fingerprint; routing events are the
+    # immutable audit and are deliberately left intact.
+    q_fp = urllib.parse.quote(fp)
+    stale_subs = _sb_delete(sb_url, sb_key, f"loom_manual_submissions?duplicate_fingerprint=eq.{q_fp}")
+    stale_reviews = _sb_delete(sb_url, sb_key, f"loom_source_reviews?duplicate_fingerprint=eq.{q_fp}")
+    print(f"    [hygiene] removed prior proof rows for this fingerprint — "
+          f"submissions={len(stale_subs)} reviews={len(stale_reviews)}")
+    check("fixture is clean before the run",
+          not stale_subs or all(r.get("platform_content_id") == "dQw4w9WgXcQ" for r in stale_subs),
+          f"removed {len(stale_subs)} submissions / {len(stale_reviews)} reviews")
+
     check("unassigned status", payload["status"] == manual_intake.STATUS_AWAITING_TENANT, payload["status"])
     row, created = manual_intake.persist_submission(sb_url, sb_key, payload)
     check("persisted unassigned", created, f"tenant_id={row.get('tenant_id')!r}")

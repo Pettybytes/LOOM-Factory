@@ -2361,3 +2361,113 @@ bounded, thinking is opt-in, the prompt is unchanged, and `INVALID_RESPONSE` /
 **Deliberately unchanged**: the Gemini provider, the reranker (advisory, unwired),
 candidate generation, Editor, discovery, tenant queues, Segment 5 final
 acceptance, Segment 6.
+
+---
+
+## 21. SEGMENT 5 — CLOSED (2026-09-21)
+
+Runtime acceptance executed against the REAL store with ONE real tenant
+(`dreemzy`, plus the routing proof's own non-production `client-a` fixture for the
+isolation case) and a small bounded candidate set. No parallel workflow was
+invented; every step reuses existing architecture.
+
+### 21.1 The exact E2E path exercised
+
+`automated discovery → qualification → tenant routing → existing Source Review →
+acquisition boundary → intelligence spine → durable state/provenance`
+
+| stage | prover | result |
+|---|---|---|
+| A automated discovery | `infra/discovery/prove_supabase_acceptance.py` | **12 PASS / 0 FAIL** — 15 real candidates via first-party RSS (no credential, no scrape) |
+| B/C tenant routing + isolation | `infra/discord-review/prove_routing.py` | **16 PASS / 0 FAIL** |
+| D Source Review | `infra/discord-review/prove_source_review.py` | **8 PASS / 0 FAIL** |
+| E/F/G intelligence spine | `infra/content_intelligence/prove_pipeline.py` | **10 PASS / 0 FAIL** |
+
+### 21.2 Evidence
+
+* **A. Automated discovery** — one real RSS run produced **15** real candidates.
+* **B. Tenant routing** — unassigned → `assign` to `dreemzy`; `tenant_updated`;
+  `qualification_required` true. Cross-tenant copy produced **two distinct
+  tenant-scoped candidates** (`dreemzy=True client-a=True`).
+* **C. Tenant isolation** — per-tenant dedup returned `noop` for a same-tenant
+  copy; the destination is only accepted when it is an **active row in
+  `loom_tenants`**; `reassign` moved the candidate and `copy` minted a separate
+  row rather than leaking one candidate into two tenants.
+* **D. Source Review** — the real `/source-review` command is registered in the
+  guild, the `#source-review` channel resolves, a card was posted and cleanly
+  deleted, a decision persisted with **first-decision-wins** (`replay created=False`),
+  and **0 proof-profile rows leaked into the production queue**.
+* **E. Acquisition boundary** — discovery alone acquired nothing: the qualified
+  source stopped at the **`manual_review`** boundary (`GaX0frxNwfQ`), the
+  connector is RSS-GET-only, and both prover suites assert **no download /
+  OpenShorts / GHL / distribution imports**.
+* **F. Intelligence spine** (`prove_pipeline.py`): discovery → Topic Intelligence
+  (`market=61`) → transcript via `yt-dlp --skip-download` (**551 segments,
+  `auto_generated`**, 0 media bytes) → Content Intelligence (Gemini Flash-Lite,
+  `worthiness=62`) → Combined Source Selection (`selection=68`,
+  `standard_review`) → idempotent Supabase persistence.
+  **5B signal layer is wired and reachable** through the production pipeline
+  (`extract_multimodal_signals=True` runs `fetch_media_and_signals` →
+  `fuse_candidates`; signals reach the model **only** via the Evidence bundle).
+* **G. Idempotency** — discovery replay kept **15, not 30**; metric history
+  APPENDS; the pipeline replay produced **no duplicate rows** (`2->2` on both
+  assessments and selections).
+* **H. Incremental cost** — measured provider cost for the spine:
+  **$0.000707** and **$0.000673** across two scored runs (~7.7k tokens each);
+  discovery, routing, Source Review and signal extraction are **$0**. Total
+  incremental provider spend for this acceptance: **≈$0.0021**, far under the
+  $0.05 ceiling.
+
+### 21.3 Defects found and fixed during acceptance (ordinary, autonomous)
+
+All five were **acceptance-harness defects, not production-behaviour defects** —
+the production logic behaved correctly in every case:
+
+1. `prove_routing.py` was not self-cleaning: a prior run's `dreemzy` submission row
+   made step 4 report `collision` instead of `assign`, and a prior
+   `approved_for_acquisition` review row made step 6 report
+   `blocked: downstream work already started` instead of `reassign`. Added a
+   fixture-hygiene step scoped to the proof's OWN fixed fingerprint (the immutable
+   routing audit is deliberately left intact).
+2. `prove_source_review.py` had the same class of defect (fixed synthetic
+   fingerprint `"f"*64`), so first persist correctly returned `created=False`.
+   Added the same bounded hygiene step.
+3. `prove_pipeline.py` asserted `after == base + 1`, which cannot hold when the
+   candidate was already scored by an earlier run (it reported `2->2`, i.e. a
+   genuinely duplicate-free replay as a failure). Rewritten to measure between the
+   run and the replay, so it tests replay behaviour independently of pre-existing
+   state.
+4. **Real observability defect in `pipeline.py`:** `fetch_media_and_signals`
+   ignored yt-dlp's returncode/stderr and returned a bare `[]` when no media
+   landed, so **bounded-out media was indistinguishable from "analysed, found no
+   salient peaks"** (`extracted:0` for both). The candidate `GaX0frxNwfQ` is
+   **633 s** and yt-dlp reported *"does not pass filter (duration <= 600),
+   skipping"*. Added `MediaNotFetched`, which preserves the reason; `signal_status`
+   now reads `not_fetched:<reason>`, and `failed:<Type>`/`extracted:N` are
+   unchanged. Regression test added.
+5. One **transient** caption-fetch failure (empty result on first attempt;
+   `fetch_transcript` returns 551 segments on retry). No code change; recorded as
+   a reliability note.
+
+### 21.4 Status vocabulary (honest)
+
+* **Implemented:** discovery, qualification, routing, Source Review, acquisition
+  boundary, intelligence spine, 5B signals, 5C.1 alignment, 5C.2 refiner,
+  Qwen provider hardening.
+* **Tested:** `content_intelligence` **172 OK**, `discord-review` **232 OK**.
+* **Runtime-proven:** everything in 21.2 above, on the real store with a real
+  tenant.
+* **Deferred / not yet proven (known limitations):**
+  * TikTok / Instagram / Twitch / Kick **autonomous discovery** — not required for
+    this acceptance; Twitch EventSub live acceptance still needs credentials and a
+    public HTTPS callback.
+  * The **5C.2 boundary refiner is NOT yet wired into the production pipeline**
+    (`refine_boundaries` appears only in its own module/tests). It is proven
+    standalone, not integrated.
+  * Live media signals for long-form candidates are **bounded out at 600 s** — such
+    candidates are assessed transcript-only, and the reason is now recorded.
+  * The relative reranker remains **advisory and unwired** (ADOPT WITH LIMITATIONS).
+  * `Pass1Config.provider_name` still defaults to **gemini**; the hardened Qwen
+    route is not yet the default.
+  * Discovery was proven on a **bounded** set (15 candidates); this was an
+    architecture/runtime acceptance, not a load test.

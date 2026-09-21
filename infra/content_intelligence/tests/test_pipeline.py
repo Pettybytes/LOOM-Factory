@@ -286,6 +286,26 @@ class TestPass1Pipeline(unittest.TestCase):
         # ...and is NOT silent about it.
         self.assertEqual(result.candidates[0].signal_status, "failed:RuntimeError")
 
+    def test_bounded_media_refusal_is_recorded_with_its_reason(self):
+        """Bounding a too-long video is CORRECT, but the reason must stay
+        visible: `not_fetched:<reason>` must never be indistinguishable from
+        `extracted:0` (analysed successfully, no salient peaks)."""
+        config = Pass1Config(extract_multimodal_signals=True)
+        provider = _CapturingProvider()
+        pipe = Pass1Pipeline(config, _Brief(), _FakeTopic(score=70), provider=provider)
+        store = _FakeStore()
+        segs = [{"start_s": 0.0, "end_s": 5.0, "text": "hello"}]
+        with _patched_fetch(segs), mock.patch.object(
+                pipeline, "fetch_media_and_signals",
+                side_effect=pipeline.MediaNotFetched("does not pass filter (duration <= 600)")):
+            result = pipe.run([_Record()], store)
+        # Still non-fatal: the transcript-only assessment completes.
+        self.assertEqual(result.scored, 1)
+        self.assertEqual(provider.last_evidence.signal_windows, [])
+        status = result.candidates[0].signal_status
+        self.assertTrue(status.startswith("not_fetched:"), status)
+        self.assertIn("duration <= 600", status)
+
     def test_provider_assess_is_called_with_two_positional_arguments(self):
         """Guard: the multimodal work must not reintroduce a call-site-only
         ``provider.assess(..., signal_windows=...)`` kwarg. Every provider takes

@@ -796,3 +796,32 @@ Intelligence scoring.
 discovery, tenant queue activation, Segment 5 final acceptance, Segment 6,
 provider-default migration, additional Qwen/Gemini experiments, Editor work,
 OBS/streaming work, or any new feature.
+
+---
+
+## 20. SEGMENT 5 — CLOSED (2026-09-21)
+
+**Segment 5 is officially CLOSED.** Runtime acceptance passed on the real store
+with one real tenant (`dreemzy`) and a bounded candidate set, reusing existing
+architecture end-to-end. Full evidence: `CURRENT_STATE.md` §21.
+
+* `prove_supabase_acceptance.py` **12/0** · `prove_routing.py` **16/0** ·
+  `prove_source_review.py` **8/0** · `prove_pipeline.py` **10/0**.
+* Spine exercised: discovery → qualification → routing → Source Review →
+  acquisition boundary → transcript/evidence → 5B signals (wired) → Content
+  Intelligence → Combined Selection → idempotent persistence.
+* 15 real candidates discovered; 1 scored (`market=61`, `worthiness=62`,
+  `selection=68`, `standard_review`); replay duplicate-free (`2->2`).
+* Incremental provider cost **≈$0.0021** total.
+* Defects fixed: three state-dependent acceptance fixtures, one wrong idempotency
+  assertion, and **one real observability defect** (`fetch_media_and_signals`
+  silently returned `[]`, so bounded-out media looked like "no salient peaks" —
+  now `not_fetched:<reason>`).
+* Tests: `content_intelligence` **172 OK**, `discord-review` **232 OK**.
+* Known limitations (do not overclaim): no TikTok/IG/Twitch/Kick autonomous
+  discovery; **5C.2 refiner not yet wired into the pipeline**; live signals bounded
+  at 600 s; reranker advisory/unwired; provider default still gemini.
+
+**Next authorized workstream: Segment 6 (Lean Ranking Composer) — may now be
+unlocked.** Part B (bounded OpenShorts RECUT integration) is separate and
+documented in its own section.

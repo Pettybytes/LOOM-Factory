@@ -81,14 +81,25 @@ def main() -> int:
           f"worthiness={c.content_worthiness if c else '?'} selection={c.selection_score if c else '?'} "
           f"outcome={c.selection_outcome if c else '?'}")
 
+    # Count AFTER the first run. This proof runs against a REAL store and the
+    # candidate may already have been scored by an earlier run, so the replay
+    # check must isolate replay behaviour from rows that already existed —
+    # otherwise a genuine no-duplicate replay reads as a failure.
+    mid_assess = _count_profile("loom_content_assessments", PROOF_PROFILE)
+    mid_sel = _count_profile("loom_source_selections", PROOF_PROFILE)
+    check("first run persists at most one row per candidate",
+          mid_assess - base_assess <= (1 if result.scored else 0)
+          and mid_sel - base_sel <= (1 if result.scored else 0),
+          f"assess {base_assess}->{mid_assess}, sel {base_sel}->{mid_sel}")
+
     print("[3] idempotent replay:")
     pipe.run(records, store)
     after_assess = _count_profile("loom_content_assessments", PROOF_PROFILE)
     after_sel = _count_profile("loom_source_selections", PROOF_PROFILE)
     check("assessment replay idempotent (no dup)",
-          after_assess == base_assess + (1 if result.scored else 0), f"{base_assess}->{after_assess}")
+          after_assess == mid_assess, f"{mid_assess}->{after_assess}")
     check("selection replay idempotent (no dup)",
-          after_sel == base_sel + (1 if result.scored else 0), f"{base_sel}->{after_sel}")
+          after_sel == mid_sel, f"{mid_sel}->{after_sel}")
 
     print("[4] production-helper exclusion:")
     prod = store.production_selections()

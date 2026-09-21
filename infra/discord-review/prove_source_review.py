@@ -82,6 +82,21 @@ def _resolve_channel(guilds, token: str, name: str) -> str | None:
     return None
 
 
+def _sb_delete(url, key, path):
+    """DELETE returning a representation. Used only for this proof's OWN synthetic
+    non-production fixture row."""
+    req = urllib.request.Request(
+        f"{url}/rest/v1/{path}",
+        headers={"apikey": key, "Authorization": f"Bearer {key}", "User-Agent": "x",
+                 "Prefer": "return=representation"},
+        method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode() or "[]")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"SB {e.code}: {e.read().decode()[:200]}")
+
+
 def _synthetic_candidate() -> dict:
     return {
         "duplicate_fingerprint": PROOF_FP,
@@ -153,6 +168,14 @@ def main() -> int:
         check("card deleted (cleanup)", st_del in (200, 204))
 
     print("[4] persist non-production decision (first-decision-wins):")
+    # Fixture hygiene: this proof reuses ONE synthetic fingerprint, and prior runs
+    # left a decision row for it, so the first persist correctly returned
+    # created=False (first-decision-wins) and the assertion below failed. The
+    # proof was simply not self-cleaning. Scoped to the synthetic fingerprint
+    # "f"*64, which cannot collide with a real candidate.
+    stale = _sb_delete(sb_url, sb_key,
+                       f"loom_source_reviews?duplicate_fingerprint=eq.{PROOF_FP}")
+    print(f"    [hygiene] removed prior proof decision rows — {len(stale)}")
     payload = source_review.source_decision_payload(cand, source_review.DECISION_APPROVE, "bryan#proof")
     try:
         row, created = source_review.persist_decision(sb_url, sb_key, payload)
