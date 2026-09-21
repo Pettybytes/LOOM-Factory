@@ -19,8 +19,11 @@ Actor requires a separate evaluation + authorization before activation.
 1. Prefer a runtime-proven free/local adapter.
 2. Use a paid provider only when the local path is unsupported or crossed a
    documented failure threshold.
-3. **Never** invoke Apify during discovery, qualification, scoring, Source Review
-   rendering, Hold, Reject, or Save Link Only.
+3. **Apify MAY be invoked during DISCOVERY** for explicitly approved discovery
+   actors — see "Apify discovery policy (CURRENT)" below. Discovery and
+   acquisition are **separate authorizations**. Apify is still **never** invoked
+   during qualification, scoring, Source Review rendering, Hold, Reject, or Save
+   Link Only.
 4. A paid acquisition requires an existing authorization for the **exact**
    canonical source URL.
 5. Never silently substitute a different Actor/provider.
@@ -126,3 +129,52 @@ A `MockProvider` (no network, no token) drives every contract. Planned tests:
 Storing/using the token · any Apify Actor call or spend · activating any other
 platform's paid adapter · OpenShorts · OBS automation · GHL upload · publishing
 or distribution.
+
+---
+
+## Apify discovery policy (CURRENT — supersedes the blanket rule above)
+
+**Status: AUTHORIZED by Bryan (2026-09-21).** The previous blanket prohibition
+("Never invoke Apify during discovery…") is **superseded for approved discovery
+actors**. The original cost/safety rationale is retained in history: a paid
+provider must never be reached casually, silently substituted, or allowed to
+spend without a hard cap.
+
+### When Apify MAY be invoked during DISCOVERY
+All of the following must hold:
+
+1. the platform/actor is **explicitly approved** for discovery;
+2. discovery is **metadata-first** (no media payload);
+3. an **explicit result limit** is set;
+4. provider-side **`maxTotalChargeUsd`** is enforced where supported;
+5. **pagination is bounded**;
+6. **timeout is bounded**;
+7. **cost/provider accounting is recorded**;
+8. **budget exhaustion fails safely** (stops/queues — never keeps spending);
+9. discovery does **NOT** authorize acquisition.
+
+### Approved discovery actors
+* `clockworks~tiktok-scraper` — TikTok (searchQueries / hashtags / resultsPerPage;
+  media downloads explicitly disabled).
+* `apify~instagram-reel-scraper` — Instagram. **V1 limitation: this actor exposes
+  no hashtag/search input**; discovery is **profile-driven** (`username` → recent
+  Reels). A creator/profile seed is legitimate autonomous discovery; a
+  manually-supplied Reel URL is not. The design permits MULTIPLE profile seeds
+  and must not hardcode one creator as the permanent Instagram strategy.
+
+### Required boundary (unchanged shape)
+```
+Apify metadata discovery
+  → normalize DiscoveryRecord
+  → tenant/content-fit qualification
+  → Source Review
+  → HUMAN DECISION
+  → selective acquisition only after APPROVE
+```
+
+### Discovery must NOT automatically trigger
+media download · transcription · multimodal analysis · Content Intelligence ·
+rendering · publication.
+
+**Discovery authorization and acquisition authorization are separate
+capabilities.**

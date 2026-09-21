@@ -2622,3 +2622,51 @@ Policy docs still need the durable reconciliation edit.
 
 **Cost this pass:** $0.000739 (YouTube) + $0.000414 (Reddit) = **$0.001153**.
 **Apify spend: $0.00** — no actor was invoked. No acquisition, no media download.
+
+## 24. Discovery corrections + six-platform progress (2026-09-21)
+
+### Done
+* **Apify discovery policy reconciled** (`infra/acquisition/APIFY_PROVIDER_BOUNDARY.md`):
+  the blanket "Never invoke Apify during discovery" rule is superseded. New rule:
+  Apify MAY be used for **approved discovery actors** under 9 stated conditions
+  (approved actor, metadata-first, explicit result limit, provider-side
+  `maxTotalChargeUsd`, bounded pagination, bounded timeout, recorded cost, safe
+  budget exhaustion, discovery ≠ acquisition). Discovery still must NOT trigger
+  media download / transcription / multimodal / Content Intelligence / rendering /
+  publication. Discovery and acquisition remain separate authorizations.
+* **`dreemzy-main` brief v2** — entertainment / reaction / internet-culture
+  content universe (streamers, viral creators, pranks, fails, chaos, animals),
+  with consumer-tech/hardware/tutorial terms moved into `exclusions`. This fixes
+  the Linus problem by fixing **tenant fit**, not by blacklisting a creator.
+* **TikTok discovery WORKS.** `clockworks~tiktok-scraper` invoked with
+  `maxTotalChargeUsd=0.50` (see below), `searchQueries` + `resultsPerPage=3`,
+  all media-download flags FALSE. Run `oTd4VrLSfBZJJY7HC` SUCCEEDED,
+  **3 items**, **provider-reported cost $0.016**. Three genuine on-brief
+  candidates normalized to `DiscoveryRecord` (fingerprints via `discovery.identity`)
+  and persisted: *"Cinna & I Ragebaited Jynxzi"*, *"It's okay because it was
+  destiny 2 #stre"*, *"jynxzi gets ragebaited by his mic"*.
+
+### Two real findings
+1. **Apify charge-cap minimum.** A `maxTotalChargeUsd` of `$0.05` is REJECTED by
+   Apify: `max-total-charge-usd-below-minimum — less than the allowed minimum of
+   $0.50`. The cap is enforceable, but **$0.50 is the smallest permitted value**
+   for this actor. (Discovered before any spend: the rejection happens at
+   `start_run`.)
+2. **TikTok is BLOCKED at scoring, not at discovery.** `scored=0` with
+   `market=58` and `worthiness=None`: the candidate reaches Topic Intelligence but
+   the existing transcript step is YouTube-oriented (`yt-dlp --skip-download` on a
+   YouTube URL shape), so TikTok yields no transcript → no completed Combined
+   Source Selection → **no Source Review card**. TikTok therefore cannot satisfy
+   the current `eligible_selection` contract yet. This is an architecture gap in
+   the scoring/qualification path, NOT a discovery gap.
+
+### Still outstanding
+Instagram (profile-driven V1) not run; Kick connector not built; Twitch still
+`TWITCH WAITING FOR LOCAL CREDENTIALS`; Reddit visual preview not implemented;
+tenant-fit-before-content-worthiness ordering and audience-promise/payoff evidence
+not yet wired (only the brief's content universe was corrected); the two cards
+currently in `#source-review` are the earlier delivery-proof candidates, which
+should NOT count as final candidate-quality acceptance.
+
+**Cost:** TikTok discovery $0.016; model scoring to date $0.001153. No acquisition,
+no media download, no publication. Migration 038 preserved.
