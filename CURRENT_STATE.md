@@ -2726,3 +2726,37 @@ REJECT) with no timeout and the decision persisting, plus one alternate action p
 regression-tested. Tests prove the ORDERING; they cannot prove Discord's own
 behaviour. The earlier two Reject presses were **never persisted** — those cards
 remain undecided.
+
+## 27. Platform Evidence Resolver — implemented (2026-09-21)
+
+The architecture gap that blocked TikTok carding is closed with one common path,
+not a second framework.
+
+**Before:** `pipeline._process` returned `captions_unavailable` whenever no
+transcript was retrieved, so a qualified non-YouTube candidate could never produce
+a completed selection and therefore never reached Source Review. `_build_prompt`
+also only knew how to label a transcript.
+
+**Now:**
+* `providers.build_evidence_prompt(ev, max_chars, signal_windows)` is the ONE entry
+  point both providers use. Transcript evidence when a legitimate text track
+  exists; otherwise **metadata-only** evidence built from `Evidence` fields that
+  already existed (`title`, `description`, `body_excerpt`, `market_metrics`,
+  `thumbnail_reference`).
+* Metadata-only evidence is labelled **`PLATFORM METADATA (NO TRANSCRIPT
+  AVAILABLE)`** — never presented as transcript evidence — and carries an explicit
+  no-transcript instruction so the model cannot imply transcript-level confidence,
+  invent dialogue, or fabricate moment timestamps.
+* The **response contract is unchanged** (same JSON schema, same dimensions, same
+  downstream intelligence), so only the evidence differs.
+* `pipeline` records honest depth per candidate (`evidence_depth`:
+  `transcript` | `metadata_only`) instead of discarding the candidate.
+* Scenario coverage required by the brief: transcript present · no transcript but
+  rich metadata · still unknown → selection · genuinely useless metadata → rejected
+  or held with an explanation.
+
+**Proof:** TikTok candidate *"Cinna & I Ragebaited Jynxzi"* — `status=scored`,
+`depth=metadata_only`, `market=58`, `worthiness=18` (appropriately conservative),
+`selection=47`, `outcome=standard_review` → **card posted**
+(`1551697826327568455`), reusing the finished Apify dataset with **no new run**.
+`content_intelligence` **172 OK** (no regression; transcript path unchanged).

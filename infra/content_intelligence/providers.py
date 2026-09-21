@@ -116,7 +116,8 @@ def _parse_json(text: str):
     return json.loads(m.group(0))
 
 
-def _build_prompt(transcript_text: str, max_chars: int, signal_windows: list | None = None) -> str:
+def _build_prompt(transcript_text: str, max_chars: int, signal_windows: list | None = None,
+                  *, label: str = "TRANSCRIPT", note: str = "") -> str:
     dims = ["hook", "emotion", "conflict_tension", "surprise", "humor", "relatability",
             "stakes", "story_progression", "payoff", "narrative_completeness",
             "context_independence", "reaction_potential", "commentary_value", "originality_novelty"]
@@ -182,13 +183,60 @@ def _build_prompt(transcript_text: str, max_chars: int, signal_windows: list | N
         f"- recommended_content_format: one of {formats}.\n"
         "- recommended_angle: one-sentence angle for the creator's commentary.\n"
         "- reasons: 3-6 {code, signal, message} explaining the strongest signals.\n\n"
-        "Return ONLY valid JSON (no markdown fences) with this exact shape:\n"
+        + (note + "\n\n" if note else "")
+        + "Return ONLY valid JSON (no markdown fences) with this exact shape:\n"
         '{"scores": {"<dim>": int, ...}, "content_worthiness_score": int, '
         '"candidate_timestamps": [{"start_s": number, "end_s": number, "basis": string}], '
         '"recommended_content_format": string, "recommended_angle": string, '
         '"reasons": [{"code": string, "signal": string, "message": string}]}\n\n'
-        f"TRANSCRIPT:\n{excerpt}"
+        f"{label}:\n{excerpt}"
     )
+
+
+_NO_TRANSCRIPT_NOTE = (
+    "NO TRANSCRIPT IS AVAILABLE for this candidate. Assess ONLY from the platform "
+    "metadata below. Do not imply transcript-level confidence, do not invent "
+    "dialogue or quotes, and do not fabricate moment timestamps that the metadata "
+    "does not support. Score conservatively and reflect that confidence."
+)
+
+
+def _metadata_evidence_text(ev: Any) -> str:
+    """LEVEL 1/2 evidence text from platform metadata, for the SAME contract."""
+    metrics = getattr(ev, "market_metrics", {}) or {}
+    lines = [
+        f"platform: {getattr(ev, 'platform', '')}",
+        f"content_type: {getattr(ev, 'content_type', '')}",
+        f"title_or_caption: {getattr(ev, 'title', '')}",
+    ]
+    desc = (getattr(ev, "description", "") or "").strip()
+    if desc:
+        lines.append(f"description: {desc}")
+    body = (getattr(ev, "body_excerpt", "") or "").strip()
+    if body and body != desc:
+        lines.append(f"body_excerpt: {body}")
+    if metrics:
+        lines.append("engagement_metrics: " + json.dumps(metrics, sort_keys=True)[:600])
+    thumb = (getattr(ev, "thumbnail_reference", "") or "").strip()
+    lines.append(f"thumbnail_available: {bool(getattr(ev, 'thumbnail_available', False))}"
+                 + (f" ({thumb[:160]})" if thumb else ""))
+    return "\n".join(lines)
+
+
+def build_evidence_prompt(ev: Any, max_chars: int,
+                          signal_windows: list | None = None) -> str:
+    """Platform Evidence Resolver entry point — the ONE common prompt path.
+
+    Transcript evidence when a legitimate text track exists; otherwise
+    metadata-only evidence, clearly labelled, through the identical response
+    contract. Downstream intelligence stays common; only the evidence differs.
+    """
+    text = (getattr(ev, "transcript_text", "") or "").strip()
+    if text:
+        return _build_prompt(text, max_chars, signal_windows)
+    return _build_prompt(_metadata_evidence_text(ev), max_chars, None,
+                         label="PLATFORM METADATA (NO TRANSCRIPT AVAILABLE)",
+                         note=_NO_TRANSCRIPT_NOTE)
 
 
 class GeminiProvider:
@@ -210,8 +258,8 @@ class GeminiProvider:
     def assess(self, evidence_bundle: Any, brief: Any) -> dict[str, Any]:
         if not self.api_key:
             raise ProviderError("AUTH", "LOOM_GEMINI_KEY absent", retryable=False)
-        prompt = _build_prompt(evidence_bundle.transcript_text, self.max_transcript_chars,
-                              getattr(evidence_bundle, "signal_windows", None))
+        prompt = build_evidence_prompt(evidence_bundle, self.max_transcript_chars,
+                            getattr(evidence_bundle, "signal_windows", None))
         url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                + self.model + ":generateContent?key=" + self.api_key)
         body = {
@@ -330,8 +378,8 @@ class QwenProvider:
     def assess(self, evidence_bundle: Any, brief: Any) -> dict[str, Any]:
         if not self.api_key:
             raise ProviderError("AUTH", "LOOM_OPENROUTER_API_KEY absent", retryable=False)
-        prompt = _build_prompt(evidence_bundle.transcript_text, self.max_transcript_chars,
-                              getattr(evidence_bundle, "signal_windows", None))
+        prompt = build_evidence_prompt(evidence_bundle, self.max_transcript_chars,
+                            getattr(evidence_bundle, "signal_windows", None))
         body = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],

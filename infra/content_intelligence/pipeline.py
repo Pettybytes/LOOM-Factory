@@ -77,6 +77,7 @@ class Pass1CandidateResult:
     # "extracted:<n>" | "failed:<ExceptionType>". Recorded so a non-fatal signal
     # failure is visible in the run result instead of silently swallowed.
     signal_status: str = ""
+    evidence_depth: str = ""
 
 
 @dataclass
@@ -253,11 +254,18 @@ class Pass1Pipeline:
             c.error = f"transcript fetch: {type(e).__name__}"
             return c
         if not segments:
-            c.status = "captions_unavailable"
+            # Platform Evidence Resolver: no legitimate text track exists for this
+            # platform/source. Assess from METADATA ONLY instead of discarding a
+            # qualified candidate. Evidence depth is recorded honestly and the
+            # model is told there is no transcript; the response contract is
+            # identical, so downstream intelligence stays common.
             c.transcript_type = TRANSCRIPT_NONE
-            return c
-        c.transcript_type = ttype
-        transcript_text = " ".join(s["text"] for s in segments)
+            transcript_text = ""
+            c.evidence_depth = "metadata_only"
+        else:
+            c.transcript_type = ttype
+            transcript_text = " ".join(s["text"] for s in segments)
+            c.evidence_depth = "transcript"
 
         # 3.5 Multimodal signals (deterministic, local, opt-in, $0 model cost).
         # Signals reach the model ONLY through the Evidence bundle built below.
@@ -286,9 +294,16 @@ class Pass1Pipeline:
         # 4. Content Intelligence (model call — shortlisted only).
         try:
             provider = self.provider or build_provider(self.provider_name, _load_provider_key(self.provider_name))
-            ev = Evidence(platform=rec.platform, content_type="video", title=rec.title,
-                          transcript_text=transcript_text, transcript_availability=ttype,
-                          signal_windows=signal_windows)
+            ev = Evidence(
+                platform=rec.platform, content_type="video", title=rec.title,
+                description=getattr(rec, "body_excerpt", "") or "",
+                body_excerpt=getattr(rec, "body_excerpt", "") or "",
+                transcript_text=transcript_text, transcript_availability=ttype,
+                signal_windows=signal_windows,
+                market_metrics=getattr(rec, "observed_metrics", {}) or {},
+                thumbnail_available=bool(getattr(rec, "thumbnail_reference", "")
+                                         or getattr(rec, "thumbnail_available", False)),
+                thumbnail_reference=getattr(rec, "thumbnail_reference", "") or "")
             raw = provider.assess(ev, self.brief)
             assessment = assess_content(
                 record=rec, brief=self.brief, evidence_bundle=ev, provider=provider,
