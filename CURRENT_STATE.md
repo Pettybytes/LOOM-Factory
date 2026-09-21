@@ -2670,3 +2670,27 @@ should NOT count as final candidate-quality acceptance.
 
 **Cost:** TikTok discovery $0.016; model scoring to date $0.001153. No acquisition,
 no media download, no publication. Migration 038 preserved.
+
+## 25. OBSERVED DEFECT — Discord Source Review buttons time out (2026-09-21)
+
+**RECORDED, NOT YET REPAIRED. APPROVE / REJECT / HOLD are NOT runtime-accepted.**
+
+Bryan pressed **Reject** on **both** real Source Review cards and both displayed:
+
+> `The application didn't respond in time`
+
+Consequences to record honestly:
+* The interaction controls are **not** runtime-accepted. Rendering working does
+  **not** imply the buttons work.
+* The two decisions were **NOT successfully accepted or persisted**. The YouTube
+  and Reddit cards must **NOT** be marked rejected — no decision exists.
+* Likely areas to inspect (not root-caused yet, in no assumed order): Discord's
+  3-second interaction acknowledgement requirement, defer/update handling,
+  handler registration, callback routing, persistence latency, the exception
+  path, a stale adapter process/version, and `custom_id` resolution
+  (`parse_source_custom_id` → `persist_decision`).
+
+Required repair proof: Bryan presses one real action → Discord acknowledges with
+no timeout → the decision persists, plus at least one alternate action path
+regression-tested. APPROVE only authorizes intended downstream behaviour;
+HOLD/REJECT must never trigger acquisition. No destructive publication testing.
