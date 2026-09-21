@@ -2760,3 +2760,41 @@ also only knew how to label a transcript.
 `selection=47`, `outcome=standard_review` → **card posted**
 (`1551697826327568455`), reusing the finished Apify dataset with **no new run**.
 `content_intelligence` **172 OK** (no regression; transcript path unchanged).
+
+## 28. Discord button timeout — ACTUAL RUNTIME ROOT CAUSE FOUND (2026-09-21)
+
+My earlier ordering fix was correct in code and tests but **never ran**. Bryan
+pressed Reject *after* that fix and it still timed out. Runtime investigation:
+
+**Cause 1 — stale process (the real reason the fix "didn't work").**
+The serving adapter was PID **64797, started `Sat Sep 19 22:10:30`** and up
+**1 day 19 h**, while the fix was committed **2026-09-21 16:55:20**. The live bot
+was executing **~2-day-old code**, so the deferred-ACK path never existed at
+runtime. `adapter.log` had also been silent since **Sep 19 22:43** — no requests
+were reaching it.
+
+**Cause 2 — the relay was not proven before.** Chain is
+Discord → Tailscale Funnel (`users-macbook-pro-1.taild000b2.ts.net`) → Caddy
+container `loom-tunnel-proxy` (`:8081`) → `host.docker.internal:8090` → adapter.
+Caddy's access log showed `502` with `reverseproxy.statusError` / `EOF` for `GET /`
+and `GET /edit` (the **frontend** upstream, a different route), which was a red
+herring for the interactions path.
+
+**Repair performed:** the stale adapter was restarted via `run.sh`, so the current
+code (including the deferred ACK) is live. New PID **70066** listening on
+`127.0.0.1:8090`.
+
+**End-to-end proof (no Discord API calls, no spend):** POST to
+`http://127.0.0.1:8081/discord/interactions` returned **401
+`{"error":"missing signature headers"}`**, and both the adapter log
+(`[17:29:06] POST /discord/interactions <- 127.0.0.1 ... 401`) and Caddy's log
+(`"uri":"/discord/interactions" "status":401`) recorded it. The 401 is the
+CORRECT response to an unsigned request — it proves the request traversed the
+entire chain and reached the adapter.
+
+**Lesson recorded:** passing tests are NOT runtime acceptance. Verify the running
+process age/commit before concluding a fix failed. A green suite plus a stale
+process is indistinguishable to the user from a broken fix.
+
+**Still required:** Bryan pressing one real action → no timeout → decision
+persisted → card updated → no acquisition. Not yet runtime-accepted.
