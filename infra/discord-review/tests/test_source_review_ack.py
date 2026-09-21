@@ -1,0 +1,116 @@
+"""Regression: Source Review buttons must ACK inside Discord's 3-second deadline.
+
+Observed defect (2026-09-21): Bryan pressed Reject on both real Source Review
+cards and both answered "The application didn't respond in time". Cause: the
+source-review branch did a Supabase READ (fetch_candidate_by_fingerprint) and a
+Supabase WRITE (persist_decision) BEFORE replying, so the interaction exceeded
+Discord's 3-second deadline.
+
+Fix: acknowledge with a deferred update ({"type": 6}) first, then do the network
+work on a detached worker and PATCH the original message — the same discipline
+the proven acquisition lane already used.
+
+These tests pin the ORDERING, which is the property that was wrong, and that the
+worker still persists and updates the message.
+"""
+
+from __future__ import annotations
+
+import sys
+import unittest
+from http.server import BaseHTTPRequestHandler
+from pathlib import Path
+from unittest import mock
+
+_SUITE = Path(__file__).resolve().parents[1]
+if str(_SUITE) not in sys.path:
+    sys.path.insert(0, str(_SUITE))
+
+import adapter  # noqa: E402
+import source_review  # noqa: E402
+
+_Handler = next(
+    c for c in vars(adapter).values()
+    if isinstance(c, type) and issubclass(c, BaseHTTPRequestHandler)
+    and c is not BaseHTTPRequestHandler
+)
+
+
+def _handler():
+    """Real dispatch/worker methods, no socket (bypasses __init__)."""
+    h = _Handler.__new__(_Handler)
+    h.sent = []
+    h._send_json = lambda code, obj: h.sent.append((code, obj))
+    h._reviewer_name = lambda interaction: "bryan#test"
+    return h
+
+
+class SourceReviewAckOrderingTests(unittest.TestCase):
+    def test_source_button_acknowledges_before_any_network_work(self):
+        h = _handler()
+        cid = source_review.make_source_custom_id(source_review.DECISION_REJECT, "f" * 64)
+        interaction = {"data": {"custom_id": cid, "component_type": 2},
+                       "application_id": "123", "token": "tok"}
+        started: list[dict] = []
+
+        def forbidden_fetch(*a, **k):
+            raise AssertionError("network work ran BEFORE the ACK")
+
+        class _FakeThread:
+            def __init__(self, target=None, args=(), daemon=None, **kw):
+                started.append({"target": getattr(target, "__name__", str(target)),
+                                "args": args, "daemon": daemon})
+
+            def start(self):
+                pass
+
+        with mock.patch.object(source_review, "fetch_candidate_by_fingerprint", forbidden_fetch), \
+                mock.patch.object(adapter.threading, "Thread", _FakeThread):
+            h._handle_button(interaction)
+
+        self.assertEqual(h.sent[0], (200, {"type": 6}),
+                         "first response must be the deferred acknowledgement")
+        self.assertTrue(started, "work must be handed to a worker thread")
+        self.assertEqual(started[0]["target"], "_source_button_worker")
+        self.assertTrue(started[0]["daemon"], "worker must be a daemon thread")
+
+
+class SourceReviewWorkerTests(unittest.TestCase):
+    def test_worker_persists_decision_then_patches_original(self):
+        h = _handler()
+        patches: list[dict] = []
+        h._patch_original = lambda app, tok, **kw: patches.append(kw)
+        cand = {"duplicate_fingerprint": "f" * 64, "title": "proof"}
+        persisted: list[dict] = []
+
+        def fake_persist(url, key, payload):
+            persisted.append(payload)
+            return {"decision": payload["decision"]}, True
+
+        with mock.patch.object(source_review, "fetch_candidate_by_fingerprint",
+                               lambda *a, **k: cand), \
+                mock.patch.object(source_review, "source_decision_payload",
+                                  lambda c, d, r: {"decision": d, "reviewer": r}), \
+                mock.patch.object(source_review, "persist_decision", fake_persist), \
+                mock.patch.object(source_review, "decided_embed",
+                                  lambda d, r, c: {"title": "decided"}):
+            h._source_button_worker({"application_id": "1", "token": "t"},
+                                    {"fingerprint": "f" * 64, "decision": "reject"})
+
+        self.assertEqual(persisted and persisted[0]["decision"], "reject")
+        self.assertTrue(patches, "the original message must be updated")
+        self.assertIn("embed", patches[0])
+
+    def test_worker_never_raises_and_reports_failure(self):
+        h = _handler()
+        patches: list[dict] = []
+        h._patch_original = lambda app, tok, **kw: patches.append(kw)
+        with mock.patch.object(source_review, "fetch_candidate_by_fingerprint",
+                               side_effect=RuntimeError("supabase down")):
+            h._source_button_worker({"application_id": "1", "token": "t"},
+                                    {"fingerprint": "f" * 64, "decision": "hold"})
+        self.assertTrue(patches and "content" in patches[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

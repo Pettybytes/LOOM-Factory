@@ -2694,3 +2694,35 @@ Required repair proof: Bryan presses one real action → Discord acknowledges wi
 no timeout → the decision persists, plus at least one alternate action path
 regression-tested. APPROVE only authorizes intended downstream behaviour;
 HOLD/REJECT must never trigger acquisition. No destructive publication testing.
+
+## 26. Source Review button timeout — REPAIRED (tests green; live click still required)
+
+**Root cause (identified by comparing with the proven acquisition lane):** the
+source-review button branch performed a Supabase **READ**
+(`fetch_candidate_by_fingerprint`) and a Supabase **WRITE** (`persist_decision`)
+**before replying**, so the interaction exceeded Discord's **3-second** deadline
+and answered *"The application didn't respond in time"*. The acquisition lane
+already did this correctly and carried an explicit warning comment about it.
+
+**Fix (same discipline as the proven lane):**
+1. acknowledge immediately with a deferred update `{"type": 6}` — no store read,
+   no Supabase, no network work before the acknowledgement;
+2. run the lookup + persist on a detached daemon worker
+   (`_source_button_worker`) that receives DETACHED identity only (no handler, no
+   socket, no response callback);
+3. update the original message afterwards with an independent outbound
+   `PATCH …/webhooks/{app}/{token}/messages/@original` (`_patch_original`),
+   clearing the components and applying the decided embed.
+
+**Regression coverage** (`tests/test_source_review_ack.py`, 3 tests): the ACK must
+be the first response *and* no network work may run before it (a network call
+before the ACK fails the test); the worker persists then patches; the worker never
+raises and reports failure.
+
+`infra/discord-review`: **235 OK**.
+
+**Still required for acceptance:** Bryan pressing one real action (APPROVE / HOLD /
+REJECT) with no timeout and the decision persisting, plus one alternate action path
+regression-tested. Tests prove the ORDERING; they cannot prove Discord's own
+behaviour. The earlier two Reject presses were **never persisted** — those cards
+remain undecided.

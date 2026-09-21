@@ -2507,6 +2507,55 @@ class Handler(BaseHTTPRequestHandler):
         embed = source_review.decided_embed(decision, reviewer, created)
         self._send_json(200, {"type": 7, "data": {"embeds": [embed], "components": []}})
 
+    def _source_button_worker(self, interaction, src):
+        """Post-ACK work for a Source Review decision. Never raises.
+
+        Receives DETACHED identity only: no handler, no socket, no response
+        callback. Every later Discord call is an independent outbound one.
+        """
+        application_id = str(interaction.get("application_id") or "")
+        interaction_token = str(interaction.get("token") or "")
+        fp = src["fingerprint"]
+        decision = src["decision"]
+        reviewer = self._reviewer_name(interaction)
+        try:
+            candidate = source_review.fetch_candidate_by_fingerprint(
+                SUPABASE_URL, SUPABASE_KEY, fp)
+            if not candidate:
+                self._patch_original(application_id, interaction_token,
+                                     content="Unknown candidate.")
+                return
+            payload = source_review.source_decision_payload(candidate, decision, reviewer)
+            row, created = source_review.persist_decision(
+                SUPABASE_URL, SUPABASE_KEY, payload)
+            embed = source_review.decided_embed(decision, reviewer, created)
+            self._patch_original(application_id, interaction_token, embed=embed)
+        except Exception as e:  # noqa: BLE001
+            print(f"[source-review] decision failed: {type(e).__name__}: {e}", flush=True)
+            try:
+                self._patch_original(application_id, interaction_token,
+                                     content="Failed to record decision.")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _patch_original(self, application_id, interaction_token, *,
+                        content=None, embed=None):
+        """PATCH the deferred interaction's original message. Outbound only —
+        the interaction token (NOT the bot token) authorizes this endpoint."""
+        data = {"components": []}
+        if embed is not None:
+            data["embeds"] = [embed]
+        if content is not None:
+            data["content"] = content
+        req = Request(
+            f"{DISCORD_API}/webhooks/{application_id}/{interaction_token}/messages/@original",
+            data=json.dumps(data).encode(),
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "LOOMReviewAdapter/1.0 (DiscordBot)"},
+            method="PATCH")
+        with urlopen(req, timeout=15) as resp:
+            resp.read()
+
     def _handle_button(self, interaction):
         data = interaction.get("data", {})
         custom_id = data.get("custom_id", "")
@@ -2521,7 +2570,14 @@ class Handler(BaseHTTPRequestHandler):
         # Source Review Inbox buttons use a distinct compact encoding.
         src = source_review.parse_source_custom_id(custom_id)
         if src is not None:
-            self._handle_source_button(interaction, src)
+            # ACK inside Discord's 3-second deadline FIRST. This branch previously
+            # did a Supabase read + write BEFORE responding, which is why real
+            # presses answered "The application didn't respond in time". Same
+            # discipline as the proven acquisition lane: no store read, no
+            # Supabase, no network work before the acknowledgement.
+            self._send_json(200, {"type": 6})
+            threading.Thread(target=self._source_button_worker,
+                             args=(interaction, dict(src)), daemon=True).start()
             return
 
         # Approved acquisition lane — distinct AQ: prefix (Instagram, gate 1/2).
