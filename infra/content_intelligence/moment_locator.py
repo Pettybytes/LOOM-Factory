@@ -24,10 +24,21 @@ from typing import Any, Iterable, Sequence
 
 SHORT_FORM_MAX_SECONDS = 180.0        # <= 3 min: the source IS the moment
 DEFAULT_MAX_ZONES = 25
-DEFAULT_PROMOTE = 8
 
 MODE_SOURCE_AS_MOMENT = "source_as_moment"
 MODE_LONG_FORM = "long_form_container"
+
+# Deterministic locator weights. These RANK candidates; they are NOT claims of
+# statistical virality. Configurable, documented, never presented as probabilities.
+SIGNAL_BASIS_WEIGHTS: dict[str, float] = {
+    "audio_spike": 0.85, "motion": 0.6, "scene_change": 0.5, "novelty": 0.65,
+    "audio_energy": 0.45, "speech_onset": 0.4, "cut_density": 0.4,
+}
+# A single isolated low-weight blip must not become a candidate (comparator lesson:
+# "a single spike is not a moment"). Several aligned signals should.
+MIN_PROMOTE_CONFIDENCE = 0.45
+DEFAULT_PROMOTE = 3
+CONTINUITY_GAP_SECONDS = 12.0
 
 CUE_GROUPS: dict[str, tuple[str, ...]] = {
     "hook": ("oh my god", "what the", "no way", "look at this", "watch this",
@@ -118,6 +129,7 @@ def _cluster(scored: Sequence[tuple[int, float, tuple[str, ...]]],
 def locate_moments(segments: Iterable[dict[str, Any]], *, source_id: str = "",
                    source_url: str = "", source_duration: float | None = None,
                    model_timestamps: Iterable[dict[str, Any]] | None = None,
+                   signal_peaks: Iterable[dict[str, Any]] | None = None,
                    max_zones: int = DEFAULT_MAX_ZONES) -> list[MomentZone]:
     """Cheaply locate candidate moments across the whole source.
 
@@ -180,12 +192,102 @@ def locate_moments(segments: Iterable[dict[str, Any]], *, source_id: str = "",
             locator_evidence=("model_timestamp",), provenance=("existing_assessment",),
             locator_confidence=0.6, source_duration=source_duration, source_url=source_url))
 
+    # Deterministic signal peaks join the same zone system, so a NONVERBAL event
+    # (weak transcript, strong action) can still be promoted.
+    zones.extend(_peak_zones(signal_peaks or [], source_id=source_id, source_url=source_url,
+                             source_duration=source_duration))
+    zones = _merge_aligned(zones)
     zones.sort(key=lambda z: (-z.locator_confidence, z.event_timestamp))
     for i, z in enumerate(zones[:max_zones], start=1):
         z.rank = i
     return zones[:max_zones]
 
 
-def promote_zones(zones: Sequence[MomentZone], *, keep: int = DEFAULT_PROMOTE) -> list[MomentZone]:
-    """Rank locally and promote only the best zones to expensive inspection."""
-    return list(zones[:keep])
+def _peak_zones(peaks: Iterable[dict[str, Any]], *, source_id: str, source_url: str,
+                source_duration: float | None, gap_s: float = CONTINUITY_GAP_SECONDS) -> list[MomentZone]:
+    """Zones from deterministic signal peaks, with CONTINUITY clustering.
+
+    Nearby peaks (movement begins -> event -> reaction -> resolution) are treated
+    as ONE coherent moment rather than several unrelated candidates.
+    """
+    rows: list[tuple[float, str]] = []
+    for pk in (peaks or []):
+        if not isinstance(pk, dict):
+            continue
+        st = pk.get("start_s")
+        basis = pk.get("basis")
+        if st is None or not basis:
+            continue
+        rows.append((float(st), str(basis)))
+    rows.sort(key=lambda r: r[0])
+    groups: list[list[tuple[float, str]]] = []
+    for st, basis in rows:
+        if groups and st - groups[-1][-1][0] <= gap_s:
+            groups[-1].append((st, basis))
+        else:
+            groups.append([(st, basis)])
+
+    zones: list[MomentZone] = []
+    for grp in groups:
+        bases: list[str] = []
+        for _st, b in grp:
+            if b not in bases:
+                bases.append(b)
+        density = len(grp)                                   # action density
+        alignment = len(bases)                               # distinct signal kinds
+        weight = max(SIGNAL_BASIS_WEIGHTS.get(b, 0.3) for b in bases)
+        # ALIGNMENT and DENSITY both raise confidence; one isolated weak blip does not.
+        conf = min(1.0, weight * 0.5 + min(alignment, 3) / 3.0 * 0.3 + min(density, 4) / 4.0 * 0.2)
+        start = min(st for st, _ in grp)
+        end = max(st for st, _ in grp) + 4.0
+        zones.append(MomentZone(
+            source_id=source_id, event_timestamp=start, provisional_start=start,
+            provisional_end=end,
+            locator_reason=f"signal_alignment:{'+'.join(bases[:3])}",
+            locator_evidence=tuple(f"signal:{b}" for b in bases),
+            provenance=("deterministic_signals",),
+            locator_confidence=round(conf, 4), source_duration=source_duration,
+            source_url=source_url))
+    return zones
+
+
+def _merge_aligned(zones: list[MomentZone], *,
+                   gap_s: float = CONTINUITY_GAP_SECONDS) -> list[MomentZone]:
+    """Continuity: a transcript zone and a signal zone describing the same event
+    become ONE zone, with the union of their evidence (alignment raises quality)."""
+    zones = sorted(zones, key=lambda z: z.event_timestamp)
+    merged: list[MomentZone] = []
+    for z in zones:
+        if merged and z.event_timestamp - merged[-1].provisional_end <= gap_s:
+            prev = merged[-1]
+            bases = list(prev.locator_evidence)
+            for e in z.locator_evidence:
+                if e not in bases:
+                    bases.append(e)
+            kinds = len({b.split(":", 1)[-1] for b in bases})
+            conf = min(1.0, max(prev.locator_confidence, z.locator_confidence)
+                       + 0.1 * max(0, kinds - 1))
+            merged[-1] = MomentZone(
+                source_id=prev.source_id, event_timestamp=min(prev.event_timestamp, z.event_timestamp),
+                provisional_start=min(prev.provisional_start, z.provisional_start),
+                provisional_end=max(prev.provisional_end, z.provisional_end),
+                locator_reason=f"aligned:{'+'.join(sorted({b.split(':', 1)[-1] for b in bases})[:3])}",
+                locator_evidence=tuple(bases),
+                provenance=tuple(dict.fromkeys(prev.provenance + z.provenance)),
+                locator_confidence=round(conf, 4),
+                transcript_excerpt=prev.transcript_excerpt or z.transcript_excerpt,
+                source_duration=prev.source_duration, source_url=prev.source_url)
+        else:
+            merged.append(z)
+    return merged
+
+
+def promote_zones(zones: Sequence[MomentZone], *, keep: int = DEFAULT_PROMOTE,
+                  min_confidence: float = MIN_PROMOTE_CONFIDENCE) -> list[MomentZone]:
+    """Rank locally and promote only zones that clear minimum confidence.
+
+    A zone built from one isolated low-weight blip (no alignment, no density, no
+    transcript cue) does NOT clear the bar, so it never consumes inspection budget.
+    """
+    eligible = [z for z in zones if z.locator_confidence >= min_confidence]
+    return list(eligible[:keep])

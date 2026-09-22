@@ -271,7 +271,7 @@ class Pass1Pipeline:
         return result
 
     def _apply_fire(self, c: Any, rec: Any, *, segments: Any = None,
-                    model_timestamps: Any = None) -> None:
+                    model_timestamps: Any = None, signal_windows: Any = None) -> None:
         """Moment location -> clip start -> bounded inspection -> confidence -> FIRE.
 
         Long-form sources are SCANNED for candidate moments and inspected around
@@ -306,7 +306,8 @@ class Pass1Pipeline:
         mode = source_mode(duration)
         zones = locate_moments(segments or [], source_id=str(getattr(rec, "platform_content_id", "")),
                                source_url=str(getattr(rec, "canonical_url", "")),
-                               source_duration=duration, model_timestamps=model_timestamps)
+                               source_duration=duration, model_timestamps=model_timestamps,
+                               signal_peaks=signal_windows)
         promoted = promote_zones(zones, keep=1)
         zone = promoted[0] if promoted else None
         plan = None
@@ -538,7 +539,8 @@ class Pass1Pipeline:
         # and the candidate is never carded.
         if self.config.enable_fire_gate:
             self._apply_fire(c, rec, segments=segments,
-                            model_timestamps=getattr(assessment, "candidate_timestamps", None))
+                            model_timestamps=getattr(assessment, "candidate_timestamps", None),
+                            signal_windows=signal_windows)
         return c
 
 

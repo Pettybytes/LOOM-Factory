@@ -3355,3 +3355,56 @@ Review card, long-form efficiency observability. **Segment 5 remains OPEN.**
 
 vidIQ unspent (24 credits). RECUT on hold. Segment 6 locked. Migration 038
 untouched.
+
+## 39. SS15 PRODUCTION-WIRING PROOFS + MULTISIGNAL LOCATOR (2026-09-21)
+
+Commit `1e3875f` verified the locator was wired; this pass PROVED the wired path
+behaves, and merged existing deterministic signals into the same zone system.
+
+### SS15 proofs (7 tests, green)
+* **Long-form inspects the MOMENT, never source start** — a 40-minute source where
+  the locator selects a zone: every bounded request used the CHOSEN clip start
+  (`set(starts) == {plan.recommended_clip_start}`) and `0.0` never appears.
+* **Multiple moments stay independent** — zones far apart in one source are not
+  collapsed.
+* **Nonverbal moment is promoted** — empty transcript + aligned
+  motion/audio_spike/scene_change => confidence 0.875 => promoted.
+* **Weak zone is NOT promoted** — one isolated low-weight blip with no alignment,
+  density or transcript cue => confidence 0.35 < 0.45 => no inspection budget spent.
+* **Continuity** — adjacent signals (motion -> audio_spike -> motion) cluster into
+  ONE coherent zone.
+* **Alignment outranks a single weak spike.**
+* **`source_as_moment` bypasses the locator** entirely.
+
+### Multisignal merge (SS4/SS5)
+`SIGNAL_BASIS_WEIGHTS` / `MIN_PROMOTE_CONFIDENCE` / `CONTINUITY_GAP_SECONDS` are
+**configurable, documented, and RANKING-ONLY** — explicitly NOT presented as
+statistical virality probabilities (SS15). Peak zones preserve WHY they exist
+(`signal:<basis>` evidence), action **density** distinguishes a sustained event
+from an isolated blip, and `_merge_aligned` unites transcript and signal evidence
+describing the SAME event (alignment raises confidence). `_apply_fire` forwards the
+existing `signal_windows` into the locator — **no new model stage**.
+
+### Honest notes
+* Two test failures were **my fixtures, not the code**: a TikTok fixture used a
+  YouTube metric key (`likeCount`), and a long-form assertion over-specified which
+  zone should win. Both corrected.
+* **A genuine ranking observation, deliberately NOT tuned away:** the 05:18 talk
+  zone and the 18:42 physical-event zone tie at 0.645 confidence, because
+  cue-count scoring does not yet weight evidence KIND (event/action/emotional vs
+  talk-only escalation/chaos). That is the moment-type work below, and inventing
+  weights to make one fixture win would be exactly the over-fitting SS15 warns
+  against.
+
+### NOT done (Segment 5 remains OPEN)
+Moment-type classification (SS7) · type-aware start boundaries (SS8) · natural-end
+optimiser (SS9) · **completeness hard gate** (SS10-11, comparator-backed: the
+largest remaining quality win) · within-source relative ranking (SS12) ·
+dedup/diversity pass (SS13) · curated scarce review queue (SS14) · real
+authenticated long-form YouTube run (SS16) · **FIRE-APPROVE -> n8n/OpenShorts bridge
+verification** (SS18, mandatory before closure) · Instagram (SS19.1) · Kick
+(SS19.2) · Reddit/TikTok/Twitch FIRE paths (SS19.3-5) · six-platform acceptance
+(SS20) · enriched card (SS17) · efficiency observability · feedback lineage (SS21).
+
+vidIQ unspent (24 credits). No donor research. RECUT on hold. Segment 6 locked.
+Migration 038 untouched.
