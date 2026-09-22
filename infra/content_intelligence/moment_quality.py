@@ -148,7 +148,15 @@ class BoundaryPlan:
     end_reason: str
     moment_type: str = T_UNKNOWN
     start_alternatives: tuple[StartAlternative, ...] = ()
+    natural_event_onset: float | None = None
+    start_anchors: tuple[dict[str, Any], ...] = ()
+    search_telemetry: dict[str, Any] = field(default_factory=dict)
     provenance: tuple[str, ...] = ()
+
+    @property
+    def lead_seconds(self) -> float:
+        """DERIVED telemetry. Never an input, never a constraint."""
+        return round(max(0.0, self.event_timestamp - self.recommended_clip_start), 3)
 
     @property
     def duration(self) -> float:
@@ -162,6 +170,10 @@ class BoundaryPlan:
                 "start_reason": self.start_reason, "end_reason": self.end_reason,
                 "duration": round(self.recommended_clip_end - self.recommended_clip_start, 3),
                 "moment_type": self.moment_type,
+                "natural_event_onset": self.natural_event_onset,
+                "candidate_start_anchors": [dict(a) for a in self.start_anchors],
+                "lead_seconds": self.lead_seconds,
+                "search_telemetry": dict(self.search_telemetry),
                 "start_alternatives": [
                     {"start": a.start, "rationale": a.rationale,
                      "hook_strength": a.hook_strength, "hook_evidence": list(a.hook_evidence)}
@@ -199,35 +211,23 @@ def _hook_at(segments: Sequence[dict[str, Any]], start: float, window: float = 3
     return round(strength, 4), tuple(ev)
 
 
-def type_aware_start(moment_type: str, event_timestamp: float,
-                     segments: Sequence[dict[str, Any]], *,
-                     duration_hint: float | None = None) -> tuple[float, str, tuple[StartAlternative, ...]]:
-    """Choose the start according to the moment TYPE, not one rule for all."""
-    event = float(event_timestamp)
-    if moment_type in VISUAL_FIRST_TYPES:
-        # The visible event may precede the spoken reaction: search far enough back
-        # to capture anticipation or initiating movement.
-        leads = (8.0, 6.0, 5.0, 3.0, 1.0, 0.0)
-    elif moment_type == T_STORY:
-        leads = (12.0, 8.0, 5.0, 0.0)          # setup must survive
-    elif moment_type == T_REACTION:
-        leads = (5.0, 3.0, 1.0, 0.0)           # include the trigger
-    elif moment_type in SPEECH_TYPES:
-        leads = (3.0, 1.0, 0.0)                # snap to thought boundary, minimal lead
-    else:
-        leads = (5.0, 3.0, 1.0, 0.0)
+def type_aware_start(moment_type: str, event_timestamp: float, segments: Sequence[dict[str, Any]], *,
+                     signals: Iterable[dict[str, Any]] = (),
+                     duration_hint: float | None = None,
+                     ) -> tuple[float, str, tuple[StartAlternative, ...]]:
+    """DELEGATES start discovery to ``start_anchors`` (no fixed lead ladder)."""
+    from .start_anchors import recommend_start
+    sel = recommend_start(event_timestamp, segments, signals=signals, moment_type=moment_type)
+    _LAST_START_TELEMETRY.clear()
+    _LAST_START_TELEMETRY.update(sel.telemetry)
+    alts = tuple(StartAlternative(float(a.get("start")), str(a.get("kind") or ""),
+                                  float(a.get("score") or 0.0),
+                                  tuple(a.get("hook_evidence") or ()))
+                 for a in sel.alternatives)
+    return sel.start, sel.reason, alts
 
-    alts: list[StartAlternative] = []
-    for lead in leads:
-        start = max(0.0, event - lead)
-        strength, ev = _hook_at(segments, start)
-        if moment_type in SPEECH_TYPES and "dead_opening" in ev:
-            strength = max(0.0, strength - 0.2)
-        alts.append(StartAlternative(round(start, 3),
-                                     f"{moment_type}:lead_{int(lead)}s",
-                                     strength, ev))
-    best = max(alts, key=lambda a: (a.hook_strength, -a.start))
-    return best.start, best.rationale, tuple(alts)
+
+_LAST_START_TELEMETRY: dict[str, Any] = {}
 
 
 def natural_end(moment_type: str, event_timestamp: float, clip_start: float,
@@ -274,12 +274,21 @@ def build_boundary_plan(moment_type: str, event_timestamp: float,
                         segments: Sequence[dict[str, Any]], *, signals: Iterable[dict[str, Any]] = (),
                         duration_hint: float | None = None) -> BoundaryPlan:
     start, start_reason, alts = type_aware_start(moment_type, event_timestamp, segments,
+                                                 signals=signals,
                                                  duration_hint=duration_hint)
     end, end_reason = natural_end(moment_type, event_timestamp, start, segments,
                                   signals=signals, duration_hint=duration_hint)
+    telemetry = dict(_LAST_START_TELEMETRY)
     return BoundaryPlan(float(event_timestamp), start, end, start_reason, end_reason,
                         moment_type=moment_type, start_alternatives=alts,
-                        provenance=("type_aware_start", "natural_end"))
+                        natural_event_onset=telemetry.get("earliest_anchor_s"),
+                        start_anchors=tuple({"timestamp": a.start,
+                                             "kind": a.rationale,
+                                             "score": a.hook_strength,
+                                             "evidence": list(a.hook_evidence)}
+                                            for a in alts),
+                        search_telemetry=telemetry,
+                        provenance=("evidence_anchors", "natural_end"))
 
 
 # ------------------------------------------------------------ completeness
@@ -390,6 +399,10 @@ def repair_boundaries(plan: BoundaryPlan, gate: CompletenessResult,
             end_reason=current.end_reason + f"+repair_end_{i}",
             moment_type=current.moment_type,
             start_alternatives=current.start_alternatives,
+            natural_event_onset=current.natural_event_onset,
+            start_anchors=current.start_anchors,
+            search_telemetry=dict(current.search_telemetry,
+                                  repaired=f"extend_end_{i}"),
             provenance=tuple(current.provenance) + (f"bounded_repair_end_+4s_try{i}",))
         g = completeness_gate(cand, segments, signals=signals)
         attempts.append({"attempt": i, "action": "extend_end", "extended_s": 4.0,

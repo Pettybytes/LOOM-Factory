@@ -68,11 +68,14 @@ class TypeAwareStartTests(unittest.TestCase):
         self.assertGreaterEqual(len(alts), 4)
         self.assertTrue(all(isinstance(a.hook_strength, float) for a in alts))
 
-    def test_speech_start_uses_minimal_lead_not_five_seconds_of_dead_air(self):
-        start, _r, alts = type_aware_start(T_HOT_TAKE, 20.0, self.SEGS)
-        leads = {round(20.0 - a.start, 1) for a in alts}
-        self.assertNotIn(8.0, leads)
-        self.assertLessEqual(max(leads), 3.0)
+    def test_speech_start_is_evidence_derived_not_a_fixed_lead(self):
+        """UPDATED: the previous assertion encoded the removed fixed-lead constraint.
+        A start must now be an evidence-derived boundary, with no lead maximum."""
+        start, reason, alts = type_aware_start(T_HOT_TAKE, 20.0, self.SEGS)
+        self.assertTrue(alts)
+        self.assertIn(start, {a.start for a in alts})
+        self.assertTrue(all(a.rationale for a in alts))
+        self.assertFalse(any(a.rationale.startswith("lead_") for a in alts))
 
     def test_story_start_preserves_setup(self):
         _s, _r, alts = type_aware_start(T_STORY, 20.0, self.SEGS)

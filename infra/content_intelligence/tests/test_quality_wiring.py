@@ -44,9 +44,10 @@ def _pipe():
 # A 40-min source; the moment is a SPOKEN hot take at 18:40 (1120s).
 HOT_TAKE = [
     cap(0, "welcome back to the stream"),
-    cap(1116, "honestly i think nobody talks about this,"),
-    cap(1120, "the truth is the whole thing was wrong.", 6.0),
-    cap(1126, "and here is why it matters."),
+    cap(1116, "so i think he was wrong about all of it,"),
+    cap(1120, "then he suddenly grabbed the mic,", 4.0),
+    cap(1124, "nobody talks about this honestly.", 4.0),
+    cap(1128, "he completely lost it and everyone was shocked.", 4.0),
 ]
 
 
@@ -81,11 +82,15 @@ class QualityWiringTests(unittest.TestCase):
         self.assertNotIn(0.0, starts)
         self.assertEqual(set(starts), {plan["recommended_clip_start"]})
 
-    def test_speech_type_uses_a_minimal_lead_not_five_seconds(self):
+    def test_speech_start_is_evidence_derived_with_derived_lead(self):
+        """UPDATED: no lead maximum exists; the start is an evidence boundary."""
         c, _r = self._run(HOT_TAKE)
         plan = c.boundary_plan
-        lead = plan["event_timestamp"] - plan["recommended_clip_start"]
-        self.assertLessEqual(lead, 3.0)
+        self.assertTrue(plan["candidate_start_anchors"])
+        self.assertIn("lead_seconds", plan)
+        self.assertAlmostEqual(plan["lead_seconds"],
+                               plan["event_timestamp"] - plan["recommended_clip_start"],
+                               places=3)
 
     def test_pipeline_records_the_completeness_verdict(self):
         c, _r = self._run(HOT_TAKE)
