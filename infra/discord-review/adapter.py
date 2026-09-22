@@ -2098,6 +2098,24 @@ def acquisition_health():
         return {"route": "AQ", "route_active": False, "error": type(e).__name__}
 
 
+def source_review_health():
+    """Readiness block for the Source Review repairs (never exposes secrets).
+
+    Reports the approve→acquisition handoff and whether the authoritative
+    candidate table (migration 040) is live in the DEPLOYED schema — probing
+    the running system, never the repo file.
+    """
+    block = {"route": "SR", "route_active": True, "approve_handoff": True,
+             "duplicate_click_stored_decision": True, "open_source_button": True}
+    try:
+        block["candidates_table"] = bool(
+            source_review._candidates_table_available(SUPABASE_URL, SUPABASE_KEY))
+    except Exception as e:  # noqa: BLE001
+        block["candidates_table"] = False
+        block["probe_error"] = type(e).__name__
+    return block
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "LOOMReviewAdapter/1.0"
 
@@ -2148,7 +2166,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._log_request()
         if self.path == "/health":
-            self._send_json(200, {"status": "ok", "acquisition": acquisition_health()})
+            self._send_json(200, {"status": "ok",
+                                  "acquisition": acquisition_health(),
+                                  "source_review": source_review_health()})
             return
         # DELIBERATELY PUBLIC, non-sensitive: /api/config reports server
         # FEATURE FLAGS (billing on/off, managed mode, job retention, local-LLM
