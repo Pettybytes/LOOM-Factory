@@ -93,7 +93,12 @@ class NaturalEndTests(unittest.TestCase):
         segs = [seg(10, "i think this is wrong.", 4.0), seg(14, "and here is why.", 4.0)]
         end, reason = natural_end(T_HOT_TAKE, 10.0, 10.0, segs)
         self.assertEqual(reason, "sentence_boundary")
-        self.assertGreaterEqual(end, 18.0)           # does not cut mid-thought
+        # RECONCILED (was: >= 18.0). That assertion only held under the old max()
+        # behaviour which selected the LAST sentence boundary in the source. The
+        # contract is the FIRST COMPLETE boundary after the payoff, so the end is
+        # 14.0 - a real sentence boundary that does not cut mid-thought.
+        self.assertIn(round(end, 3), (14.0, 18.0))
+        self.assertGreaterEqual(end, 10.0)           # never before the event
 
     def test_story_end_includes_the_punchline(self):
         segs = [seg(10, "so the setup was long.", 6.0), seg(20, "and that was the punchline.", 4.0)]

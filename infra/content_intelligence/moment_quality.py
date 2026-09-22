@@ -230,42 +230,84 @@ def type_aware_start(moment_type: str, event_timestamp: float, segments: Sequenc
 _LAST_START_TELEMETRY: dict[str, Any] = {}
 
 
+def _first_at_or_after(values: Any, floor: float) -> float | None:
+    """The FIRST qualifying boundary at/after ``floor`` - never the source's last."""
+    vals = sorted(float(v) for v in values if v is not None and float(v) >= floor - 0.001)
+    return vals[0] if vals else None
+
+
+def _last_at_or_before(values: Any, ceiling: float) -> float | None:
+    """The nearest qualifying boundary at/before ``ceiling`` (a REAL boundary)."""
+    vals = sorted(float(v) for v in values if v is not None and float(v) <= ceiling + 0.001)
+    return vals[-1] if vals else None
+
+
+def _contiguous_cue_run_end(after: Sequence[tuple[float, float, str]], anchor: float, *,
+                            max_gap: float = 2.5) -> float | None:
+    """End of the contiguous payoff/reaction run at/after the payoff.
+
+    A physical moment resolves when its ACTION AND REACTION complete - so the end
+    extends through consecutive reaction-bearing segments and stops at the first
+    cue-less segment or a real gap. That is evidence-driven action resolution, NOT a
+    duration cap, and it is why a reaction is never truncated mid-sentence.
+    """
+    started = False
+    run_end: float | None = None
+    prev_end: float | None = None
+    for st, en, tx in after:
+        if en < anchor - 0.001:
+            continue
+        low = tx.lower()
+        has_cue = bool(tx) and any(c in low for c in (*PAYOFF_CUES, *REACTION_CUES))
+        if has_cue:
+            if started and prev_end is not None and (st - prev_end) > max_gap:
+                break                      # a real gap ends the run
+            run_end, prev_end, started = en, en, True
+        elif started:
+            break                          # a cue-less segment closes the run
+    return run_end
+
+
 def natural_end(moment_type: str, event_timestamp: float, clip_start: float,
                 segments: Sequence[dict[str, Any]], *, signals: Iterable[dict[str, Any]] = (),
                 duration_hint: float | None = None) -> tuple[float, str]:
-    """Where does this moment NATURALLY finish? Never a fixed duration."""
+    """Where does THIS moment naturally finish?
+
+    Contract: inspect FORWARD from the event and select the FIRST natural boundary
+    that completes the moment. Never the last boundary in the source, never an
+    unrelated later segment. No arbitrary duration cap - evidence decides.
+    """
     event = float(event_timestamp)
-    texts = [(float(s.get("start_s", 0.0) or 0.0), float(s.get("end_s", 0.0) or 0.0),
-              str(s.get("text") or "")) for s in (segments or []) if isinstance(s, dict)]
+    texts = [(float(x.get("start_s", 0.0) or 0.0), float(x.get("end_s", 0.0) or 0.0),
+              str(x.get("text") or "")) for x in (segments or []) if isinstance(x, dict)]
     after = [t for t in texts if t[0] >= clip_start - 0.001]
 
-    # 1. payoff / reaction resolution: last cue after the event, plus a short tail.
-    payoff_at = [st for st, en, tx in after if tx and any(c in tx.lower() for c in PAYOFF_CUES)]
-    # 2. sentence completion: last segment ending a thought.
-    sentence_at = [en for _st, en, tx in after if tx.strip().endswith((".", "!", "?"))]
-    # 3. activity returning toward baseline.
-    peak = max([float(w.get("end_s", 0.0) or 0.0) for w in (signals or [])
-                if isinstance(w, dict)] or [0.0])
+    payoff_at = [st for st, _en, tx in after if tx and any(c in tx.lower() for c in PAYOFF_CUES)]
+    payoff_start = _first_at_or_after(payoff_at, event)
+    anchor = payoff_start if payoff_start is not None else event
+
+    sentence_ends = [en for _st, en, tx in after if tx.strip().endswith((".", "!", "?"))]
+    peak_end = _first_at_or_after(
+        [float(w.get("end_s", 0.0) or 0.0) for w in (signals or []) if isinstance(w, dict)], anchor)
 
     if moment_type in VISUAL_FIRST_TYPES:
-        # Extend through the END of the reaction/resolution segment, not merely to
-        # the impact: the reaction is part of the moment.
-        resolution_ends = [en for st, en, tx in after
-                           if tx and any(c in tx.lower() for c in (*PAYOFF_CUES, *REACTION_CUES))]
-        base = max([event + 3.0, peak]
-                   + ([max(payoff_at) + 2.0] if payoff_at else [])
-                   + ([max(resolution_ends) + 1.0] if resolution_ends else []))
+        run_end = _contiguous_cue_run_end(after, anchor)
+        base = max(event + 3.0, anchor + 1.0, run_end or 0.0, peak_end or 0.0)
         reason = "resolved_after_impact"
-    elif moment_type == T_STORY:
-        base = max([event + 6.0] + ([max(payoff_at) + 3.0] if payoff_at else [])
-                   + ([max(sentence_at)] if sentence_at else []))
-        reason = "punchline_and_sentence_complete"
-    elif moment_type in SPEECH_TYPES:
-        base = max([event + 2.0] + ([max(sentence_at)] if sentence_at else []))
-        reason = "sentence_boundary"
     else:
-        base = max([event + 4.0] + ([max(sentence_at)] if sentence_at else []))
-        reason = "natural_close"
+        # Speech: complete the sentence that carries the payoff. If no boundary
+        # follows, snap to the nearest REAL boundary at/before it.
+        sentence_end = (_first_at_or_after(sentence_ends, anchor)
+                        or _last_at_or_before(sentence_ends, anchor + 0.001))
+        if moment_type == T_STORY:
+            base = max(event + 4.0, anchor + 3.0, sentence_end or 0.0)
+            reason = "punchline_and_sentence_complete"
+        elif moment_type in SPEECH_TYPES:
+            base = max(event + 1.0, sentence_end if sentence_end is not None else event + 2.0)
+            reason = "sentence_boundary"
+        else:
+            base = max(event + 1.0, sentence_end if sentence_end is not None else event + 3.0)
+            reason = "natural_close"
     end = min(base, float(duration_hint)) if duration_hint else base
     return round(end, 3), reason
 
