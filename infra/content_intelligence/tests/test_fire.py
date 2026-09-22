@@ -42,7 +42,7 @@ def _strong_evidence() -> InspectionEvidence:
     """Evidence that genuinely justifies a high score (not a threshold hack)."""
     return InspectionEvidence(
         window_seconds=3.0, visual_opening=True, preview_reference="https://cdn/x.jpg",
-        caption_text="oh my god he fell off the stage and everyone screamed",
+        caption_text="oh my god he fell off the stage and everyone screamed.",
         spoken_hook="oh my god",
         signals={"motion": True, "scene_change": True, "audio_spike": True, "speech_onset": True},
         signal_window=(1.0, 3.0), timestamps=({"start_s": 1.0, "end_s": 3.0, "basis": "motion"},),

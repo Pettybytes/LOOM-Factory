@@ -92,6 +92,10 @@ class Pass1CandidateResult:
     inspection_attempts: tuple = ()
     source_mode: str = ""
     moment_zones: tuple = ()
+    moment_type: dict | None = None
+    boundary_plan: dict | None = None
+    completeness: dict | None = None
+    repair_attempts: tuple = ()
     selected_zone: dict | None = None
     clip_start_plan: dict | None = None
     rejection_reason: str = ""
@@ -299,8 +303,10 @@ class Pass1Pipeline:
         # Long-form: scan the WHOLE source cheaply, rank zones, promote the best,
         # optimise where the clip should BEGIN. Short-form: the source IS the
         # moment, so the locator is deliberately bypassed.
-        from .clip_start import optimize_clip_start
+        from .clip_start import optimize_clip_start  # noqa: F401 (kept for API compat)
         from .moment_locator import locate_moments, promote_zones, source_mode
+        from .moment_quality import (build_boundary_plan, classify_moment_type,
+                                     completeness_gate, repair_boundaries)
 
         duration = _record_duration(rec)
         mode = source_mode(duration)
@@ -312,10 +318,40 @@ class Pass1Pipeline:
         zone = promoted[0] if promoted else None
         plan = None
         inspect_start = 0.0
+        type_result = None
+        gate = None
+        repairs: tuple = ()
         if zone is not None:
-            plan = optimize_clip_start(zone.event_timestamp, segments or [],
+            # MOMENT TYPE first: different types imply different boundaries. The
+            # type comes from ALREADY-AVAILABLE evidence (no new model stage).
+            # Pad the window: a type cue often sits just outside the provisional
+            # bounds, and classifying from a too-narrow window yields `unknown`.
+            pad = 8.0
+            zone_text = " ".join(
+                str(seg.get("text") or "") for seg in (segments or [])
+                if isinstance(seg, dict)
+                and zone.provisional_start - pad <= float(seg.get("start_s", 0.0) or 0.0)
+                <= zone.provisional_end + pad)
+            if len(zone_text.split()) < 4:
+                zone_text = " ".join(str(seg.get("text") or "")
+                                     for seg in (segments or []) if isinstance(seg, dict))
+            type_result = classify_moment_type(
+                transcript_text=zone_text or zone.transcript_excerpt,
+                signal_bases=[str(w.get("basis")) for w in (signal_windows or [])
+                              if isinstance(w, dict) and w.get("basis")])
+            plan = build_boundary_plan(type_result.moment_type, zone.event_timestamp,
+                                       segments or [], signals=signal_windows or (),
                                        duration_hint=duration)
-            inspect_start = plan.recommended_start
+            inspect_start = plan.recommended_clip_start
+            gate = completeness_gate(plan, segments or [], signals=signal_windows or ())
+            if gate.failed:
+                plan, gate, repairs = repair_boundaries(
+                    plan, gate, segments or [], signals=signal_windows or (),
+                    duration_hint=duration)
+        c.moment_type = type_result.as_dict() if type_result is not None else None
+        c.boundary_plan = plan.as_dict() if plan is not None else None
+        c.completeness = gate.as_dict() if gate is not None else None
+        c.repair_attempts = repairs
         c.source_mode = mode
         c.moment_zones = tuple(z.as_dict() for z in zones)
         c.selected_zone = zone.as_dict() if zone is not None else None
@@ -376,6 +412,11 @@ class Pass1Pipeline:
         )
         c.fire_passed = decision.passed
         c.fire_reasons = decision.reasons
+        # A FIRE-passing candidate whose clip is NOT complete still gets no card:
+        # boundary evidence is a separate, hard requirement.
+        if gate is not None and not gate.passed:
+            c.fire_passed = False
+            c.fire_reasons = tuple(dict.fromkeys((*decision.reasons, "INCOMPLETE_CLIP")))
         c.content_score_recalibrated = content
         c.evidence_confidence = conf.score
         c.moment_evidence = dict(mc.moment_evidence)

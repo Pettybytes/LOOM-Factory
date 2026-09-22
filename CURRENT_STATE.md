@@ -3473,3 +3473,52 @@ efficiency observability, feedback lineage. **Segment 5 remains OPEN.**
 
 vidIQ unspent (24 credits). No donor research. RECUT on hold. Segment 6 locked.
 Migration 038 untouched.
+
+## 41. QUALITY LAYER WIRED INTO PRODUCTION (2026-09-21)
+
+`moment_quality` is no longer test-only. `_apply_fire` now, for every candidate
+that has passed Market and Tenant Fit:
+
+1. **classifies the moment type** from already-available evidence (the zone's
+   transcript window padded by 8s, falling back to the whole transcript when that
+   window is too thin) plus the deterministic signal bases — no new model stage;
+2. builds a **type-aware boundary plan** (type-specific start leads AND a natural,
+   type-aware end) instead of one rule for every moment;
+3. runs the **completeness gate**, and **bounded repair** (<=3 attempts, <=4s each)
+   when it fails;
+4. inspects the bounded 3/8/12 window **from the plan's chosen start**.
+
+`INCOMPLETE_CLIP` is a **hard production blocker**: whenever the proposed clip is
+not complete, the reason is recorded and the card is withheld — FIRE without a
+complete clip does not produce a card. The candidate result now carries
+`moment_type`, `boundary_plan`, `completeness` and `repair_attempts`.
+
+### Defects and fixture corrections found while wiring
+* **`INCOMPLETE_CLIP` was only recorded when FIRE had otherwise passed**, so an
+  incomplete clip on an already-failing candidate hid the real reason. It is now
+  recorded unconditionally.
+* **The moment type classified as `unknown`** because it was derived from a
+  too-narrow zone window that excluded the cue text. Fixed with padding + a
+  full-transcript fallback; this also corrected the speech-type lead (5s -> <=3s),
+  which had been a symptom of the wrong type.
+* **A pre-existing `test_fire` fixture** represented an utterance with no terminal
+  punctuation, which the new gate correctly calls incomplete. The fixture now
+  represents a complete utterance — the gate was NOT weakened.
+
+### Tests
+`content_intelligence` **329 OK**, `discovery` **110 OK**, including six new
+production-effect tests: the pipeline classifies the moment type, builds a
+type-aware boundary plan, inspects from the plan's start (never 00:00), uses a
+<=3s lead for speech types, records the completeness verdict, blocks the card with
+`INCOMPLETE_CLIP`, and still bypasses the locator for `source_as_moment`.
+
+### NOT YET WIRED / outstanding
+Relative ranking and dedup are implemented and tested but are **not yet applied as
+a run-level within-source pass** (they need the end-of-run aggregation). Still
+outstanding: the real authenticated long-form YouTube run, FIRE-APPROVE ->
+n8n/OpenShorts bridge verification, Instagram, Kick, the Reddit/TikTok/Twitch
+FIRE-path proofs, six-platform acceptance, enriched card, efficiency observability,
+feedback lineage. **Segment 5 remains OPEN.**
+
+vidIQ unspent (24 credits). No donor research. RECUT on hold. Segment 6 locked.
+Migration 038 untouched.
