@@ -3243,3 +3243,69 @@ Real FIRE candidate from the authenticated YouTube path (proof numbers pending);
 §4 FIRE-APPROVE → existing n8n/OpenShorts bridge verification; §6 Instagram
 discovery; §7 Kick clip discovery; §8 six-platform bounded acceptance table;
 §10 enriched Source Review card fields.
+
+## 37. MOMENT SCANNING ARCHITECTURE (2026-09-21)
+
+### The correction
+**LOOM scans for moments THROUGHOUT a source.** The first 0-3s is a CLIP-START
+signal, not the discovery mechanism. Previously the bounded path inspected source
+00:00-00:03, which silently assumed `moment_start == source_start`. That assumption
+is now removed.
+
+Production sequence:
+`DISCOVERY -> PLATFORM METRICS -> MARKET GATE -> BASELINE/OUTLIER -> TENANT FIT ->
+WHOLE-SOURCE MOMENT LOCATOR -> candidate timestamps -> BOUNDED INSPECTION AROUND
+those timestamps -> CLIP-START OPTIMISATION -> MOMENT UNDERSTANDING ->
+EVIDENCE CONFIDENCE -> FIRE -> SOURCE REVIEW`
+
+Three responsibilities kept distinct: **discovery** (where are the interesting
+areas) / **understanding** (what happens there) / **boundary optimisation** (where
+does the clip start and end).
+
+### `source_mode()` — two explicit modes
+* `source_as_moment` (<=180s: TikTok, Reel, Twitch/Kick clip, Short) — the source
+  IS the moment; opening inspection is appropriate.
+* `long_form_container` (podcast, interview, VOD, 2-6h stream) — the source is a
+  CONTAINER; the whole source must be located first.
+* Unknown duration scans rather than assumes.
+
+### `moment_locator.py` — cheap whole-source locator
+Built on evidence LOOM already has: timestamped **transcript/caption segments**
+(no media transfer) plus the **existing `candidate_timestamps`** from Content
+Intelligence. No new LLM stage. Cue groups (hook/event/escalation/emotional/
+conflict/reveal/payoff/chaos) cluster into zones, ranked locally; only the top
+zones are promoted to bounded inspection. Each zone preserves source_id, url,
+duration, candidate_event_timestamp, provisional start/end, locator reason +
+evidence, provenance, confidence, transcript excerpt. **Multiple moments per
+source are preserved.** A zone is never assumed to be at 00:00.
+
+### `clip_start.py` — clip-start optimisation
+Scores PROSPECTIVE 0-3s openings for candidate starts (leads of 5/3/1/0s before the
+event), penalises dead openings, rewards anticipation, records every alternative
+with its own rationale and evidence. **The event timestamp is never blindly the
+clip start.**
+
+### Two REAL defects found and fixed (both caught by tests/verification)
+1. **`bounded_preview` clamped the ABSOLUTE end to 12s**, so a dynamic start at
+   1122s became the nonsensical "start=1122, end=12". The cap now bounds the
+   inspected DURATION, preserving moment-relative starts.
+2. **`_window_text` used overlap semantics**, counting dialogue that finished
+   BEFORE a candidate clip start. Every candidate start therefore scored
+   identically and the optimiser always returned the event. It now requires a
+   segment to BEGIN inside the prospective clip — the property that makes
+   boundary optimisation meaningful at all.
+
+### Tests
+`content_intelligence` **288 OK** — source-as-moment vs long-form, locator not
+defaulting to source start, multiple candidate timestamps, multiple moments per
+source, zone provenance/evidence, model timestamps consumed without a new model
+call, bounded promotion, clip-start preferring a lead over the event, alternatives
+recorded, dead-opening penalty, dynamic start accepted and still duration-capped.
+
+### Segment 5 remains OPEN
+Not yet done in this pass: the real authenticated YouTube full-funnel rerun with
+UNBUFFERED output on a long-form source (dynamic start), a legitimate real FIRE
+moment, FIRE-APPROVE -> n8n/OpenShorts bridge verification, Instagram, Kick,
+Reddit/TikTok/Twitch common FIRE-path proofs, the six-platform acceptance table,
+and the enriched Source Review card fields. vidIQ unspent at 24 credits. RECUT on
+hold. Segment 6 locked. Migration 038 untouched.

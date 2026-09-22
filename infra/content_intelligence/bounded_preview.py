@@ -88,7 +88,11 @@ def fetch_bounded_preview(url: str, *, end: float = 3.0, start: float = 0.0,
     existing-toolchain call (yt-dlp + ffmpeg) that transfers just the range. It
     is never allowed to degrade into a full-source download.
     """
-    end = min(float(end), MAX_WINDOW)
+    # The hard cap bounds the INSPECTED DURATION, never the absolute end: with a
+    # dynamic start (e.g. a moment at 18:42) clamping the end to 12s would produce
+    # the nonsensical request "start=1122, end=12".
+    start = max(0.0, float(start))
+    end = start + max(0.0, min(float(end) - start, MAX_WINDOW))
     provider = _provider_of(url)
     tmp = tempfile.mkdtemp(prefix="loom-inspect-")
     try:
