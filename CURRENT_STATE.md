@@ -3408,3 +3408,68 @@ verification** (SS18, mandatory before closure) · Instagram (SS19.1) · Kick
 
 vidIQ unspent (24 credits). No donor research. RECUT on hold. Segment 6 locked.
 Migration 038 untouched.
+
+## 40. MOMENT QUALITY LAYER (2026-09-21)
+
+Structural fix for the defect SS39 recorded: the locator could find zones but could
+not tell that a talk-zone and a physical-event zone imply DIFFERENT editing and
+ranking behaviour. Fixed with deterministic, evidence-driven logic — NOT by tuning
+fixture weights, and with no comparator weights copied.
+
+### `moment_quality.py`
+* **Moment type** — 14 types (physical_action, fall_accident, confrontation, prank,
+  fan_interaction, animal_behavior, reaction, reveal, funny_awkward, emotional,
+  story_punchline, hot_take_opinion, informational_insight, unknown) classified
+  from EXISTING evidence with explicit evidence, provenance and confidence.
+  **`unknown` is a valid, useful answer.** No single basis forces a type: visual
+  signals alone yield `unknown` unless two bases agree.
+* **Type-aware starts** — physical/fall/prank/fan/animal/reveal search further back
+  (anticipation, initiating movement); story preserves setup; reaction includes the
+  trigger; speech types use a minimal lead and snap to a thought boundary.
+* **Natural end** — never a fixed duration: physical extends through the
+  reaction/resolution, story through the punchline, speech to a sentence boundary.
+* **Completeness gate** — separate from FIRE, with explicit codes
+  (INCOMPLETE_SENTENCE, MID_THOUGHT_START, MISSING_SETUP, MISSING_PAYOFF,
+  EVENT_UNRESOLVED, CUT_MID_ACTION, REACTION_TRUNCATED, INSUFFICIENT_CONTEXT).
+* **Bounded repair** — <=3 attempts, <=4s each, re-evaluated each time; never
+  unbounded, never full source.
+* **Relative ranking** — within-source ranks with rank_evidence; **physical does not
+  outrank talk by type**, only by evidence (a strong hot take beats a mediocre
+  action).
+* **Dedup/diversity** — PRIMARY / DISTINCT / DUPLICATE_SUPPRESSED with
+  `suppressed_by` + `overlap_ratio`. **Lineage is preserved, never deleted.**
+
+### Three REAL defects found and fixed while testing this layer
+1. **`BoundaryPlan.duration` was a field that was never populated** (only computed
+   in `as_dict()`), so `duration == 0.0` and **CUT_MID_ACTION fired for every
+   physical moment**. Now a derived property.
+2. **`natural_end` stopped at the impact and ignored the immediate reaction** —
+   "everyone screamed" is not a payoff keyword, so clips ended before the reaction.
+   Now extends through the reaction/resolution segment.
+3. **`completeness_gate` selected segments by START TIME**, so a clip ending
+   mid-utterance counted a half-covered sentence as complete. Now **containment**
+   based with an explicit cut-tail flag (drives INCOMPLETE_SENTENCE / CUT_MID_ACTION).
+
+### Tests
+`content_intelligence` **322 OK**, `discovery` **110 OK**, covering the SS16-SS20
+required cases: type from action-before-reaction, speech/story/informational types,
+unknown on ambiguous evidence, type-aware starts, natural end including reaction,
+sentence boundary, punchline, premature end rejected, missing payoff, truncated
+sentence, unresolved event, **repair FAIL -> PASS with bounded attempts**, repair
+bounded, unique deterministic ranks, physical-outranks-talk only on evidence,
+strong hot take beating mediocre action, four overlapping cuts -> one PRIMARY,
+separate events -> DISTINCT, lineage preserved.
+
+### NOT YET WIRED (important)
+`moment_quality` is implemented and tested but **is NOT yet called by the pipeline**:
+`_apply_fire` still uses the simpler locator/clip_start path, so type-aware
+boundaries, natural end, the completeness gate, relative ranking and dedup do not
+yet affect production output. That wiring is the immediate next action.
+
+Also still outstanding: the real authenticated long-form YouTube run,
+FIRE-APPROVE -> n8n/OpenShorts bridge verification, Instagram, Kick, the
+Reddit/TikTok/Twitch FIRE-path proofs, six-platform acceptance, enriched card,
+efficiency observability, feedback lineage. **Segment 5 remains OPEN.**
+
+vidIQ unspent (24 credits). No donor research. RECUT on hold. Segment 6 locked.
+Migration 038 untouched.
