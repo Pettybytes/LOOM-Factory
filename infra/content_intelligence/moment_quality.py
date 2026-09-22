@@ -243,13 +243,13 @@ def _last_at_or_before(values: Any, ceiling: float) -> float | None:
 
 
 def _contiguous_cue_run_end(after: Sequence[tuple[float, float, str]], anchor: float, *,
-                            max_gap: float = 2.5) -> float | None:
-    """End of the contiguous payoff/reaction run at/after the payoff.
+                            resolution_window: float, max_gap: float = 2.5) -> float | None:
+    """End of the payoff/reaction run, BOUNDED by the moment's own timescale.
 
-    A physical moment resolves when its ACTION AND REACTION complete - so the end
-    extends through consecutive reaction-bearing segments and stops at the first
-    cue-less segment or a real gap. That is evidence-driven action resolution, NOT a
-    duration cap, and it is why a reaction is never truncated mid-sentence.
+    A reaction resolves within a small multiple of the action's own duration - that
+    is evidence about THIS moment, not a global duration cap. Without this bound, a
+    long compilation with near-continuous caption cues extended a single moment by
+    130+ seconds because "cue follows cue" never closes.
     """
     started = False
     run_end: float | None = None
@@ -257,6 +257,8 @@ def _contiguous_cue_run_end(after: Sequence[tuple[float, float, str]], anchor: f
     for st, en, tx in after:
         if en < anchor - 0.001:
             continue
+        if st > anchor + resolution_window:
+            break                          # beyond plausible resolution for this moment
         low = tx.lower()
         has_cue = bool(tx) and any(c in low for c in (*PAYOFF_CUES, *REACTION_CUES))
         if has_cue:
@@ -266,6 +268,19 @@ def _contiguous_cue_run_end(after: Sequence[tuple[float, float, str]], anchor: f
         elif started:
             break                          # a cue-less segment closes the run
     return run_end
+
+
+def _resolution_window(after: Sequence[tuple[float, float, str]], anchor: float) -> float:
+    """Evidence-derived: how long may THIS moment's reaction plausibly take?
+
+    Scaled from the action segment's own duration, floor 6s, ceiling 20s.
+    """
+    action_dur = 4.0
+    for st, en, tx in after:
+        if st <= anchor + 0.001 and en >= anchor - 0.001:
+            action_dur = max(0.5, en - st)
+            break
+    return min(20.0, max(6.0, action_dur * 3.0))
 
 
 def natural_end(moment_type: str, event_timestamp: float, clip_start: float,
@@ -287,11 +302,13 @@ def natural_end(moment_type: str, event_timestamp: float, clip_start: float,
     anchor = payoff_start if payoff_start is not None else event
 
     sentence_ends = [en for _st, en, tx in after if tx.strip().endswith((".", "!", "?"))]
-    peak_end = _first_at_or_after(
+    window = _resolution_window(after, anchor)
+    peak_raw = _first_at_or_after(
         [float(w.get("end_s", 0.0) or 0.0) for w in (signals or []) if isinstance(w, dict)], anchor)
+    peak_end = peak_raw if (peak_raw is not None and peak_raw <= anchor + window) else None
 
     if moment_type in VISUAL_FIRST_TYPES:
-        run_end = _contiguous_cue_run_end(after, anchor)
+        run_end = _contiguous_cue_run_end(after, anchor, resolution_window=window)
         base = max(event + 3.0, anchor + 1.0, run_end or 0.0, peak_end or 0.0)
         reason = "resolved_after_impact"
     else:
