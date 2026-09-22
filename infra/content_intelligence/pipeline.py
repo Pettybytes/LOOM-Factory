@@ -90,6 +90,10 @@ class Pass1CandidateResult:
     moment_evidence: dict | None = None
     moment_candidate: dict | None = None
     inspection_attempts: tuple = ()
+    source_mode: str = ""
+    moment_zones: tuple = ()
+    selected_zone: dict | None = None
+    clip_start_plan: dict | None = None
     rejection_reason: str = ""
 
 
@@ -114,6 +118,20 @@ class Pass1RunResult:
             "total_cost_usd": round(self.total_cost_usd, 6),
             "total_tokens": self.total_input_tokens + self.total_output_tokens,
         }
+
+
+def _record_duration(rec: Any) -> float | None:
+    """Source duration when the platform exposes it (drives source_mode)."""
+    for attr in ("duration_seconds", "duration", "source_duration"):
+        v = getattr(rec, attr, None)
+        if isinstance(v, (int, float)) and v > 0:
+            return float(v)
+    m = getattr(rec, "observed_metrics", None) or {}
+    for k in ("duration", "duration_seconds", "length_seconds"):
+        v = m.get(k) if isinstance(m, dict) else None
+        if isinstance(v, (int, float)) and v > 0:
+            return float(v)
+    return None
 
 
 def fetch_transcript(url: str, languages: str = "en.*") -> tuple[list[dict[str, Any]], str]:
@@ -252,8 +270,12 @@ class Pass1Pipeline:
                 break  # hard run-level ceiling
         return result
 
-    def _apply_fire(self, c: Any, rec: Any) -> None:
-        """Bounded inspection -> assessments -> confidence -> FIRE decision.
+    def _apply_fire(self, c: Any, rec: Any, *, segments: Any = None,
+                    model_timestamps: Any = None) -> None:
+        """Moment location -> clip start -> bounded inspection -> confidence -> FIRE.
+
+        Long-form sources are SCANNED for candidate moments and inspected around
+        the located moment; discrete short-form sources skip the locator entirely.
 
         Reuses the EXISTING contracts end to end: the tenant-fit + market results
         already computed, the canonical MomentCandidate, the deterministic
@@ -273,10 +295,33 @@ class Pass1Pipeline:
                           creator=getattr(rec, "creator_channel_identity", "") or "")
         mc = from_market_and_market_evidence(rec, market_ev, tenant_fit_result=fit)
 
-        # TRUE bounded inspection: 0-3s, extended to 8s then 12s only while the
-        # decision is ambiguous. Never the full source. Both the preview fetch and
-        # the signal pass operate on the bounded artifact only, and are injectable
-        # so boundedness is testable without any real download.
+        # ---- WHOLE-SOURCE MOMENT LOCATION --------------------------------
+        # Long-form: scan the WHOLE source cheaply, rank zones, promote the best,
+        # optimise where the clip should BEGIN. Short-form: the source IS the
+        # moment, so the locator is deliberately bypassed.
+        from .clip_start import optimize_clip_start
+        from .moment_locator import locate_moments, promote_zones, source_mode
+
+        duration = _record_duration(rec)
+        mode = source_mode(duration)
+        zones = locate_moments(segments or [], source_id=str(getattr(rec, "platform_content_id", "")),
+                               source_url=str(getattr(rec, "canonical_url", "")),
+                               source_duration=duration, model_timestamps=model_timestamps)
+        promoted = promote_zones(zones, keep=1)
+        zone = promoted[0] if promoted else None
+        plan = None
+        inspect_start = 0.0
+        if zone is not None:
+            plan = optimize_clip_start(zone.event_timestamp, segments or [],
+                                       duration_hint=duration)
+            inspect_start = plan.recommended_start
+        c.source_mode = mode
+        c.moment_zones = tuple(z.as_dict() for z in zones)
+        c.selected_zone = zone.as_dict() if zone is not None else None
+        c.clip_start_plan = plan.as_dict() if plan is not None else None
+
+        # TRUE bounded inspection: 3s, extended to 8s then 12s only while the
+        # decision is ambiguous, FROM THE CHOSEN CLIP START. Never the full source.
         from .bounded_preview import fetch_bounded_preview
         from .multimodal_signals import analyze_media_signals
 
@@ -291,6 +336,7 @@ class Pass1Pipeline:
             analyze_signals=getattr(self, "_inspection_analyze", analyze_media_signals),
             decide=_decide,
             fetch_captions=getattr(self, "_inspection_captions", fetch_transcript),
+            start=inspect_start,
         )
         c.inspection_attempts = attempts
         a = {"stop": assess_stop(ev), "activity": assess_activity(ev), "setup": assess_setup(ev),
@@ -491,7 +537,8 @@ class Pass1Pipeline:
         # Tenant Fit reach this point. A FIRE failure records explicit reasons
         # and the candidate is never carded.
         if self.config.enable_fire_gate:
-            self._apply_fire(c, rec)
+            self._apply_fire(c, rec, segments=segments,
+                            model_timestamps=getattr(assessment, "candidate_timestamps", None))
         return c
 
 

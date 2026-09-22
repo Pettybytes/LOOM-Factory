@@ -3309,3 +3309,49 @@ moment, FIRE-APPROVE -> n8n/OpenShorts bridge verification, Instagram, Kick,
 Reddit/TikTok/Twitch common FIRE-path proofs, the six-platform acceptance table,
 and the enriched Source Review card fields. vidIQ unspent at 24 credits. RECUT on
 hold. Segment 6 locked. Migration 038 untouched.
+
+## 38. MOMENT LOCATOR + CLIP-START WIRED INTO PRODUCTION (2026-09-21)
+
+The §37 gap is closed: the tested locator and clip-start optimiser now run in the
+REAL path.
+
+### Production path now
+`REAL SOURCE -> Market -> baseline/outlier -> Tenant Fit -> source_mode ->
+whole-source moment locator -> ranked candidate zones -> promote best ->
+clip-start optimisation -> MOMENT-RELATIVE bounded preview (3/8/12 from the chosen
+start) -> deterministic signals -> moment understanding -> Evidence Confidence ->
+FIRE -> FIRE-only Source Review`
+
+`source_as_moment` (<=180s) deliberately BYPASSES the locator: the source already
+is a discrete clip, so forcing a container scan onto it would be wrong.
+
+### Changes
+* `inspect_with_escalation(..., start=...)` — the bounded window now begins at the
+  **chosen clip start**, never at source 00:00; every attempt log entry records the
+  absolute `start` as well as the duration, and provenance reads
+  `bounded_preview_<start>s+<dur>s`.
+* `_apply_fire(c, rec, *, segments, model_timestamps)` — locates moments from the
+  **transcript already fetched in step 3** plus the **existing
+  `assessment.candidate_timestamps`** (no extra model call), promotes the best
+  zone, optimises the clip start, then inspects from there.
+* Candidate result carries `source_mode`, `moment_zones`, `selected_zone`,
+  `clip_start_plan` and `inspection_attempts` with absolute timestamps, so lineage
+  is preserved for later learning (which locator reasons produce FIRE, which
+  moments Bryan approves).
+* `_record_duration()` derives the source duration from the record or its
+  observed metrics; unknown duration scans rather than assumes.
+
+### Tests
+`content_intelligence` **288 OK** (no regression from the wiring).
+
+### NOT done in this pass
+Multimodal locator signal merge (audio/visual/scene/face-presence alignment),
+the §15 production-wiring proofs (40-minute source must not inspect 00:00;
+multiple independent moments; nonverbal candidate promoted on visual/audio
+evidence alone; weak zone not promoted), the real authenticated long-form YouTube
+funnel run, FIRE-APPROVE -> n8n/OpenShorts bridge verification, Instagram, Kick,
+Reddit/TikTok/Twitch FIRE-path proofs, six-platform acceptance, enriched Source
+Review card, long-form efficiency observability. **Segment 5 remains OPEN.**
+
+vidIQ unspent (24 credits). RECUT on hold. Segment 6 locked. Migration 038
+untouched.

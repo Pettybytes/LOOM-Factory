@@ -297,6 +297,7 @@ def inspect_with_escalation(record: Any, *, fetch_preview: Callable[..., Any],
                             windows: tuple[float, ...] = WINDOWS,
                             fetch_captions: Callable[[str], Any] | None = None,
                             max_window: float = 12.0,
+                            start: float = 0.0,
                             ) -> tuple[InspectionEvidence, tuple[dict[str, Any], ...]]:
     """0-3s first; extend to 8s then 12s ONLY while the decision is ambiguous.
 
@@ -324,11 +325,13 @@ def inspect_with_escalation(record: Any, *, fetch_preview: Callable[..., Any],
             break
         started = _time.time()
         try:
-            preview = fetch_preview(url, end=end)
+            # MOMENT-RELATIVE: the window begins at the located moment's chosen
+            # clip start, never at source 00:00.
+            preview = fetch_preview(url, start=start, end=start + end)
         except Exception as exc:  # noqa: BLE001
-            log.append({"end": end, "error": type(exc).__name__})
+            log.append({"start": start, "end": end, "error": type(exc).__name__})
             break
-        entry = {"end": end, "method": getattr(preview, "method", ""),
+        entry = {"start": start, "end": end, "method": getattr(preview, "method", ""),
                  "bytes": int(getattr(preview, "artifact_bytes", 0) or 0),
                  "available": bool(getattr(preview, "available", False)),
                  "fallback": bool(getattr(preview, "fallback_used", False)),
@@ -348,7 +351,7 @@ def inspect_with_escalation(record: Any, *, fetch_preview: Callable[..., Any],
                 ev.visual_opening = True
                 ev.window_seconds = end
                 ev.media_segment_seconds = end
-                prov.append(f"bounded_preview_0_{int(end)}s")
+                prov.append(f"bounded_preview_{int(start)}s+{int(end)}s")
             else:
                 prov.append("bounded_preview_unavailable")
         except Exception as exc:  # noqa: BLE001
