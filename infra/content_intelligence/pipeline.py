@@ -90,6 +90,10 @@ class Pass1CandidateResult:
     moment_evidence: dict | None = None
     moment_candidate: dict | None = None
     inspection_attempts: tuple = ()
+    source_relative_rank: int | None = None
+    source_candidate_count: int = 0
+    duplicate_state: str = ""
+    rank_evidence: dict | None = None
     source_mode: str = ""
     moment_zones: tuple = ()
     moment_type: dict | None = None
@@ -236,13 +240,65 @@ def eligible_selection(s: dict[str, Any] | None) -> bool:
                 and isinstance(s.get("source_selection_confidence"), (int, float)))
 
 
+def apply_run_level_ranking(candidates: list[Any], *, overlap_threshold: float = 0.6,
+                             gap_s: float = 6.0) -> list[Any]:
+    """RUN-LEVEL pass: within-source relative ranking + dedup/diversity.
+
+    Reuses the existing moment_quality ranking. Absolute FIRE stays mandatory and is
+    untouched: this only ORDERS surviving candidates and suppresses near-identical
+    versions of the SAME event, preserving lineage rather than deleting rows.
+    """
+    from .moment_quality import RankInput, dedup
+
+    inputs: list[Any] = []
+    by_fp: dict[str, Any] = {}
+    for c in candidates or []:
+        plan = getattr(c, "boundary_plan", None) or {}
+        me = getattr(c, "moment_evidence", None) or {}
+        comp = getattr(c, "completeness", None) or {}
+        mt = (getattr(c, "moment_type", None) or {}).get("moment_type", "unknown")
+        start = plan.get("recommended_clip_start")
+        end = plan.get("recommended_clip_end")
+        fp = f"{getattr(c, 'platform_content_id', '?')}|{start}|{end}"
+        inputs.append(RankInput(
+            fingerprint=fp,
+            event_timestamp=float(plan.get("event_timestamp") or 0.0),
+            moment_type=mt,
+            market=int(getattr(c, "market_score", None) or 0),
+            content=int(getattr(c, "content_score_recalibrated", None) or 0),
+            selection=int(getattr(c, "selection_score", None) or 0),
+            confidence=int(getattr(c, "evidence_confidence", None) or 0),
+            hook=bool(me.get("hook_0_3s")),
+            activity=me.get("action_activity") is not None,
+            payoff=bool(me.get("payoff")),
+            completeness=(comp.get("completeness_verdict") == "PASS"),
+            reaction_angle=bool(me.get("reaction_angle")),
+            overlap_start=(float(start) if isinstance(start, (int, float)) else None),
+            overlap_end=(float(end) if isinstance(end, (int, float)) else None),
+        ))
+        by_fp[fp] = c
+
+    rankings = dedup(inputs, overlap_threshold=overlap_threshold, gap_s=gap_s)
+    for r in rankings:
+        c = by_fp.get(r.fingerprint)
+        if c is None:
+            continue
+        c.source_relative_rank = r.source_relative_rank
+        c.source_candidate_count = r.source_candidate_count
+        c.duplicate_state = r.duplicate_state
+        c.rank_evidence = r.as_dict().get("rank_evidence") or {}
+    return rankings
+
+
 def production_review_queue(selections: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Source Review receives FIRE-PASSING candidates ONLY.
 
     Non-FIRE candidates stay internally available for analytics, query yield and
     learning; Bryan's producer inbox is not the junk filter.
     """
-    return [s for s in selection_queue(selections) if isinstance(s, dict) and s.get("fire_passed")]
+    return [s for s in selection_queue(selections)
+            if isinstance(s, dict) and s.get("fire_passed")
+            and s.get("duplicate_state") != "DUPLICATE_SUPPRESSED"]
 
 
 def selection_queue(selections: list[dict[str, Any]],
@@ -272,6 +328,10 @@ class Pass1Pipeline:
             result.candidates.append(c)
             if result.total_cost_usd >= self.config.cost_ceiling_usd:
                 break  # hard run-level ceiling
+        # RUN-LEVEL pass: relative ranking within the run + dedup/diversity. Absolute
+        # FIRE is unchanged; this only orders survivors and suppresses near-identical
+        # versions of the same event.
+        apply_run_level_ranking(result.candidates)
         return result
 
     def _apply_fire(self, c: Any, rec: Any, *, segments: Any = None,
