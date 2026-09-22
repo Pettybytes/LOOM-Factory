@@ -2328,7 +2328,9 @@ class Handler(BaseHTTPRequestHandler):
     def _post_source_card(self, channel_id, candidate):
         payload = {
             "embeds": [source_review.format_source_embed(candidate)],
-            "components": source_review.format_source_buttons(candidate["duplicate_fingerprint"]),
+            "components": source_review.format_source_buttons(
+                candidate["duplicate_fingerprint"],
+                source_url=candidate.get("canonical_url") or ""),
         }
         try:
             http_json("POST", f"{DISCORD_API}/channels/{channel_id}/messages",
@@ -2504,7 +2506,11 @@ class Handler(BaseHTTPRequestHandler):
             print(f"[source-review] persist failed: {e}", flush=True)
             self._send_json(200, {"type": 4, "data": {"content": "Failed to record decision.", "flags": 64}})
             return
-        embed = source_review.decided_embed(decision, reviewer, created)
+        # Duplicate clicks render the STORED winning decision, never the
+        # attempted one (first terminal decision wins at the database level).
+        stored = (row or {}).get("decision") if row is not None else None
+        shown = stored if not created and stored else decision
+        embed = source_review.decided_embed(shown, reviewer, created)
         self._send_json(200, {"type": 7, "data": {"embeds": [embed], "components": []}})
 
     def _source_button_worker(self, interaction, src):
@@ -2512,6 +2518,10 @@ class Handler(BaseHTTPRequestHandler):
 
         Receives DETACHED identity only: no handler, no socket, no response
         callback. Every later Discord call is an independent outbound one.
+
+        APPROVE hands off to the approved acquisition lane: it plans the single
+        PENDING job (gate 1, zero spend authorized). The acquire-for-reaction
+        (gate 2, spend) step still requires Bryan's separate Acquire click.
         """
         application_id = str(interaction.get("application_id") or "")
         interaction_token = str(interaction.get("token") or "")
@@ -2528,8 +2538,16 @@ class Handler(BaseHTTPRequestHandler):
             payload = source_review.source_decision_payload(candidate, decision, reviewer)
             row, created = source_review.persist_decision(
                 SUPABASE_URL, SUPABASE_KEY, payload)
-            embed = source_review.decided_embed(decision, reviewer, created)
-            self._patch_original(application_id, interaction_token, embed=embed)
+            # Duplicate clicks render the STORED winning decision, never the
+            # attempted one (first terminal decision wins at the database level).
+            stored = (row or {}).get("decision") if row is not None else None
+            shown = stored if not created and stored else decision
+            embed = source_review.decided_embed(shown, reviewer, created)
+            content = None
+            if created and decision == source_review.DECISION_APPROVE:
+                content = self._source_approve_handoff(candidate, reviewer)
+            self._patch_original(application_id, interaction_token,
+                                 embed=embed, content=content)
         except Exception as e:  # noqa: BLE001
             print(f"[source-review] decision failed: {type(e).__name__}: {e}", flush=True)
             try:
@@ -2537,6 +2555,34 @@ class Handler(BaseHTTPRequestHandler):
                                      content="Failed to record decision.")
             except Exception:  # noqa: BLE001
                 pass
+
+    def _source_approve_handoff(self, candidate: dict[str, Any], reviewer: str) -> str | None:
+        """Plan + persist the single PENDING acquisition job for an approved
+        source. Gate 1 only: never authorizes spending. Returns a one-line
+        status for the card, or None when the handoff is unavailable."""
+        try:
+            import approved_lane as _lane
+            store = _acquisition_store()
+            plan = candidate.get("boundary_plan") or {}
+            start_s = plan.get("recommended_clip_start")
+            end_s = plan.get("recommended_clip_end")
+            job = _lane.plan_pending_job(
+                fingerprint=candidate.get("duplicate_fingerprint", ""),
+                platform=candidate.get("platform", ""),
+                platform_content_id=candidate.get("platform_content_id", "")
+                or candidate.get("duplicate_fingerprint", ""),
+                canonical_url=candidate.get("canonical_url", ""),
+                actor=reviewer,
+                requested_start_s=(float(start_s) if isinstance(start_s, (int, float)) else None),
+                requested_end_s=(float(end_s) if isinstance(end_s, (int, float)) else None),
+            )
+            row, job_created = store.create_job(job)
+            if not job_created:
+                return "ℹ️ Acquisition job already pending for this source."
+            return "📥 Queued for acquisition — approve the range, then click Acquire."
+        except Exception as e:  # noqa: BLE001
+            print(f"[source-review] approve handoff failed: {type(e).__name__}: {e}", flush=True)
+            return "⚠️ Decision saved; acquisition handoff failed (see logs)."
 
     def _patch_original(self, application_id, interaction_token, *,
                         content=None, embed=None):

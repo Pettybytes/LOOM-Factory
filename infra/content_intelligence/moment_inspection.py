@@ -42,6 +42,30 @@ NEGATIVE_OPENING_TERMS: tuple[str, ...] = (
 ACTIVITY_KINDS: tuple[str, ...] = ("motion", "scene_change", "cut_density",
                                    "audio_energy", "audio_spike", "speech_onset")
 
+# Signal-layer basis names -> canonical activity kinds. The extraction layer
+# emits visual_motion/scene_cut/visual_change where the evidence layer expects
+# motion/scene_change; normalizing AT COLLECTION time (before any assessment
+# runs) is the only point that fixes activity_strength(), assess_activity and
+# the confidence dimensions together.
+BASIS_TO_KIND: dict[str, str] = {
+    "motion": "motion", "visual_motion": "motion", "movement": "motion",
+    "scene_change": "scene_change", "scene_cut": "scene_change",
+    "visual_change": "scene_change", "cut_density": "cut_density",
+    "audio_energy": "audio_energy", "audio_spike": "audio_spike",
+    "speech_onset": "speech_onset",
+}
+
+
+def normalize_signal_kinds(windows: Iterable[dict[str, Any]]) -> dict[str, bool]:
+    """Canonical activity kinds for a signal-window manifest (aliases resolved)."""
+    kinds: dict[str, bool] = {}
+    for w in (windows or []):
+        if isinstance(w, dict):
+            kind = BASIS_TO_KIND.get(str(w.get("basis") or "").strip().lower())
+            if kind:
+                kinds[kind] = True
+    return kinds
+
 PAYOFF_CUES: tuple[str, ...] = (
     "fall", "fell", "impact", "crash", "hit", "reveal", "revealed", "confrontation",
     "confronted", "punchline", "prank landed", "response", "reacted", "shocked",
@@ -78,6 +102,7 @@ class InspectionEvidence:
     media_segment_seconds: float = 0.0
     timestamps: tuple[dict[str, Any], ...] = ()
     provenance: tuple[str, ...] = ()
+    last_artifact_path: str = ""          # retained for the media-aware model pass
 
     def has_visual(self) -> bool:
         return bool(self.visual_opening)
@@ -116,6 +141,12 @@ def first_look_windows() -> tuple[float, ...]:
 
 def assess_stop(ev: InspectionEvidence) -> FieldAssessment:
     """Is there an immediate reason NOT to swipe? (0-3s)"""
+    # A media-aware model pass that actually watched the opening is real hook
+    # evidence; it is checked BEFORE the no-evidence failure so a watched clip
+    # is never discarded as uninspected.
+    if ev.provider_hints.get("hook"):
+        return FieldAssessment(PASS, "media_model_observed_hook_at_open",
+                               ("media_model",), {"hook": True})
     # No visual opening AND no audio/activity signals means significance exists
     # only in caption/title — explicit negative evidence, never a PASS.
     if not ev.has_visual() and not ev.signals:
@@ -231,11 +262,7 @@ def inspect_bounded(record: Any, *, fetch_captions: Callable[[str], Any] | None 
         try:
             windows = fetch_signals(url) or []
             if windows:
-                kinds: dict[str, Any] = {}
-                for w in windows:
-                    if isinstance(w, dict) and w.get("basis"):
-                        kinds[w["basis"]] = True
-                ev.signals = kinds
+                ev.signals = normalize_signal_kinds(windows)
                 starts = [w.get("start_s") for w in windows if isinstance(w, dict) and w.get("start_s") is not None]
                 ends = [w.get("end_s") for w in windows if isinstance(w, dict) and w.get("end_s") is not None]
                 if starts and ends:
@@ -268,16 +295,17 @@ def populate_from_inspection(candidate: Any, ev: InspectionEvidence,
     activity = assessments.get("activity")
     payoff = assessments.get("payoff")
     reaction = assessments.get("reaction_angle")
+    emotion = assessments.get("emotion_event_type")
     me = dict(getattr(candidate, "moment_evidence", {}) or {})
     me.update({
         "preview_reference": ev.preview_reference or None,
-        "hook_0_3s": (hook.value.get("hook") or hook.reason) if hook and hook.passed else None,
+        "hook_0_3s": ((hook.value or {}).get("hook") or hook.reason) if hook and hook.passed else None,
         "action_activity": (activity.value or {}).get("strength") if activity and activity.passed else None,
         "setup": assessments["setup"].reason if assessments.get("setup") and assessments["setup"].passed else None,
         "anticipation_escalation": assessments["escalation"].reason if assessments.get("escalation") and assessments["escalation"].passed else None,
         "payoff": payoff.reason if payoff and payoff.passed else None,
         "reaction_resolution": payoff.reason if payoff and payoff.passed else None,
-        "emotion_event_type": assessments.get("emotion_event_type").value if assessments.get("emotion_event_type") else None,
+        "emotion_event_type": emotion.value if emotion is not None else None,
         "reaction_angle": (reaction.value or {}).get("angle") if reaction and reaction.passed else None,
         "exact_timestamps": list(ev.timestamps) or None,
     })
@@ -298,27 +326,41 @@ def inspect_with_escalation(record: Any, *, fetch_preview: Callable[..., Any],
                             fetch_captions: Callable[[str], Any] | None = None,
                             max_window: float = 12.0,
                             start: float = 0.0,
+                            retain_last: bool = False,
                             ) -> tuple[InspectionEvidence, tuple[dict[str, Any], ...]]:
     """0-3s first; extend to 8s then 12s ONLY while the decision is ambiguous.
 
     Never continues past ``max_window`` and never processes the full source.
     Returns the evidence plus a per-window attempt log for honest reporting.
+    ``retain_last`` keeps the final artifact on ``ev.last_artifact_path`` for a
+    media-aware model pass; the caller must then clean it up.
     """
     import time as _time
     url = str(getattr(record, "canonical_url", "") or "")
     ev = InspectionEvidence(preview_reference=str(getattr(record, "thumbnail_reference", "") or ""))
     prov: list[str] = []
     log: list[dict[str, Any]] = []
+    all_segments: list[dict[str, Any]] = []
 
     if fetch_captions is not None:
         try:
             segments, _t = fetch_captions(url)
             if segments:
-                ev.caption_text = " ".join(x.get("text", "") for x in segments[:40])[:2000]
-                ev.spoken_hook = ev.caption_text[:200]
+                all_segments = [s for s in segments if isinstance(s, dict)]
                 prov.append("captions")
         except Exception as exc:  # noqa: BLE001
             prov.append(f"captions_failed:{type(exc).__name__}")
+
+    def _scope_captions(win_end: float) -> None:
+        """Captions must describe the INSPECTED interval, not the whole source."""
+        if not all_segments:
+            return
+        scoped = [s for s in all_segments
+                  if float(s.get("start_s", 0.0) or 0.0) >= start - 0.001
+                  and float(s.get("start_s", 0.0) or 0.0) <= start + win_end + 0.5]
+        text = " ".join(x.get("text", "") for x in scoped[:40])[:2000]
+        ev.caption_text = text
+        ev.spoken_hook = text[:200]
 
     for end in windows:
         if end > max_window:
@@ -339,23 +381,37 @@ def inspect_with_escalation(record: Any, *, fetch_preview: Callable[..., Any],
         try:
             if analyze_signals is not None and getattr(preview, "available", False):
                 manifest = analyze_signals(getattr(preview, "artifact_path"), max_seconds=int(end)) or {}
-                kinds = {w.get("basis"): True for w in (manifest.get("signal_windows") or [])
-                         if isinstance(w, dict) and w.get("basis")}
-                ev.signals = kinds
+                # Canonical kinds AT COLLECTION: assessments, decide() and the
+                # confidence dimensions all see the same resolved activity names.
+                ev.signals = normalize_signal_kinds(manifest.get("signal_windows") or [])
                 ev.timestamps = tuple({"start_s": w.get("start_s"), "end_s": w.get("end_s"),
                                        "basis": w.get("basis")}
                                       for w in (manifest.get("signal_windows") or [])
                                       if isinstance(w, dict) and w.get("basis"))
-                entry["signals"] = sorted(kinds)
+                entry["signals"] = sorted(ev.signals)
             if getattr(preview, "available", False):
                 ev.visual_opening = True
                 ev.window_seconds = end
                 ev.media_segment_seconds = end
+                _scope_captions(end)
                 prov.append(f"bounded_preview_{int(start)}s+{int(end)}s")
             else:
                 prov.append("bounded_preview_unavailable")
         except Exception as exc:  # noqa: BLE001
             entry["signal_error"] = type(exc).__name__
+        finally:
+            # The retained artifact lives until analysis finishes; free it now
+            # unless the caller asked to keep it for a media-aware model pass.
+            if retain_last:
+                _old = ev.last_artifact_path
+                _new = getattr(preview, "artifact_path", "") or ""
+                if _old and _old != _new:
+                    from .bounded_preview import cleanup
+                    cleanup(_old)
+                ev.last_artifact_path = _new
+            else:
+                from .bounded_preview import cleanup
+                cleanup(preview)
         entry["duration_ms"] = int((_time.time() - started) * 1000)
         log.append(entry)
 

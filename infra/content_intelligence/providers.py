@@ -37,9 +37,10 @@ QWEN_PINNED_MODEL = "qwen/qwen3.5-9b"
 DEFAULT_TRANSCRIPT_PROVIDER = "gemini"
 
 # Approximate per-token pricing ($/M tokens) — documented estimates for cost
-# accounting (not billing). Gemini Flash-Lite and a 9B-class OpenRouter model.
+# accounting (not billing). Published Gemini 3.5 Flash-Lite rates as of
+# 2026-09-22; the older 0.075/0.30 pair under-counted every model call.
 _PRICING: dict[str, tuple[float, float]] = {
-    "gemini": (0.075, 0.30),
+    "gemini": (0.30, 2.50),
     "qwen": (0.02, 0.06),
 }
 
@@ -96,10 +97,11 @@ def load_key(env_var: str, *extra_paths: str) -> str:
         if not os.path.exists(p) or p in seen:
             continue
         seen.add(p)
-        for line in open(p, encoding="utf-8"):
-            line = line.strip()
-            if line.startswith(f"{env_var}="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
+        with open(p, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith(f"{env_var}="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
     return ""
 
 
@@ -245,6 +247,13 @@ class GeminiProvider:
     name = "gemini"
     version = GEMINI_PINNED_MODEL
 
+    # Inline media accepted by generateContent (base64 inline_data parts).
+    MEDIA_MIMES = {
+        ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+        ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav",
+    }
+    MAX_INLINE_MEDIA_BYTES = 20 * 1024 * 1024
+
     def __init__(self, api_key: str, model: str = GEMINI_PINNED_MODEL,
                  temperature: float = 0.2, max_output_tokens: int = 1200,
                  timeout: float = 60.0, max_transcript_chars: int = 12000) -> None:
@@ -255,32 +264,26 @@ class GeminiProvider:
         self.timeout = timeout
         self.max_transcript_chars = max_transcript_chars
 
-    def assess(self, evidence_bundle: Any, brief: Any) -> dict[str, Any]:
-        if not self.api_key:
-            raise ProviderError("AUTH", "LOOM_GEMINI_KEY absent", retryable=False)
-        prompt = build_evidence_prompt(evidence_bundle, self.max_transcript_chars,
-                            getattr(evidence_bundle, "signal_windows", None))
-        url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-               + self.model + ":generateContent?key=" + self.api_key)
-        body = {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": self.temperature,
-                                 "maxOutputTokens": self.max_output_tokens},
-        }
-        t0 = time.time()
-        try:
-            req = urllib.request.Request(url, data=json.dumps(body).encode(),
-                                         headers={"Content-Type": "application/json"},
-                                         method="POST")
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                raw = json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode()[:300]
-            raise ProviderError("HTTP", f"Gemini HTTP {e.code}: {detail}",
-                                retryable=e.code in (429, 500, 502, 503)) from e
-        except urllib.error.URLError as e:
-            raise ProviderError("NETWORK", f"Gemini network: {e.reason}", retryable=True) from e
+    def _url(self) -> str:
+        return ("https://generativelanguage.googleapis.com/v1beta/models/"
+                + self.model + ":generateContent?key=" + self.api_key)
 
+    def _inline_part(self, path: str) -> dict[str, Any]:
+        from pathlib import Path
+        p = Path(path)
+        mime = self.MEDIA_MIMES.get(p.suffix.lower())
+        if not mime or not p.exists():
+            raise ProviderError("BAD_MEDIA",
+                                f"unsupported or missing media {p.name!r}", retryable=False)
+        data = p.read_bytes()
+        if len(data) > self.MAX_INLINE_MEDIA_BYTES:
+            raise ProviderError("MEDIA_TOO_LARGE",
+                                f"{p.name} is {len(data)} bytes (> {self.MAX_INLINE_MEDIA_BYTES})",
+                                retryable=False)
+        import base64
+        return {"inline_data": {"mime_type": mime, "data": base64.b64encode(data).decode()}}
+
+    def _finalize(self, raw: dict[str, Any], t0: float) -> dict[str, Any]:
         cand = (raw.get("candidates") or [{}])[0]
         text = cand.get("content", {}).get("parts", [{}])[0].get("text", "")
         um = raw.get("usageMetadata", {})
@@ -298,6 +301,66 @@ class GeminiProvider:
             cost_usd=_estimate_cost("gemini", in_tok, out_tok),
         ).to_dict()
         return parsed
+
+    def assess(self, evidence_bundle: Any, brief: Any) -> dict[str, Any]:
+        if not self.api_key:
+            raise ProviderError("AUTH", "LOOM_GEMINI_KEY absent", retryable=False)
+        prompt = build_evidence_prompt(evidence_bundle, self.max_transcript_chars,
+                            getattr(evidence_bundle, "signal_windows", None))
+        parts: list[dict[str, Any]] = [{"text": prompt}]
+        for mp in (getattr(evidence_bundle, "media_paths", None) or []) or []:
+            parts.append(self._inline_part(str(mp)))
+        body = {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"temperature": self.temperature,
+                                 "maxOutputTokens": self.max_output_tokens},
+        }
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(self._url(), data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"},
+                                         method="POST")
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode()[:300]
+            raise ProviderError("HTTP", f"Gemini HTTP {e.code}: {detail}",
+                                retryable=e.code in (429, 500, 502, 503)) from e
+        except urllib.error.URLError as e:
+            raise ProviderError("NETWORK", f"Gemini network: {e.reason}", retryable=True) from e
+        return self._finalize(raw, t0)
+
+    def assess_media(self, media_path: str, prompt: str,
+                     max_output_tokens: int | None = None) -> dict[str, Any]:
+        """Assess REAL bounded video/audio (inline_data), not text-only.
+
+        The shared evidence contract still applies: the model must return the
+        same JSON shape, and must not invent transcript-level claims for media
+        it has actually seen. Classified failures let callers fall back to the
+        text-only assessment WITHOUT hiding that media understanding failed.
+        """
+        if not self.api_key:
+            raise ProviderError("AUTH", "LOOM_GEMINI_KEY absent", retryable=False)
+        parts: list[dict[str, Any]] = [{"text": prompt}, self._inline_part(media_path)]
+        body = {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {"temperature": self.temperature,
+                                 "maxOutputTokens": max_output_tokens or self.max_output_tokens},
+        }
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(self._url(), data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"},
+                                         method="POST")
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode()[:300]
+            raise ProviderError("HTTP", f"Gemini HTTP {e.code}: {detail}",
+                                retryable=e.code in (429, 500, 502, 503)) from e
+        except urllib.error.URLError as e:
+            raise ProviderError("NETWORK", f"Gemini network: {e.reason}", retryable=True) from e
+        return self._finalize(raw, t0)
 
 
 # Structured-output schema for the Qwen assessment response. Mirrors EXACTLY the

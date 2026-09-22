@@ -25,9 +25,21 @@ from typing import Any
 from .discovery_record import DiscoveryRecord
 
 # Metric alias groups (first hit wins). Order matters for volume selection.
-_VOLUME_KEYS = ("views", "score", "ups", "upvotes")
-_LIKE_KEYS = ("likes", "like_count", "favorites")
-_COMMENT_KEYS = ("comments", "num_comments", "comment_count")
+# Volume keys are platform-aware: TikTok/Instagram name views differently, and
+# a platform-agnostic key list silently dropped playCount/videoPlayCount,
+# recording "missing views" on posts with millions of them.
+_VOLUME_KEYS_BY_PLATFORM: dict[str, tuple[str, ...]] = {
+    "tiktok": ("playCount", "views", "viewCount"),
+    "instagram": ("videoPlayCount", "playCount", "plays", "views", "viewCount"),
+    "youtube": ("views", "viewCount", "view_count"),
+    "twitch": ("view_count", "views", "viewCount"),
+    "kick": ("view_count", "views", "viewCount", "like_count"),
+    "reddit": ("score", "ups", "upvotes"),
+}
+_VOLUME_KEYS = ("views", "score", "ups", "upvotes",
+                "playCount", "videoPlayCount", "plays", "viewCount", "view_count")
+_LIKE_KEYS = ("likes", "like_count", "favorites", "diggCount", "likesCount")
+_COMMENT_KEYS = ("comments", "num_comments", "comment_count", "commentCount", "commentsCount")
 
 
 def _first_numeric(metrics: dict[str, Any], *keys: str) -> tuple[int | None, str]:
@@ -100,7 +112,8 @@ def normalize_signals(record: DiscoveryRecord) -> NormalizedSignals:
     metrics = dict(record.observed_metrics or {})
     platform = (record.platform or "").lower()
 
-    volume, volume_metric = _first_numeric(metrics, *_VOLUME_KEYS)
+    volume_keys = _VOLUME_KEYS_BY_PLATFORM.get(platform, _VOLUME_KEYS)
+    volume, volume_metric = _first_numeric(metrics, *volume_keys)
     likes, _ = _first_numeric(metrics, *_LIKE_KEYS)
     comments, _ = _first_numeric(metrics, *_COMMENT_KEYS)
 

@@ -399,6 +399,18 @@ def completeness_gate(plan: BoundaryPlan, segments: Sequence[dict[str, Any]], *,
     before = [t for t in (segments or []) if isinstance(t, dict)
               and float(t.get("start_s", 0.0) or 0.0) < plan.recommended_clip_start]
 
+    # Signal windows INSIDE the clip, plus windows overlapping its end region.
+    sig_inside = [w for w in (signals or []) if isinstance(w, dict)
+                  and float(w.get("start_s", 0.0) or 0.0) >= lo - 0.001
+                  and float(w.get("end_s", 0.0) or 0.0) <= hi + 0.001]
+    # A window still running AT the clip end (starts before it, ends at or after
+    # it), and ONLY such windows: later unrelated activity must never count.
+    active_at_end = any(isinstance(w, dict)
+                        and float(w.get("start_s", 0.0) or 0.0) <= hi - 0.001
+                        and float(w.get("end_s", 0.0) or 0.0) >= hi - 0.001
+                        for w in (signals or ()))
+    bases_inside = {str(w.get("basis") or "").lower() for w in sig_inside}
+
     # sentence cut off at the END (either a half-covered segment, or no terminal punctuation)
     if cut_tail:
         reasons.append(C_INCOMPLETE_SENTENCE); detail.append("clip ends mid-utterance")
@@ -414,18 +426,24 @@ def completeness_gate(plan: BoundaryPlan, segments: Sequence[dict[str, Any]], *,
         if not any(c in f"{text} {' '.join(str(b.get('text', '')).lower() for b in before)}"
                    for c in SETUP_CUES) and not before:
             reasons.append(C_MISSING_SETUP); detail.append("no setup evidence before/inside")
-    # payoff
-    if not any(c in text for c in PAYOFF_CUES):
+    # payoff: caption cue OR an impact-like signal peak inside the clip. A strong
+    # audio spike with visual motion is real payoff evidence when captions are
+    # absent; without it, caption-only sources with no captions could never pass.
+    payoff_from_text = any(c in text for c in PAYOFF_CUES)
+    payoff_from_signals = ({"audio_spike", "audio_energy", "motion", "scene_change"} & bases_inside)
+    if not payoff_from_text and not (len(payoff_from_signals) >= 2):
         reasons.append(C_MISSING_PAYOFF); detail.append("no payoff cue inside the clip")
     # unresolved event: activity still above baseline at the clip end
-    active_at_end = any(isinstance(w, dict) and float(w.get("end_s", 0.0) or 0.0) >= plan.recommended_clip_end - 0.5
-                        for w in (signals or ()))
     if active_at_end and plan.moment_type in VISUAL_FIRST_TYPES:
         reasons.append(C_EVENT_UNRESOLVED); detail.append("signals still active at clip end")
     elif active_at_end:
         reasons.append(C_REACTION_TRUNCATED); detail.append("reaction may be cut")
-    # mid-action cut for physical types
-    if plan.moment_type in VISUAL_FIRST_TYPES and (plan.duration < 4.0 or cut_tail):
+    # mid-action cut for physical types: only when the action is provably cut -
+    # the clip ends mid-utterance, OR more source content exists after the clip
+    # end while the clip is too short to contain a resolution. A very short
+    # source whose clip covers ALL of it is complete by construction.
+    content_after = any(t[0] > hi + 0.001 for t in allsegs)
+    if plan.moment_type in VISUAL_FIRST_TYPES and (cut_tail or (plan.duration < 4.0 and content_after)):
         reasons.append(C_CUT_MID_ACTION); detail.append("physical action cut before resolution")
     # context
     if len(text.split()) < 3:
@@ -437,23 +455,55 @@ def completeness_gate(plan: BoundaryPlan, segments: Sequence[dict[str, Any]], *,
     return CompletenessResult(verdict, tuple(dict.fromkeys(reasons)), tuple(detail))
 
 
+def _next_real_boundary(plan: BoundaryPlan, segments: Sequence[dict[str, Any]],
+                        signals: Iterable[dict[str, Any]], *, max_extend_s: float,
+                        duration_hint: float | None) -> float | None:
+    """The FIRST real boundary after the current end (segment or signal end),
+    capped by the total allowed extension. Never a blind fixed step."""
+    current_end = plan.recommended_clip_end
+    ceiling = current_end + max_extend_s
+    if duration_hint:
+        ceiling = min(ceiling, float(duration_hint))
+    cands: list[float] = []
+    for seg in (segments or []):
+        if not isinstance(seg, dict):
+            continue
+        en = float(seg.get("end_s", 0.0) or 0.0)
+        if current_end + 0.01 < en <= ceiling:
+            cands.append(en)
+    for w in (signals or ()):
+        if not isinstance(w, dict):
+            continue
+        en = float(w.get("end_s", 0.0) or 0.0)
+        if current_end + 0.01 < en <= ceiling:
+            cands.append(en)
+    return min(cands) if cands else None
+
+
 def repair_boundaries(plan: BoundaryPlan, gate: CompletenessResult,
                       segments: Sequence[dict[str, Any]], *, signals: Iterable[dict[str, Any]] = (),
                       max_attempts: int = 3, max_extend_s: float = 12.0,
                       duration_hint: float | None = None) -> tuple[BoundaryPlan, CompletenessResult, tuple[dict[str, Any], ...]]:
-    """Bounded repair: extend/retract a little, then re-evaluate. Never unbounded."""
+    """Bounded, EVIDENCE-DRIVEN repair: extend to the next real boundary, then
+    re-evaluate. Never an unbounded or blind fixed-length extension."""
     attempts: list[dict[str, Any]] = []
     best_plan, best_gate = plan, gate
     if gate.passed:
         return best_plan, best_gate, tuple(attempts)
     current = plan
     for i in range(1, max_attempts + 1):
-        step = min(max_extend_s, 4.0 * i)
+        nxt = _next_real_boundary(current, segments, signals,
+                                  max_extend_s=max_extend_s, duration_hint=duration_hint)
+        if nxt is None:
+            attempts.append({"attempt": i, "action": "extend_end", "extended_s": 0.0,
+                             "new_end": current.recommended_clip_end,
+                             "verdict": "no_further_boundary", "reasons": []})
+            break
+        step = round(nxt - current.recommended_clip_end, 3)
         cand = BoundaryPlan(
             event_timestamp=current.event_timestamp,
             recommended_clip_start=current.recommended_clip_start,
-            recommended_clip_end=(min(current.recommended_clip_end + 4.0, float(duration_hint))
-                                  if duration_hint else current.recommended_clip_end + 4.0),
+            recommended_clip_end=nxt,
             start_reason=current.start_reason + f"+repair_end_{i}",
             end_reason=current.end_reason + f"+repair_end_{i}",
             moment_type=current.moment_type,
@@ -462,9 +512,9 @@ def repair_boundaries(plan: BoundaryPlan, gate: CompletenessResult,
             start_anchors=current.start_anchors,
             search_telemetry=dict(current.search_telemetry,
                                   repaired=f"extend_end_{i}"),
-            provenance=tuple(current.provenance) + (f"bounded_repair_end_+4s_try{i}",))
+            provenance=tuple(current.provenance) + (f"bounded_repair_to_next_boundary_try{i}",))
         g = completeness_gate(cand, segments, signals=signals)
-        attempts.append({"attempt": i, "action": "extend_end", "extended_s": 4.0,
+        attempts.append({"attempt": i, "action": "extend_end", "extended_s": step,
                          "new_end": cand.recommended_clip_end, "verdict": g.verdict,
                          "reasons": list(g.reasons)})
         current, best_gate = cand, g

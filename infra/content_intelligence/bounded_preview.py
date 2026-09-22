@@ -95,6 +95,11 @@ def fetch_bounded_preview(url: str, *, end: float = 3.0, start: float = 0.0,
     end = start + max(0.0, min(float(end) - start, MAX_WINDOW))
     provider = _provider_of(url)
     tmp = tempfile.mkdtemp(prefix="loom-inspect-")
+    # The artifact is RETAINED for the caller (analysis happens after this
+    # returns) unless `keep` copied it elsewhere. Deleting the temp dir here
+    # made every returned preview point at a deleted file: available=True with
+    # no bytes to analyze. Callers MUST call cleanup() once analysis finishes.
+    retain_tmp = False
     try:
         cmd = [
             "yt-dlp", "--no-playlist", "--no-update",
@@ -122,6 +127,7 @@ def fetch_bounded_preview(url: str, *, end: float = 3.0, start: float = 0.0,
             return BoundedPreview(start, end, start, end, str(kept), size, provider,
                                   "section_download", False, "",
                                   (f"bounded_section_0_{int(end)}s", "artifact_retained"))
+        retain_tmp = True
         return BoundedPreview(start, end, start, end, str(art), size, provider,
                               "section_download", False, "",
                               (f"bounded_section_0_{int(end)}s",))
@@ -134,14 +140,23 @@ def fetch_bounded_preview(url: str, *, end: float = 3.0, start: float = 0.0,
                               reason=f"toolchain missing: {type(exc).__name__}",
                               provenance=("toolchain_missing",))
     finally:
-        if not keep:
+        if not retain_tmp:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def cleanup(preview: BoundedPreview) -> None:
-    """Delete a retained artifact (temporary inspection data, not an asset)."""
-    if preview.artifact_path:
-        shutil.rmtree(str(Path(preview.artifact_path).parent), ignore_errors=True)
+def cleanup(preview: Any) -> None:
+    """Delete a retained artifact (temporary inspection data, not an asset).
+
+    Accepts a BoundedPreview or a bare artifact path. Only removes directories
+    this module created (loom-inspect-*): a fabricated or foreign path must
+    never cause a parent-directory delete."""
+    path = preview if isinstance(preview, str) else getattr(preview, "artifact_path", "")
+    if not path:
+        return
+    parent = Path(path).parent
+    if not parent.name.startswith("loom-inspect"):
+        return
+    shutil.rmtree(str(parent), ignore_errors=True)
 
 
 @dataclass

@@ -134,6 +134,106 @@ class ContentStoreSupabase:
         rows = self._request("GET", f"{table}?idempotency_key=eq.{q}&select=idempotency_key")
         return len(rows) if isinstance(rows, list) else 0
 
+    def upsert_candidate(self, c: Any) -> str:
+        """Persist the AUTHORITATIVE joined candidate (post-FIRE + ranking).
+
+        Idempotent per duplicate_fingerprint: replay never duplicates, and the
+        latest pipeline state wins. The Source Review queue consumes this table.
+        """
+        me = dict(getattr(c, "moment_evidence", None) or {})
+        bp = dict(getattr(c, "boundary_plan", None) or {})
+        comp = dict(getattr(c, "completeness", None) or {})
+        mt = dict(getattr(c, "moment_type", None) or {})
+        payload = {
+            "duplicate_fingerprint": c.duplicate_fingerprint,
+            "tenant_id": getattr(c, "tenant_id", "") or "",
+            "profile_id": getattr(c, "profile_id", "") or "",
+            "platform": getattr(c, "platform", "") or "",
+            "platform_content_id": c.platform_content_id or "",
+            "title": c.title or "",
+            "canonical_url": getattr(c, "canonical_url", "") or "",
+            "creator_channel_identity": getattr(c, "creator_channel_identity", "") or "",
+            "publication_timestamp": getattr(c, "publication_timestamp", None),
+            "market_score": int(c.market_score or 0),
+            "content_score": int(getattr(c, "content_score_recalibrated", None)
+                                or c.content_worthiness or 0),
+            "selection_score": int(getattr(c, "selection_score", None) or 0),
+            "confidence_score": int(getattr(c, "evidence_confidence", None) or 0),
+            "selection_outcome": c.selection_outcome or "",
+            "fire_passed": bool(c.fire_passed),
+            "fire_reasons": list(getattr(c, "fire_reasons", ()) or ()),
+            "completeness": comp or None,
+            "completeness_verdict": (comp or {}).get("completeness_verdict", ""),
+            "boundary_plan": bp or None,
+            "moment_type": mt or None,
+            "moment_evidence": me or None,
+            "evidence_depth": c.evidence_depth or "",
+            "source_mode": c.source_mode or "",
+            "source_relative_rank": getattr(c, "source_relative_rank", None),
+            "source_candidate_count": int(getattr(c, "source_candidate_count", 0) or 0),
+            "duplicate_state": c.duplicate_state or "",
+            "rank_evidence": dict(getattr(c, "rank_evidence", None) or {}),
+            "inspection_attempts": list(getattr(c, "inspection_attempts", ()) or ()),
+            "media_assessment_status": c.media_assessment_status or "",
+            "media_assessment": dict(getattr(c, "media_assessment", None) or {}),
+            "signal_status": c.signal_status or "",
+            "status": c.status or "",
+            "rejection_reason": c.rejection_reason or "",
+        }
+        self._request("POST",
+                      "loom_source_candidates?on_conflict=duplicate_fingerprint",
+                      payload)
+        return "inserted"
+
+    def upsert_selection_fire(self, c: Any) -> str:
+        """Write the FIRE/moment fields onto the selection row the queue reads.
+
+        The queue's legacy join (selections + discovered_sources) keeps working
+        for pre-migration rows; this makes those rows FIRE-filterable too.
+        """
+        payload = {
+            "idempotency_key": getattr(c, "idempotency_key", "") or "",
+            "tenant_id": getattr(c, "tenant_id", "") or "",
+            "profile_id": getattr(c, "profile_id", "") or "",
+            "platform": getattr(c, "platform", "") or "",
+            "duplicate_fingerprint": c.duplicate_fingerprint,
+            "scoring_policy_version": getattr(c, "scoring_policy_version", "") or "",
+            "market_opportunity_score": int(c.market_score or 0),
+            "market_confidence": 0,
+            "content_worthiness_score": int(c.content_worthiness or 0),
+            "content_confidence": 0,
+            "tenant_format_fit_score": 0,
+            "provenance_usability_score": 0,
+            "source_selection_score": int(getattr(c, "selection_score", None) or 0),
+            "source_selection_confidence": int(getattr(c, "evidence_confidence", None) or 0),
+            "recommended_format": "",
+            "recommended_angle": "",
+            "suggested_timestamps": [],
+            "reason_codes": [],
+            "explanation": "",
+            "missing_evidence": [],
+            "disqualifying_risks": [],
+            "outcome": c.selection_outcome or "",
+            "fire_passed": bool(c.fire_passed),
+            "fire_reasons": list(getattr(c, "fire_reasons", ()) or ()),
+            "evidence_confidence": getattr(c, "evidence_confidence", None),
+            "content_score_recalibrated": getattr(c, "content_score_recalibrated", None),
+            "moment_evidence": dict(getattr(c, "moment_evidence", None) or {}),
+            "boundary_plan": dict(getattr(c, "boundary_plan", None) or {}),
+            "completeness": dict(getattr(c, "completeness", None) or {}),
+            "moment_type": dict(getattr(c, "moment_type", None) or {}),
+            "source_mode": c.source_mode or "",
+            "source_relative_rank": getattr(c, "source_relative_rank", None),
+            "source_candidate_count": int(getattr(c, "source_candidate_count", 0) or 0),
+            "duplicate_state": c.duplicate_state or "",
+            "rank_evidence": dict(getattr(c, "rank_evidence", None) or {}),
+            "inspection_attempts": list(getattr(c, "inspection_attempts", ()) or ()),
+            "media_assessment_status": c.media_assessment_status or "",
+        }
+        self._request("POST", "loom_source_selections?on_conflict=idempotency_key",
+                      payload)
+        return "inserted"
+
     def selections(self) -> list[dict[str, Any]]:
         rows = self._request("GET", "loom_source_selections?select=*&order=created_at.asc")
         return rows if isinstance(rows, list) else []

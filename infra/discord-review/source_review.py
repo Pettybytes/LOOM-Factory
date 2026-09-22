@@ -312,18 +312,77 @@ def decided_fingerprints(url: str, key: str) -> set[str]:
     return {r["duplicate_fingerprint"] for r in rows if isinstance(r, dict)} if isinstance(rows, list) else set()
 
 
+def _candidates_table_available(url: str, key: str) -> bool:
+    """Is the authoritative candidate table live (migration 040 applied)?"""
+    try:
+        rows = _get(url, key, "loom_source_candidates?select=duplicate_fingerprint&limit=1")
+        return isinstance(rows, list)
+    except SourceReviewStoreError:
+        return False
+
+
+def _candidate_from_row(s: dict[str, Any]) -> dict[str, Any]:
+    """Map one authoritative candidate row onto the queue's card contract."""
+    return {
+        "duplicate_fingerprint": s.get("duplicate_fingerprint", ""),
+        "tenant_id": s.get("tenant_id", ""),
+        "profile_id": s.get("profile_id", ""),
+        "platform": s.get("platform", ""),
+        "platform_content_id": s.get("platform_content_id", ""),
+        "title": s.get("title", ""),
+        "canonical_url": s.get("canonical_url", ""),
+        "creator_channel_identity": s.get("creator_channel_identity", ""),
+        "publication_timestamp": s.get("publication_timestamp", ""),
+        "market_opportunity_score": s.get("market_score"),
+        "content_worthiness_score": s.get("content_score"),
+        "source_selection_score": s.get("selection_score"),
+        "source_selection_confidence": s.get("confidence_score"),
+        "outcome": s.get("selection_outcome", ""),
+        "fire_passed": s.get("fire_passed", False),
+        "fire_reasons": s.get("fire_reasons") or [],
+        "completeness_verdict": s.get("completeness_verdict", ""),
+        "duplicate_state": s.get("duplicate_state", ""),
+        "source_relative_rank": s.get("source_relative_rank"),
+        "boundary_plan": s.get("boundary_plan") or {},
+        "suggested_timestamps": (s.get("boundary_plan") or {}).get("start_anchors") or [],
+        "top_reasons": [],
+    }
+
+
 def fetch_pending_candidates(url: str, key: str, limit: int = DEFAULT_LIMIT) -> list[dict[str, Any]]:
-    """Return top pending (completed-selection, production-excluded, not-decided)
-    candidates ordered by source_selection_score desc."""
+    """Return top pending candidates ordered by final selection score.
+
+    Reads the AUTHORITATIVE post-FIRE candidate table (migration 040) when it
+    exists: FIRE-passing, non-suppressed, production-excluded, not-decided.
+    Falls back to the legacy selections join only while the table is absent.
+    """
+    decided = decided_fingerprints(url, key)
+    if _candidates_table_available(url, key):
+        rows = _get(url, key,
+                    "loom_source_candidates?select=*&fire_passed=is.true"
+                    "&duplicate_state=neq.DUPLICATE_SUPPRESSED"
+                    "&order=selection_score.desc")
+        out: list[dict[str, Any]] = []
+        for s in (rows or []):
+            if not isinstance(s, dict):
+                continue
+            if _is_non_production(s.get("profile_id") or "", s.get("tenant_id") or ""):
+                continue
+            if s.get("duplicate_fingerprint", "") in decided:
+                continue
+            out.append(_candidate_from_row(s))
+            if len(out) >= limit:
+                break
+        return out
+
     sel_rows = _get(url, key, "loom_source_selections?select=*&order=source_selection_score.desc")
     src_rows = _get(url, key, "loom_discovered_sources?select=duplicate_fingerprint,title,canonical_url,platform_content_id,creator_channel_identity,publication_timestamp")
     ca_rows = _get(url, key, "loom_content_assessments?select=duplicate_fingerprint,reasons,content_confidence,evidence_level")
-    decided = decided_fingerprints(url, key)
 
     src_by_fp = {r["duplicate_fingerprint"]: r for r in (src_rows or []) if isinstance(r, dict)}
     ca_by_fp = {r["duplicate_fingerprint"]: r for r in (ca_rows or []) if isinstance(r, dict)}
 
-    out: list[dict[str, Any]] = []
+    out = []
     for s in (sel_rows or []):
         if not isinstance(s, dict):
             continue
@@ -364,6 +423,12 @@ def fetch_pending_candidates(url: str, key: str, limit: int = DEFAULT_LIMIT) -> 
 
 def fetch_candidate_by_fingerprint(url: str, key: str, fp: str) -> dict[str, Any] | None:
     """Look up one combined candidate by duplicate_fingerprint (for button clicks)."""
+    if _candidates_table_available(url, key):
+        q = urllib.parse.quote(fp)
+        rows = _get(url, key, f"loom_source_candidates?duplicate_fingerprint=eq.{q}&select=*&limit=1")
+        if isinstance(rows, list) and rows:
+            return _candidate_from_row(rows[0])
+        return None
     q = urllib.parse.quote(fp)
     sel = _get(url, key, f"loom_source_selections?duplicate_fingerprint=eq.{q}&select=*&limit=1")
     src = _get(url, key, f"loom_discovered_sources?duplicate_fingerprint=eq.{q}&select=title,canonical_url,platform_content_id,creator_channel_identity,publication_timestamp&limit=1")

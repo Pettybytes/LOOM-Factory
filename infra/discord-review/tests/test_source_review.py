@@ -204,5 +204,88 @@ class TestNonProduction(unittest.TestCase):
         self.assertFalse(_is_non_production("bryan-face-reaction", "dreemzy"))
 
 
+class TestAuthoritativeCandidateQueue(unittest.TestCase):
+    """The queue reads the authoritative post-FIRE candidate table when live."""
+
+    def test_prefers_candidate_table_with_fire_filter(self):
+        from unittest import mock
+        import source_review as sr
+        row = {
+            "duplicate_fingerprint": "f" * 64, "tenant_id": "dreemzy",
+            "profile_id": "bryan-face-reaction", "platform": "youtube",
+            "platform_content_id": "ccccccccccc", "title": "Puppy rescue",
+            "canonical_url": "https://www.youtube.com/watch?v=ccccccccccc",
+            "creator_channel_identity": "c", "publication_timestamp": None,
+            "market_score": 80, "content_score": 85, "selection_score": 88,
+            "confidence_score": 87, "selection_outcome": "fast_track",
+            "fire_passed": True, "fire_reasons": [],
+            "completeness_verdict": "PASS", "duplicate_state": "DISTINCT",
+            "boundary_plan": {"start_anchors": [{"timestamp": 1.0}]},
+        }
+        with mock.patch.object(sr, "_candidates_table_available", return_value=True), \
+             mock.patch.object(sr, "decided_fingerprints", return_value=set()), \
+             mock.patch.object(sr, "_get", return_value=[row]) as get:
+            out = sr.fetch_pending_candidates("http://sb", "k")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["title"], "Puppy rescue")   # title rides the row
+        self.assertTrue(out[0]["fire_passed"])
+        # The queue asked for FIRE-passing, non-suppressed rows.
+        call = get.call_args_list[0][0][2]
+        self.assertIn("fire_passed=is.true", call)
+        self.assertIn("duplicate_state=neq.DUPLICATE_SUPPRESSED", call)
+
+    def test_falls_back_to_legacy_join_without_candidate_table(self):
+        from unittest import mock
+        import source_review as sr
+        sel_row = {
+            "duplicate_fingerprint": "g" * 64, "tenant_id": "dreemzy",
+            "profile_id": "bryan-face-reaction", "platform": "youtube",
+            "market_opportunity_score": 70, "market_confidence": 0.8,
+            "content_worthiness_score": 75, "content_confidence": 0.5,
+            "source_selection_score": 72, "source_selection_confidence": 0.6,
+            "outcome": "standard_review",
+        }
+        src_row = {"duplicate_fingerprint": "g" * 64, "title": "Legacy title",
+                   "canonical_url": "https://x", "platform_content_id": "ddddddddddd",
+                   "creator_channel_identity": "c", "publication_timestamp": None}
+        ca_row = {"duplicate_fingerprint": "g" * 64, "reasons": [],
+                  "content_confidence": 0.5, "evidence_level": "transcript"}
+
+        def _fake_get(url, key, path):
+            if "loom_source_selections" in path:
+                return [sel_row]
+            if "loom_discovered_sources" in path:
+                return [src_row]
+            if "loom_content_assessments" in path:
+                return [ca_row]
+            return []
+
+        with mock.patch.object(sr, "_candidates_table_available", return_value=False), \
+             mock.patch.object(sr, "decided_fingerprints", return_value=set()), \
+             mock.patch.object(sr, "_get", side_effect=_fake_get):
+            out = sr.fetch_pending_candidates("http://sb", "k")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["title"], "Legacy title")
+
+    def test_candidate_row_carries_boundary_plan_for_handoff(self):
+        from unittest import mock
+        import source_review as sr
+        row = {
+            "duplicate_fingerprint": "h" * 64, "tenant_id": "dreemzy",
+            "profile_id": "bryan-face-reaction", "platform": "youtube",
+            "platform_content_id": "eeeeeeeeeee", "title": "T",
+            "canonical_url": "https://y", "market_score": 80, "content_score": 85,
+            "selection_score": 88, "confidence_score": 87,
+            "selection_outcome": "fast_track", "fire_passed": True,
+            "duplicate_state": "DISTINCT",
+            "boundary_plan": {"recommended_clip_start": 2.0, "recommended_clip_end": 14.0},
+        }
+        with mock.patch.object(sr, "_candidates_table_available", return_value=True), \
+             mock.patch.object(sr, "_get", return_value=[row]):
+            cand = sr.fetch_candidate_by_fingerprint("http://sb", "k", "h" * 64)
+        self.assertEqual(cand["boundary_plan"]["recommended_clip_start"], 2.0)
+        self.assertEqual(cand["boundary_plan"]["recommended_clip_end"], 14.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

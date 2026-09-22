@@ -67,6 +67,15 @@ class Pass1CandidateResult:
     platform_content_id: str
     title: str
     market_score: int
+    # Identity carried for the authoritative persisted record.
+    tenant_id: str = ""
+    profile_id: str = ""
+    platform: str = ""
+    canonical_url: str = ""
+    publication_timestamp: Any = None
+    creator_channel_identity: str = ""
+    idempotency_key: str = ""
+    scoring_policy_version: str = ""
     status: str = ""               # scored | skipped_market | captions_unavailable | error
     content_worthiness: int | None = None
     selection_score: int | None = None
@@ -103,6 +112,8 @@ class Pass1CandidateResult:
     selected_zone: dict | None = None
     clip_start_plan: dict | None = None
     rejection_reason: str = ""
+    media_assessment_status: str = ""
+    media_assessment: dict | None = None
 
 
 @dataclass
@@ -322,6 +333,57 @@ class Pass1Pipeline:
         self.topic = topic_intelligence
         self.provider_name = provider_name or config.provider_name
         self.provider = provider
+        self._media_cost_usd = 0.0
+
+    def _media_assess(self, ev: Any, rec: Any) -> dict[str, Any] | None:
+        """Run the EXISTING provider over the real bounded media (inline_data).
+
+        Returns None when the provider cannot take media (e.g. a test double),
+        so the call site records an honest status instead of pretending.
+        """
+        provider = self.provider or build_provider(self.provider_name,
+                                                   _load_provider_key(self.provider_name))
+        fn = getattr(provider, "assess_media", None)
+        if fn is None:
+            return None
+        from .providers import _build_prompt
+        caption = (ev.caption_text or ev.spoken_hook or "").strip()
+        windows = [dict(t) for t in (ev.timestamps or ()) if isinstance(t, dict)]
+        note = ("A bounded video/audio excerpt of the INSPECTED OPENING is attached. "
+                "Assess what the media actually shows and sounds like; never invent "
+                "dialogue or events the media does not contain.")
+        if not caption:
+            label = "NO CAPTIONS FOR THIS CLIP (REAL MEDIA ATTACHED)"
+            prompt = _build_prompt("no captions available",
+                                   getattr(provider, "max_transcript_chars", 12000),
+                                   windows, label=label, note=note)
+        else:
+            label = "CAPTIONS SCOPED TO THE INSPECTED OPENING (REAL MEDIA ATTACHED)"
+            prompt = _build_prompt(caption, getattr(provider, "max_transcript_chars", 12000),
+                                   windows, label=label, note=note)
+        return fn(ev.last_artifact_path, prompt)
+
+    @staticmethod
+    def _merge_media_hints(ev: Any, parsed: dict[str, Any]) -> None:
+        """Ground hook/payoff/escalation/reaction hints in what the media model
+        actually observed. Thresholds are conservative: a hint only lands when
+        the model is reasonably sure the opening shows it."""
+        scores = parsed.get("scores") or {}
+
+        def _s(k: str) -> int:
+            v = scores.get(k)
+            return int(v) if isinstance(v, (int, float)) else 0
+
+        if _s("hook") >= 60:
+            ev.provider_hints["hook"] = True
+        if _s("payoff") >= 60:
+            ev.provider_hints["payoff"] = True
+        if _s("conflict_tension") >= 60 or _s("surprise") >= 70:
+            ev.provider_hints["escalation"] = True
+        if parsed.get("recommended_angle"):
+            ev.provider_hints["reaction_angle"] = str(parsed["recommended_angle"])
+        if isinstance(parsed.get("content_worthiness_score"), (int, float)):
+            ev.provider_hints["media_model_worthiness"] = int(parsed["content_worthiness_score"])
 
     def run(self, records: list[Any], store: Any) -> Pass1RunResult:
         result = Pass1RunResult()
@@ -334,6 +396,20 @@ class Pass1Pipeline:
         # FIRE is unchanged; this only orders survivors and suppresses near-identical
         # versions of the same event.
         apply_run_level_ranking(result.candidates)
+        # Persist the AUTHORITATIVE joined candidate AFTER FIRE + ranking so the
+        # Source Review queue reads the final state (not pre-FIRE selection rows).
+        for c in result.candidates:
+            if c.status == "scored" and getattr(c, "duplicate_fingerprint", ""):
+                try:
+                    if hasattr(store, "upsert_candidate"):
+                        store.upsert_candidate(c)
+                    if hasattr(store, "upsert_selection_fire"):
+                        store.upsert_selection_fire(c)
+                except Exception as exc:  # noqa: BLE001
+                    # Persistence is not allowed to silently advance a candidate:
+                    # a store failure marks the run honestly instead.
+                    c.status = "error"
+                    c.error = f"persist_candidate: {type(exc).__name__}"
         return result
 
     def _apply_fire(self, c: Any, rec: Any, *, segments: Any = None,
@@ -390,7 +466,26 @@ class Pass1Pipeline:
         type_result = None
         gate = None
         repairs: tuple = ()
-        if zone is not None:
+        if mode == "source_as_moment" and duration is not None:
+            # A native Short IS the moment. The complete asset is the clip:
+            # boundaries are [0, duration] BY CONSTRUCTION, so no locator
+            # rebuild and no blind boundary repair can truncate it. A 120s
+            # short must never become a 15s guess.
+            from .moment_quality import BoundaryPlan, CompletenessResult
+            type_result = classify_moment_type(
+                transcript_text=" ".join(str(seg.get("text") or "") for seg in (segments or []) if isinstance(seg, dict)),
+                signal_bases=[str(w.get("basis")) for w in (signal_windows or [])
+                              if isinstance(w, dict) and w.get("basis")])
+            plan = BoundaryPlan(
+                event_timestamp=0.0, recommended_clip_start=0.0,
+                recommended_clip_end=float(duration),
+                start_reason="native_short_starts_at_zero",
+                end_reason="native_short_complete_asset",
+                moment_type=type_result.moment_type,
+                provenance=("source_as_moment", "complete_asset"))
+            gate = completeness_gate(plan, segments or [], signals=signal_windows or ())
+            inspect_start = 0.0
+        elif zone is not None:
             # MOMENT TYPE first: different types imply different boundaries. The
             # type comes from ALREADY-AVAILABLE evidence (no new model stage).
             # Pad the window: a type cue often sits just outside the provisional
@@ -443,47 +538,56 @@ class Pass1Pipeline:
             decide=_decide,
             fetch_captions=getattr(self, "_inspection_captions", fetch_transcript),
             start=inspect_start,
+            retain_last=True,
         )
         c.inspection_attempts = attempts
+
+        # Fold the pipeline-level extracted windows into the inspection evidence
+        # BEFORE any assessment runs (canonical kind names). This is what makes
+        # extracted activity reach activity_strength()/confidence; previously it
+        # happened after the assessments, so hook/activity/confidence saw nothing.
+        from .moment_inspection import normalize_signal_kinds
+        _extra = normalize_signal_kinds(signal_windows or [])
+        for _k, _v in _extra.items():
+            ev.signals[_k] = _v
+        if any(_k in _extra for _k in ("motion", "scene_change", "cut_density")):
+            ev.visual_opening = True
+
+        # MEDIA-AWARE MODEL PASS: the bounded video/audio the pipeline actually
+        # fetched goes INTO the existing provider, so hook/payoff/content
+        # evidence is grounded in real media instead of captions alone. Signal
+        # kinds were already canonicalized at collection (moment_inspection),
+        # so assessments see the resolved activity names.
+        media_assessment: dict[str, Any] | None = None
+        if ev.last_artifact_path:
+            from .bounded_preview import cleanup
+            try:
+                media_assessment = self._media_assess(ev, rec)
+                c.media_assessment_status = "ok" if media_assessment else "unsupported_provider"
+            except ProviderError as exc:
+                media_assessment = None
+                c.media_assessment_status = f"unavailable:{exc.code}"
+            except Exception as exc:  # noqa: BLE001
+                media_assessment = None
+                c.media_assessment_status = f"failed:{type(exc).__name__}"
+            finally:
+                cleanup(ev.last_artifact_path)
+                ev.last_artifact_path = ""
+        else:
+            c.media_assessment_status = "no_artifact"
+        if media_assessment:
+            c.media_assessment = dict(media_assessment)
+            self._merge_media_hints(ev, media_assessment)
+            um = media_assessment.get("usage") or {}
+            extra = float(um.get("cost_usd", 0.0) or 0.0)
+            if extra:
+                c.cost_usd = round((c.cost_usd or 0.0) + extra, 6)
+                self._media_cost_usd += extra
+
         a = {"stop": assess_stop(ev), "activity": assess_activity(ev), "setup": assess_setup(ev),
              "escalation": assess_escalation(ev), "payoff": assess_payoff(ev),
              "reaction_angle": assess_reaction_angle(ev)}
         populate_from_inspection(mc, ev, a)
-
-        # Attach the extracted multimodal windows to the inspection evidence.
-        # Found in live testing: windows were extracted and then IGNORED, so
-        # has_visual() stayed False (capping Content at the metadata-only ceiling)
-        # and activity_strength() stayed 0.0 (losing confidence dimensions) on every
-        # candidate regardless of how strong the clip actually was. The window
-        # "basis" names are also aliased onto ACTIVITY_KINDS, since the signal layer
-        # emits visual_motion/scene_cut where the evidence layer expects
-        # motion/scene_change.
-        _BASIS_TO_KIND = {
-            "motion": "motion", "visual_motion": "motion", "movement": "motion",
-            "scene_change": "scene_change", "scene_cut": "scene_change",
-            "visual_change": "scene_change", "cut_density": "cut_density",
-            "audio_energy": "audio_energy", "audio_spike": "audio_spike",
-            "speech_onset": "speech_onset",
-        }
-        _sig_kinds: dict[str, bool] = {}
-        for _w in (signal_windows or []):
-            if isinstance(_w, dict):
-                _kind = _BASIS_TO_KIND.get(str(_w.get("basis") or "").strip().lower())
-                if _kind:
-                    _sig_kinds[_kind] = True
-        if _sig_kinds:
-            try:
-                ev.signals = _sig_kinds
-                if any(k in _sig_kinds for k in ("motion", "scene_change", "cut_density")):
-                    ev.visual_opening = True
-            except Exception:
-                import dataclasses as _dc
-                try:
-                    ev = _dc.replace(ev, signals=_sig_kinds,
-                                     visual_opening=ev.visual_opening or any(
-                                         k in _sig_kinds for k in ("motion", "scene_change", "cut_density")))
-                except Exception:
-                    pass
 
         reaction_ok = bool(a["reaction_angle"].passed)
         payoff_ok = bool(a["payoff"].passed)
@@ -497,7 +601,12 @@ class Pass1Pipeline:
         conf_ev["age"] = market_ev.age_hours is not None
         conf_ev["engagement"] = market_ev.engagement is not None
         conf = evidence_confidence(platform=rec.platform, evidence=conf_ev)
-        content = recalibrate_content_score(c.content_worthiness, conf_ev)
+        # A media-aware model pass grounds the content score in what the clip
+        # actually showed; without one the text-only score stands.
+        _base_content = c.content_worthiness
+        if media_assessment and isinstance(media_assessment.get("content_worthiness_score"), int):
+            _base_content = int(media_assessment["content_worthiness_score"])
+        content = recalibrate_content_score(_base_content, conf_ev)
         sel = selection_score(market=int(c.market_score or 0), content=content,
                               tenant_fit_verdict=c.tenant_fit_verdict,
                               reaction_opportunity=reaction_ok,
@@ -678,6 +787,15 @@ class Pass1Pipeline:
         c.content_worthiness = assessment.content_worthiness_score
         c.selection_score = sel.source_selection_score
         c.selection_outcome = sel.outcome
+        # Carry the identity the authoritative record needs (store persistence).
+        c.tenant_id = rec.tenant_id
+        c.profile_id = rec.profile_id
+        c.platform = rec.platform
+        c.canonical_url = getattr(rec, "canonical_url", "") or ""
+        c.publication_timestamp = getattr(rec, "publication_timestamp", None)
+        c.creator_channel_identity = getattr(rec, "creator_channel_identity", "") or ""
+        c.idempotency_key = getattr(sel, "idempotency_key", "") or ""
+        c.scoring_policy_version = getattr(sel, "scoring_policy_version", "") or ""
         # 5. BOUNDED MOMENT INSPECTION -> grounded assessments -> EVIDENCE
         # CONFIDENCE -> FIRE. Only candidates that already passed Market and
         # Tenant Fit reach this point. A FIRE failure records explicit reasons
@@ -686,6 +804,8 @@ class Pass1Pipeline:
             self._apply_fire(c, rec, segments=segments,
                             model_timestamps=getattr(assessment, "candidate_timestamps", None),
                             signal_windows=signal_windows)
+            run.total_cost_usd = round(run.total_cost_usd + self._media_cost_usd, 6)
+            self._media_cost_usd = 0.0
         return c
 
 
