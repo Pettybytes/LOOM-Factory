@@ -34,7 +34,8 @@ from content_intelligence.moment_inspection import (  # noqa: E402
     FieldAssessment, InspectionEvidence, populate_from_inspection,
 )
 from content_intelligence.moment_quality import (  # noqa: E402
-    T_FALL, T_PHYSICAL, build_boundary_plan, completeness_gate, repair_boundaries,
+    C_INSUFFICIENT_CONTEXT, C_MISSING_PAYOFF, T_FALL, T_PHYSICAL,
+    build_boundary_plan, completeness_gate, repair_boundaries,
 )
 from content_intelligence.pipeline import Pass1Config, Pass1Pipeline  # noqa: E402
 from test_pipeline import (_Brief, _FakeProvider, _FakeTopic, _FakeTopicResult,
@@ -107,7 +108,6 @@ class NativeShortCompleteAssetTests(unittest.TestCase):
 
 class EvidenceRepairTests(unittest.TestCase):
     """Repair extends to the NEXT REAL boundary — never blind fixed steps."""
-
     def test_repair_lands_on_a_real_segment_boundary(self):
         # natural_end stops at the mid-sentence cut (3.0 s); the only REAL
         # boundary after it is the 5.0 s sentence end. A blind +4 s step could
@@ -128,6 +128,44 @@ class EvidenceRepairTests(unittest.TestCase):
         _p, gate, attempts = repair_boundaries(plan, completeness_gate(plan, segs), segs)
         self.assertFalse(gate.passed)
         self.assertTrue(any(a.get("verdict") == "no_further_boundary" for a in attempts))
+
+
+class MediaEvidenceCompletenessTests(unittest.TestCase):
+    """The caption-only gate must never contradict real media understanding."""
+
+    @staticmethod
+    def _short_plan():
+        """The pipeline's native-Short plan: the complete asset [0, duration]."""
+        from content_intelligence.moment_quality import BoundaryPlan, T_UNKNOWN
+        return BoundaryPlan(
+            event_timestamp=0.0, recommended_clip_start=0.0,
+            recommended_clip_end=8.0, start_reason="native_short_starts_at_zero",
+            end_reason="native_short_complete_asset", moment_type=T_UNKNOWN,
+            provenance=("source_as_moment", "complete_asset"))
+
+    def test_captionless_short_with_real_evidence_passes(self):
+        plan = self._short_plan()
+        signals = [{"basis": "audio_spike", "start_s": 0.0, "end_s": 8.0},
+                   {"basis": "visual_motion", "start_s": 0.0, "end_s": 8.0},
+                   {"basis": "scene_cut", "start_s": 0.0, "end_s": 8.0}]
+        gate = completeness_gate(plan, [], signals=signals,
+                                 media_evidence={"payoff_understanding": True,
+                                                 "context_understanding": True})
+        self.assertTrue(gate.passed, gate.reasons)
+
+    def test_media_model_understanding_alone_carries_context_and_payoff(self):
+        plan = self._short_plan()
+        gate = completeness_gate(plan, [], signals=[],
+                                 media_evidence={"payoff_understanding": True,
+                                                 "context_understanding": True})
+        self.assertTrue(gate.passed, gate.reasons)
+
+    def test_captionless_short_without_evidence_still_fails_honestly(self):
+        plan = self._short_plan()
+        gate = completeness_gate(plan, [], signals=[])
+        self.assertFalse(gate.passed)
+        self.assertIn(C_MISSING_PAYOFF, gate.reasons)
+        self.assertIn(C_INSUFFICIENT_CONTEXT, gate.reasons)
 
 
 class AuthoritativePersistenceTests(unittest.TestCase):

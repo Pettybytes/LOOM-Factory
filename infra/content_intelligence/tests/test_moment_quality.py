@@ -114,7 +114,10 @@ class NaturalEndTests(unittest.TestCase):
     def test_premature_end_rejected_when_event_still_active(self):
         segs = [seg(10, "he fell out of the chair.")]
         plan = build_boundary_plan(T_FALL, 10.0, segs)
-        active = [{"basis": "motion", "start_s": 10.0, "end_s": plan.recommended_clip_end}]
+        # Activity OVERRUNNING the cut (ending after the clip end) is the only
+        # unresolved shape: a window ending exactly at the boundary is contained.
+        active = [{"basis": "motion", "start_s": 10.0,
+                   "end_s": plan.recommended_clip_end + 5.0}]
         gate = completeness_gate(plan, segs, signals=active)
         self.assertFalse(gate.passed)
         self.assertIn(C_EVENT_UNRESOLVED, gate.reasons)

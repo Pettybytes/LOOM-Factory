@@ -382,8 +382,17 @@ class CompletenessResult:
 
 
 def completeness_gate(plan: BoundaryPlan, segments: Sequence[dict[str, Any]], *,
-                      signals: Iterable[dict[str, Any]] = ()) -> CompletenessResult:
-    """Is the proposed clip a coherent standalone asset? Separate from FIRE."""
+                      signals: Iterable[dict[str, Any]] = (),
+                      media_evidence: dict[str, Any] | None = None) -> CompletenessResult:
+    """Is the proposed clip a coherent standalone asset? Separate from FIRE.
+
+    ``media_evidence`` carries what the media-aware model pass actually
+    understood about the inspected clip (payoff_understanding /
+    context_understanding). Caption-only checks must never contradict that
+    real evidence: a fully understood 8 s Short with no caption track is
+    complete, not MISSING_PAYOFF.
+    """
+    media_evidence = media_evidence or {}
     reasons: list[str] = []
     detail: list[str] = []
     lo, hi = plan.recommended_clip_start, plan.recommended_clip_end
@@ -403,11 +412,13 @@ def completeness_gate(plan: BoundaryPlan, segments: Sequence[dict[str, Any]], *,
     sig_inside = [w for w in (signals or []) if isinstance(w, dict)
                   and float(w.get("start_s", 0.0) or 0.0) >= lo - 0.001
                   and float(w.get("end_s", 0.0) or 0.0) <= hi + 0.001]
-    # A window still running AT the clip end (starts before it, ends at or after
-    # it), and ONLY such windows: later unrelated activity must never count.
+    # A window still running AT the clip end means the event overruns the cut.
+    # A window that ENDS exactly at the boundary is contained (the clip captured
+    # the whole event); only STRICT overrun — ending after the clip — is
+    # unresolved. Later unrelated activity never counts (start must precede hi).
     active_at_end = any(isinstance(w, dict)
                         and float(w.get("start_s", 0.0) or 0.0) <= hi - 0.001
-                        and float(w.get("end_s", 0.0) or 0.0) >= hi - 0.001
+                        and float(w.get("end_s", 0.0) or 0.0) > hi + 0.001
                         for w in (signals or ()))
     bases_inside = {str(w.get("basis") or "").lower() for w in sig_inside}
 
@@ -426,12 +437,14 @@ def completeness_gate(plan: BoundaryPlan, segments: Sequence[dict[str, Any]], *,
         if not any(c in f"{text} {' '.join(str(b.get('text', '')).lower() for b in before)}"
                    for c in SETUP_CUES) and not before:
             reasons.append(C_MISSING_SETUP); detail.append("no setup evidence before/inside")
-    # payoff: caption cue OR an impact-like signal peak inside the clip. A strong
-    # audio spike with visual motion is real payoff evidence when captions are
-    # absent; without it, caption-only sources with no captions could never pass.
+    # payoff: caption cue, OR an impact-like signal peak inside the clip, OR the
+    # media model's own observation. A strong audio spike with visual motion is
+    # real payoff evidence when captions are absent; without either, caption-only
+    # sources with no captions could never pass.
     payoff_from_text = any(c in text for c in PAYOFF_CUES)
     payoff_from_signals = ({"audio_spike", "audio_energy", "motion", "scene_change"} & bases_inside)
-    if not payoff_from_text and not (len(payoff_from_signals) >= 2):
+    payoff_from_media = bool(media_evidence.get("payoff_understanding"))
+    if not payoff_from_text and not payoff_from_media and not (len(payoff_from_signals) >= 2):
         reasons.append(C_MISSING_PAYOFF); detail.append("no payoff cue inside the clip")
     # unresolved event: activity still above baseline at the clip end
     if active_at_end and plan.moment_type in VISUAL_FIRST_TYPES:
@@ -446,7 +459,7 @@ def completeness_gate(plan: BoundaryPlan, segments: Sequence[dict[str, Any]], *,
     if plan.moment_type in VISUAL_FIRST_TYPES and (cut_tail or (plan.duration < 4.0 and content_after)):
         reasons.append(C_CUT_MID_ACTION); detail.append("physical action cut before resolution")
     # context
-    if len(text.split()) < 3:
+    if len(text.split()) < 3 and not media_evidence.get("context_understanding"):
         reasons.append(C_INSUFFICIENT_CONTEXT); detail.append("too little context")
 
     verdict = "PASS" if not reasons else "FAIL"

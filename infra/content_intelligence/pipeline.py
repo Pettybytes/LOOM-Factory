@@ -590,6 +590,29 @@ class Pass1Pipeline:
              "reaction_angle": assess_reaction_angle(ev)}
         populate_from_inspection(mc, ev, a)
 
+        # Re-evaluate completeness with the evidence the inspection + media
+        # model actually produced: signal windows from the inspected clip and
+        # the model's own payoff/context understanding. The caption-only gate
+        # contradicted real evidence (a fully understood 8 s Short failed
+        # MISSING_PAYOFF/INSUFFICIENT_CONTEXT).
+        if gate is not None and plan is not None:
+            _gate_signals = [w for w in (signal_windows or []) if isinstance(w, dict)]
+            _gate_signals += [dict(t) for t in (ev.timestamps or ()) if isinstance(t, dict)]
+            _media_ev: dict[str, Any] = {}
+            if media_assessment:
+                _scores = media_assessment.get("scores") or {}
+
+                def _ms(k: str) -> int:
+                    v = _scores.get(k)
+                    return int(v) if isinstance(v, (int, float)) else 0
+
+                _media_ev = {"payoff_understanding": _ms("payoff") >= 60,
+                             "context_understanding": _ms("hook") >= 60}
+            gate = completeness_gate(plan, segments or [], signals=_gate_signals,
+                                     media_evidence=_media_ev)
+            c.completeness = gate.as_dict()
+            c.boundary_plan = plan.as_dict()
+
         reaction_ok = bool(a["reaction_angle"].passed)
         payoff_ok = bool(a["payoff"].passed)
         hook_ok = bool(a["stop"].passed)
@@ -647,6 +670,10 @@ class Pass1Pipeline:
         if gate is not None and not gate.passed:
             c.fire_passed = False
             c.fire_reasons = tuple(dict.fromkeys((*decision.reasons, "INCOMPLETE_CLIP")))
+        # The evidence-informed selection replaces the pre-evidence combined
+        # selection on the authoritative record (the pre-fire one reflects the
+        # text-only content score and would contradict a FIRE pass).
+        c.selection_score = sel
         c.content_score_recalibrated = content
         c.evidence_confidence = conf.score
         c.moment_evidence = dict(mc.moment_evidence)
