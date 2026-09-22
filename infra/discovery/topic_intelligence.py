@@ -39,14 +39,20 @@ SCORE_VERSION = "1.0.0"
 # signals). This is what makes missing data *reduce* confidence rather than
 # cause invented values.
 WEIGHTS: dict[str, float] = {
+    # Content-first: the clip ITSELF leads. Reuses existing content-analysis
+    # machinery rather than adding a second scoring gate.
+    "content": 0.32,
     "freshness": 0.20,
-    "engagement": 0.25,
-    "velocity": 0.15,
-    "relevance": 0.20,
-    "provenance": 0.08,
-    "cross_platform": 0.07,
-    "saturation": 0.05,
+    "relevance": 0.18,
+    # Supporting positives only. Their ABSENCE never blocks a strong clip.
+    "engagement": 0.15,
+    "velocity": 0.08,
+    "provenance": 0.07,
 }
+# cross_platform and saturation are deliberately NOT scored and NOT required;
+# duplicate suppression stays in the dedup path where it belongs.
+SUPPORTING_SIGNALS = ("engagement", "velocity")
+BLOCKING_SIGNALS = ("content",)
 
 # Reference ceilings for log-scale normalization (documented, deterministic).
 _VIEWS_CEILING = 1_000_000          # log10(1e6) = 6.0 → score 100
@@ -108,6 +114,61 @@ def _clamp_int(value: float) -> int:
 # ---------------------------------------------------------------------------
 # Per-signal scoring functions (pure).
 # ---------------------------------------------------------------------------
+def _score_content(sig: "NormalizedSignals", brief: SourceBrief) -> SignalScore:
+    """Content-first read of the clip itself.
+
+    Rewards a strong moment/hook, an action or emotional payoff, reactions/audio
+    energy WHERE RELEVANT, and visual clarity. A quiet, wholesome animal clip is
+    NOT penalised for lacking shouting or chat activity: absence of hype is not
+    absence of content. A clip with no content evidence at all is UNPROVEN and
+    cannot qualify, so failed media analysis is never treated as a pass.
+    """
+    parts: list[str] = []
+    for attr in ("title", "description", "text", "summary"):
+        v = getattr(sig, attr, None)
+        if isinstance(v, str) and v.strip():
+            parts.append(v)
+    me = getattr(sig, "moment_evidence", None) or {}
+    if isinstance(me, dict):
+        for k, v in me.items():
+            if v:
+                parts.append(str(k))
+    text = " ".join(parts).lower()
+
+    has_moment_evidence = bool(isinstance(me, dict) and any(me.values()))
+    # A bare title is NOT content evidence. Content must be an actual clip: real
+    # media evidence (moment analysis) or a platform metric proving media exists.
+    # Otherwise a metadata-thin text post would masquerade as a content-first clip
+    # and failed media analysis would pass as content.
+    has_media_signal = bool(getattr(sig, "has_volume", False)
+                            or getattr(sig, "has_engagement_rate", False)
+                            or getattr(sig, "metric_history", None))
+    if not has_moment_evidence and not has_media_signal:
+        return SignalScore("content", 0, False, None,
+                           (Reason("CONTENT_NO_MEDIA_EVIDENCE", "content",
+                                   "no clip media evidence available for this item"),))
+
+    score = 50.0                                   # present text = baseline content
+    reasons: list[Reason] = []
+    hook = ("hook", "starts with", "watch this", "wait for it", "you won't believe")
+    payoff_cues = ("payoff", "lands", "reveals", "finale", "climax", "then he", "then she")
+    action = ("jumps", "runs", "falls", "chases", "steals", "opens", "carries", "dances")
+    emotion = ("cute", "adorable", "sweet", "heartwarming", "love", "happy", "funny")
+    reaction = ("reacts", "reaction", "shocked", "surprised", "laughs", "screams")
+    visual = ("clear", "close-up", "shot", "quality", "hd", "bright")
+    for label, cues, bonus in (("HOOK", hook, 10.0), ("PAYOFF", payoff_cues, 12.0),
+                               ("ACTION", action, 10.0), ("EMOTION", emotion, 8.0),
+                               ("REACTION", reaction, 6.0), ("VISUAL", visual, 4.0)):
+        if any(c in text for c in cues):
+            score += bonus
+            reasons.append(Reason(f"CONTENT_{label}", "content", f"{label.lower()} present"))
+    if has_moment_evidence:
+        score += 6.0
+        reasons.append(Reason("CONTENT_MOMENT_ANALYSED", "content",
+                              "clip-level moment analysis present"))
+    return SignalScore("content", _clamp_int(score), True, None, tuple(reasons))
+
+
 def _score_freshness(sig: NormalizedSignals, brief: SourceBrief, now: _dt.datetime) -> SignalScore:
     ts = sig.publication_timestamp
     if not ts:
@@ -333,8 +394,7 @@ class TopicIntelligence:
             "velocity": _score_velocity(compute_velocity(sig.metric_history)),
             "relevance": _score_relevance(sig, brief),
             "provenance": _score_provenance(sig),
-            "cross_platform": _score_cross_platform(sig),
-            "saturation": _score_saturation(competition_count),
+            "content": _score_content(sig, brief),
         }
 
         # --- SCORING: unavailable signals are UNKNOWN, never zero --------------
@@ -348,28 +408,23 @@ class TopicIntelligence:
         MIN_EVIDENCE_COVERAGE = 0.45
         INSUFFICIENT_CAP = 50
 
-        present_weight = sum(WEIGHTS[s] for s in WEIGHTS if signals[s].present)
+        # CONTENT-FIRST score. Supporting signals (engagement, velocity) are scored
+        # when available and simply EXCLUDED when not: a missing engagement metric or
+        # velocity history must never block a strong clip. Scoring is normalised over
+        # the presented signals, with no coverage multiplier - the old
+        # quality-times-coverage rejection is gone.
         earned = sum(signals[s].score * WEIGHTS[s] for s in WEIGHTS if signals[s].present)
-        quality = (earned / present_weight) if present_weight > 0 else 0.0
+        presented = sum(WEIGHTS[s] for s in WEIGHTS if signals[s].present)
+        opportunity_score = _clamp_int(earned / presented) if presented > 0 else 0
 
-        # Quality is what the present evidence says; COVERAGE decides how much of
-        # that quality we are entitled to believe. Without this discount, a record
-        # with only freshness+relevance+provenance present renormalizes to ~99 and
-        # sparse evidence masquerades as a strong candidate. Missing data is never
-        # treated as a zero score - it is treated as UNPROVEN and discounts the
-        # result instead.
-        # Score = quality x coverage, with NO free full credit: every missing
-        # signal proportionally discounts the result. A view-count-only record
-        # reaches coverage ~0.73 and therefore cannot clear the gate on volume
-        # alone, while a record with engagement AND velocity evidence does.
-        opportunity_score = _clamp_int(quality * present_weight)
-
-        insufficient_evidence = present_weight < MIN_EVIDENCE_COVERAGE
+        # The ONLY hard block is absent content evidence: failed media analysis is
+        # never allowed to pass as content.
+        insufficient_evidence = not signals["content"].present
         if insufficient_evidence:
             opportunity_score = min(opportunity_score, INSUFFICIENT_CAP)
 
         # Data completeness = fraction of weighted signals present (coverage).
-        completeness = present_weight
+        completeness = presented
         evidence_conf = sig.evidence_confidence if sig.evidence_confidence is not None else 1.0
         confidence = round(completeness * evidence_conf, 4)
 
