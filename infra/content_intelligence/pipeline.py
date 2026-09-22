@@ -183,6 +183,7 @@ def fetch_media_and_signals(url: str, max_duration: int = 600) -> list:
     at decode time, and a hard subprocess timeout. $0 model cost. Non-fatal at
     the call site — the caller records the failure rather than aborting."""
     import shutil
+    from .bounded_preview import _auth_args      # cookies/UA args shared with the preview path
     from .multimodal_signals import analyze_media_signals
 
     _SIDECAR = {".json", ".vtt", ".part", ".ytdl", ".temp"}
@@ -191,6 +192,7 @@ def fetch_media_and_signals(url: str, max_duration: int = 600) -> list:
         proc = subprocess.run(
             ["yt-dlp", "-f", "worstvideo+worstaudio/worst", "--no-playlist", "--no-update",
              "--match-filter", f"duration <= {max_duration}",
+             *_auth_args(),
              "-o", f"{tmp}/%(id)s.%(ext)s", url],
             capture_output=True, text=True, timeout=300,
         )
