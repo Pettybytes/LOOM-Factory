@@ -19,7 +19,7 @@ platform *could* provide but did not — so confidence can be reduced honestly.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .discovery_record import DiscoveryRecord
@@ -83,6 +83,10 @@ class NormalizedSignals:
     evidence_confidence: float | None
     # Metrics this platform normally exposes but that were absent here.
     missing_metrics: tuple[str, ...]
+    # Clip-level evidence from a PRIOR (or the current) content-analysis pass:
+    # the content-first dim consults this so market qualification reflects real
+    # content evidence instead of contradicting it.
+    moment_evidence: dict[str, Any] = field(default_factory=dict)
 
     @property
     def has_volume(self) -> bool:
@@ -158,4 +162,7 @@ def normalize_signals(record: DiscoveryRecord) -> NormalizedSignals:
         provenance=record.provenance_rights_evidence or "",
         evidence_confidence=float(ec) if ec is not None else None,
         missing_metrics=tuple(missing),
+        moment_evidence=dict(getattr(record, "moment_evidence", None)
+                             or (metrics.get("moment_evidence")
+                                 if isinstance(metrics.get("moment_evidence"), dict) else {})),
     )

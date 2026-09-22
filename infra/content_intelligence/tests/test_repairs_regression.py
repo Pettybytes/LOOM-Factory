@@ -37,7 +37,8 @@ from content_intelligence.moment_quality import (  # noqa: E402
     T_FALL, T_PHYSICAL, build_boundary_plan, completeness_gate, repair_boundaries,
 )
 from content_intelligence.pipeline import Pass1Config, Pass1Pipeline  # noqa: E402
-from test_pipeline import _Brief, _FakeProvider, _FakeTopic, _Record, _patched_fetch  # noqa: E402
+from test_pipeline import (_Brief, _FakeProvider, _FakeTopic, _FakeTopicResult,
+                           _Record, _patched_fetch)  # noqa: E402
 
 
 class PreviewArtifactRetentionTests(unittest.TestCase):
@@ -234,6 +235,91 @@ class _CapturingStore:
 
     def upsert_selection_fire(self, c):
         self.selection_fire[c.duplicate_fingerprint] = c
+
+
+class _EvidenceAwareTopic(_FakeTopic):
+    """Raises the market score only when the record carries grounded content
+    evidence (mirrors the real TopicIntelligence content-first behaviour)."""
+
+    def __init__(self, base: int = 62, delta: int = 20):
+        super().__init__(base)
+        self.delta = delta
+
+    def assess(self, rec, brief, competition_count=0):
+        me = getattr(rec, "moment_evidence", None) or {}
+        if me.get("content_worthiness_score") is not None:
+            return _FakeTopicResult(min(100, self.score + self.delta), self.confidence)
+        return _FakeTopicResult(self.score, self.confidence)
+
+
+class EvidenceInformedMarketTests(unittest.TestCase):
+    """FIRE market must be recomputed AFTER real content evidence exists."""
+
+    def test_market_reassessed_with_grounded_content_score(self):
+        from test_bounded_preview import _Recorder
+        pipe = Pass1Pipeline(Pass1Config(max_candidates=1, market_shortlist_threshold=0),
+                             _Brief(), _EvidenceAwareTopic(base=62, delta=20),
+                             provider=_FakeProvider())
+        store = _CapturingStore()
+        rec = _Record(platform="youtube", title="wild fan interaction", cid="mkt01")
+        rec.duration_seconds = 60
+        rec_prev = _Recorder(signals_by_end={3.0: [
+            {"basis": "motion", "start_s": 1.0, "end_s": 3.0},
+            {"basis": "audio_spike", "start_s": 1.0, "end_s": 3.0}]})
+        pipe._inspection_preview = rec_prev
+        pipe._inspection_analyze = rec_prev.signals
+        pipe._inspection_captions = lambda url: ([{"start_s": 0.0, "end_s": 3.0,
+                                                   "text": "watch this fall!"}], "auto_generated")
+        with _patched_fetch([{"start_s": 0.0, "end_s": 3.0, "text": "watch this fall!"}]):
+            r = pipe.run([rec], store)
+        c = r.candidates[0]
+        self.assertEqual(c.status, "scored")
+        self.assertEqual(c.market_score, 62)          # pre-evidence shortlist score
+        self.assertEqual(c.market_score_final, 82)    # evidence-informed final
+        self.assertGreater(c.market_score_final, c.market_score)
+        # The persisted authoritative record carries the FINAL market score.
+        persisted = list(store.candidates.values())[0]
+        self.assertEqual(getattr(persisted, "market_score_final", None), 82)
+
+    def test_market_final_falls_back_when_reassessment_unavailable(self):
+        from test_bounded_preview import _Recorder
+        pipe = Pass1Pipeline(Pass1Config(max_candidates=1, market_shortlist_threshold=0),
+                             _Brief(), _FakeTopic(score=85), provider=_FakeProvider())
+        rec = _Record(platform="youtube", title="wild fan interaction", cid="mkt02")
+        rec.duration_seconds = 60
+        rec_prev = _Recorder(signals_by_end={3.0: [
+            {"basis": "motion", "start_s": 1.0, "end_s": 3.0}]})
+        pipe._inspection_preview = rec_prev
+        pipe._inspection_analyze = rec_prev.signals
+        with _patched_fetch([{"start_s": 0.0, "end_s": 3.0, "text": "watch this fall!"}]):
+            r = pipe.run([rec], _CapturingStore())
+        c = r.candidates[0]
+        self.assertEqual(c.market_score_final, 85)
+
+
+class NormalizedMomentEvidenceTests(unittest.TestCase):
+    """normalize_signals carries clip-level moment evidence into topic scoring."""
+
+    def test_moment_evidence_passthrough(self):
+        import sys
+        sys.path.insert(0, str(_REPO_ROOT / "infra"))
+        from discovery.discovery_record import DiscoveryRecord
+        from discovery.normalization import normalize_signals
+        rec = DiscoveryRecord(
+            tenant_id="dreemzy", source_brief_version="2", profile_id="p",
+            platform="youtube", canonical_url="https://www.youtube.com/watch?v=x",
+            platform_content_id="x", title="crazy fall",
+            creator_channel_identity="c", creator_channel_url="https://y",
+            publication_timestamp=None,
+            observed_metrics={"views": 9000}, metric_observation_timestamp="",
+            metric_history=[], discovery_query="q", discovery_reason="r",
+            evidence_confidence=0.9, provenance_rights_evidence="yt-dlp",
+            duplicate_fingerprint="f", global_fingerprint="f",
+            processing_eligibility=True, qualification_status="pending",
+            connector_name="t", connector_version="1", duration_seconds=30)
+        rec.moment_evidence = {"content_worthiness_score": 88, "payoff": "revealed"}
+        sig = normalize_signals(rec)
+        self.assertEqual(sig.moment_evidence["content_worthiness_score"], 88)
 
 
 if __name__ == "__main__":

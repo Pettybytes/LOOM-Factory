@@ -154,7 +154,8 @@ class ContentStoreSupabase:
             "canonical_url": getattr(c, "canonical_url", "") or "",
             "creator_channel_identity": getattr(c, "creator_channel_identity", "") or "",
             "publication_timestamp": getattr(c, "publication_timestamp", None),
-            "market_score": int(c.market_score or 0),
+            "market_score": int(getattr(c, "market_score_final", None)
+                                or c.market_score or 0),
             "content_score": int(getattr(c, "content_score_recalibrated", None)
                                 or c.content_worthiness or 0),
             "selection_score": int(getattr(c, "selection_score", None) or 0),
@@ -198,7 +199,8 @@ class ContentStoreSupabase:
             "platform": getattr(c, "platform", "") or "",
             "duplicate_fingerprint": c.duplicate_fingerprint,
             "scoring_policy_version": getattr(c, "scoring_policy_version", "") or "",
-            "market_opportunity_score": int(c.market_score or 0),
+            "market_opportunity_score": int(getattr(c, "market_score_final", None)
+                                             or c.market_score or 0),
             "market_confidence": 0,
             "content_worthiness_score": int(c.content_worthiness or 0),
             "content_confidence": 0,

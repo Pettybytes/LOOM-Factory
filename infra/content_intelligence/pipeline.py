@@ -114,6 +114,7 @@ class Pass1CandidateResult:
     rejection_reason: str = ""
     media_assessment_status: str = ""
     media_assessment: dict | None = None
+    market_score_final: int | None = None
 
 
 @dataclass
@@ -607,13 +608,29 @@ class Pass1Pipeline:
         if media_assessment and isinstance(media_assessment.get("content_worthiness_score"), int):
             _base_content = int(media_assessment["content_worthiness_score"])
         content = recalibrate_content_score(_base_content, conf_ev)
+
+        # EVIDENCE-INFORMED MARKET: qualification is computed AFTER real content
+        # evidence exists, so the market dimension reflects the grounded content
+        # assessment instead of contradicting it. The pre-evidence shortlist
+        # score stays on c.market_score; FIRE uses the evidence-informed one.
+        _market_final = int(c.market_score or 0)
+        try:
+            import copy as _copy
+            _enriched = _copy.copy(rec)
+            _enriched.moment_evidence = dict(mc.moment_evidence)
+            _enriched.moment_evidence["content_worthiness_score"] = content
+            _reassess = self.topic.assess(_enriched, self.brief, competition_count=0)
+            _market_final = int(_reassess.opportunity_score)
+        except Exception:  # noqa: BLE001 — keep the pre-evidence score
+            pass
+        c.market_score_final = _market_final
         sel = selection_score(market=int(c.market_score or 0), content=content,
                               tenant_fit_verdict=c.tenant_fit_verdict,
                               reaction_opportunity=reaction_ok,
                               evidence_completeness=conf.score,
                               duplicate_risk=False)
         decision = fire_gate(
-            market_score=int(c.market_score or 0), content_score=content, selection=sel,
+            market_score=_market_final, content_score=content, selection=sel,
             confidence=conf.score,
             market_gate_pass=bool(c.market_gate_passed),
             tenant_fit_pass=(c.tenant_fit_verdict == "PASS"),

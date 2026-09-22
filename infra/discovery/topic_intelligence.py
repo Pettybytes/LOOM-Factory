@@ -166,6 +166,15 @@ def _score_content(sig: "NormalizedSignals", brief: SourceBrief) -> SignalScore:
         score += 6.0
         reasons.append(Reason("CONTENT_MOMENT_ANALYSED", "content",
                               "clip-level moment analysis present"))
+        # Content-first: when a REAL content assessment exists (the pipeline's
+        # model/media pass, 0-100), that grounded score leads the dimension
+        # instead of a bare-title baseline. Without this, market qualification
+        # contradicted the content evidence it later received.
+        worth = me.get("content_worthiness_score")
+        if isinstance(worth, (int, float)) and 0 <= int(worth) <= 100:
+            score = max(score, float(worth))
+            reasons.append(Reason("CONTENT_MODEL_SCORE", "content",
+                                  f"grounded content assessment {int(worth)} leads"))
     return SignalScore("content", _clamp_int(score), True, None, tuple(reasons))
 
 
