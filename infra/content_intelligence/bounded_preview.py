@@ -18,6 +18,7 @@ source; that still happens only after Bryan approves.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -28,6 +29,16 @@ from typing import Any, Callable
 # Default 0-3s; escalation only when a decision is still ambiguous.
 WINDOWS: tuple[float, ...] = (3.0, 8.0, 12.0)
 MAX_WINDOW = 12.0
+
+# Optional authenticated extraction. The browser/profile spec is read from the
+# environment ONLY: cookies are never exported, printed, logged or committed, and
+# only the bounded section is ever fetched. Unset => unauthenticated (unchanged).
+COOKIES_FROM_BROWSER_ENV = "LOOM_YTDLP_COOKIES_FROM_BROWSER"
+
+
+def _auth_args() -> list[str]:
+    spec = (os.environ.get(COOKIES_FROM_BROWSER_ENV) or "").strip()
+    return ["--cookies-from-browser", spec] if spec else []
 _SIDECAR = {".json", ".vtt", ".part", ".ytdl", ".temp", ".description"}
 
 
@@ -86,6 +97,7 @@ def fetch_bounded_preview(url: str, *, end: float = 3.0, start: float = 0.0,
             "-f", "worstvideo+worstaudio/worst",
             "--download-sections", f"*{start}-{end}",
             "--force-keyframes-at-cuts",
+            *_auth_args(),
             "-o", f"{tmp}/%(id)s.%(ext)s", url,
         ]
         proc = runner(cmd, capture_output=True, text=True, timeout=timeout)

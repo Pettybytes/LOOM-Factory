@@ -167,3 +167,52 @@ class PipelineBoundednessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuthArgsTests(unittest.TestCase):
+    """Authenticated extraction is env-driven and never leaks cookie material."""
+
+    def test_no_cookie_flag_when_env_unset(self):
+        import os
+        from content_intelligence.bounded_preview import (
+            COOKIES_FROM_BROWSER_ENV, _auth_args,
+        )
+        old = os.environ.pop(COOKIES_FROM_BROWSER_ENV, None)
+        try:
+            self.assertEqual(_auth_args(), [])
+        finally:
+            if old is not None:
+                os.environ[COOKIES_FROM_BROWSER_ENV] = old
+
+    def test_cookie_flag_present_when_env_set(self):
+        import os
+        from content_intelligence.bounded_preview import (
+            COOKIES_FROM_BROWSER_ENV, _auth_args,
+        )
+        old = os.environ.get(COOKIES_FROM_BROWSER_ENV)
+        os.environ[COOKIES_FROM_BROWSER_ENV] = "chrome:Default"
+        try:
+            args = _auth_args()
+            self.assertEqual(args[0], "--cookies-from-browser")
+            self.assertEqual(args[1], "chrome:Default")
+        finally:
+            if old is None:
+                os.environ.pop(COOKIES_FROM_BROWSER_ENV, None)
+            else:
+                os.environ[COOKIES_FROM_BROWSER_ENV] = old
+
+    def test_preview_result_never_carries_cookie_material(self):
+        import os
+        from content_intelligence.bounded_preview import (
+            COOKIES_FROM_BROWSER_ENV, fetch_bounded_preview,
+        )
+        os.environ[COOKIES_FROM_BROWSER_ENV] = "chrome:Default"
+        try:
+            prev = fetch_bounded_preview("https://example.invalid/x", end=3,
+                                         runner=lambda *a, **k: type("P", (), {
+                                             "stderr": "nope", "returncode": 1})())
+            blob = repr(prev.as_dict())
+            self.assertNotIn("chrome", blob)
+            self.assertNotIn("cookies-from-browser", blob)
+        finally:
+            os.environ.pop(COOKIES_FROM_BROWSER_ENV, None)

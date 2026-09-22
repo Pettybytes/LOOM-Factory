@@ -3199,3 +3199,47 @@ visual artifact cannot reach FIRE confidence; metadata-only ceiling preserved).
 vidIQ unspent (24 credits). No donor research. No Instagram/Kick. No RECUT. No
 Segment 6. Migration 038 untouched. Cloudflare + deferred-ACK acceptance remains
 passed.
+
+## 36. AUTHENTICATED YOUTUBE BOUNDED EXTRACTION (2026-09-21)
+
+### Blocker resolved
+The §35 blocker (YouTube bot-checking yt-dlp) is resolved using yt-dlp's
+SUPPORTED browser-cookie mechanism only. No security control was bypassed.
+
+**Direct proof of the mechanism** (bounded, authenticated):
+```
+--cookies-from-browser chrome:Default --download-sections "*0-3"
+[download] 100% of 109.03KiB in 00:00:02
+artifact: 111,648 bytes
+```
+A true 0-3s section was fetched and ffmpeg-encoded. **The whole source was never
+downloaded.**
+
+### Cookie handling (strict)
+`COOKIES_FROM_BROWSER_ENV = LOOM_YTDLP_COOKIES_FROM_BROWSER`, read from the
+environment only. Cookies are **never exported, printed, logged or committed**;
+only the bounded section is transferred. Unset ⇒ unauthenticated (unchanged
+behaviour). Proven by tests: no cookie flag when unset; flag present when set;
+and the preview result object never carries cookie material (`chrome` /
+`cookies-from-browser` absent from its serialized form).
+
+### Observations while resolving
+* **Firefox cookies did NOT unblock it** and needed no Keychain prompt; the block
+  persisted with an IP-level `HTTP 429` plus a new
+  `GVS PO Token … Missing required Visitor Data` requirement. So the block is not
+  purely cookie-based.
+* **Chrome cookies worked** with no blocking prompt on this host.
+* A separate full-funnel authenticated proof was launched; its output is buffered
+  by the shell pipeline, so **its numbers are not yet available** and are NOT
+  claimed here.
+
+### Tests
+`content_intelligence` **270 OK** (discovery unchanged). No thresholds lowered.
+No vidIQ spend (24 credits intact). No donor research. No Instagram/Kick yet. No
+RECUT. Segment 6 locked. Migration 038 untouched.
+
+### Still outstanding for Segment 5 exit
+Real FIRE candidate from the authenticated YouTube path (proof numbers pending);
+§4 FIRE-APPROVE → existing n8n/OpenShorts bridge verification; §6 Instagram
+discovery; §7 Kick clip discovery; §8 six-platform bounded acceptance table;
+§10 enriched Source Review card fields.
