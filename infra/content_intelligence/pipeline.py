@@ -336,6 +336,10 @@ class Pass1Pipeline:
 
     def _apply_fire(self, c: Any, rec: Any, *, segments: Any = None,
                     model_timestamps: Any = None, signal_windows: Any = None) -> None:
+        from .transcript_normalize import normalize_transcript_segments
+        # Raw captions arrive doubled and markup-bearing; clean ONCE here so the
+        # locator, anchors, completeness gate and evidence all see real speech.
+        segments = normalize_transcript_segments(segments)
         """Moment location -> clip start -> bounded inspection -> confidence -> FIRE.
 
         Long-form sources are SCANNED for candidate moments and inspected around
