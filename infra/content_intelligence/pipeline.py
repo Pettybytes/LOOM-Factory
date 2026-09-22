@@ -304,12 +304,15 @@ class Pass1Pipeline:
         # optimise where the clip should BEGIN. Short-form: the source IS the
         # moment, so the locator is deliberately bypassed.
         from .clip_start import optimize_clip_start  # noqa: F401 (kept for API compat)
-        from .moment_locator import locate_moments, promote_zones, source_mode
+        from .moment_locator import (locate_moments, promote_zones, source_mode,
+                                     source_mode_for_record)
         from .moment_quality import (build_boundary_plan, classify_moment_type,
                                      completeness_gate, repair_boundaries)
 
         duration = _record_duration(rec)
-        mode = source_mode(duration)
+        # Source CHARACTERISTICS decide the mode (asset kind / URL / duration),
+        # never the platform name.
+        mode = source_mode_for_record(rec)
         zones = locate_moments(segments or [], source_id=str(getattr(rec, "platform_content_id", "")),
                                source_url=str(getattr(rec, "canonical_url", "")),
                                source_duration=duration, model_timestamps=model_timestamps,

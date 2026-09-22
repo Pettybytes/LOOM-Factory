@@ -62,11 +62,107 @@ CUE_GROUPS: dict[str, tuple[str, ...]] = {
 TITLE_ONLY_MARKERS = ("clickbait",)
 
 
-def source_mode(source_duration: float | None) -> str:
-    """Short-form = the source IS the moment; long-form = a moment CONTAINER."""
-    if source_duration is None:
-        return MODE_LONG_FORM          # unknown duration: assume we must scan
-    return MODE_SOURCE_AS_MOMENT if float(source_duration) <= SHORT_FORM_MAX_SECONDS else MODE_LONG_FORM
+# Asset characteristics decide the mode - NEVER the platform name. Twitch and Kick
+# both publish clips (source-as-moment) AND VODs/streams (containers); YouTube
+# publishes Shorts and long uploads; Reddit may host either.
+CLIP_ASSET_KINDS = frozenset({"clip", "clips", "short", "shorts", "reel", "reels",
+                              "tiktok", "video_short", "short_form"})
+CONTAINER_ASSET_KINDS = frozenset({"vod", "stream", "live", "livestream", "podcast",
+                                   "interview", "upload", "long_video", "video",
+                                   "long_form", "broadcast"})
+# Unambiguous CLIP-shaped URLs.
+CLIP_URL_HINTS = ("/shorts/", "clips.twitch.tv", "clips.kick.com", "/clip/", "clip=",
+                  "tiktok.com/", "instagram.com/reel", "/reels/")
+# Unambiguous CONTAINER-shaped URLs.
+CONTAINER_URL_HINTS = ("twitch.tv/videos/", "kick.com/video/", "youtube.com/live/",
+                       "/watch?", "youtu.be/", "/videos/")
+
+
+def _norm_kind(kind: Any) -> str:
+    return str(kind or "").strip().lower().replace(" ", "_")
+
+
+def source_mode(source_duration: float | None = None, *, asset_kind: Any = None,
+                url: str | None = None, media_type: Any = None) -> str:
+    """Is this asset ALREADY a discrete moment, or a CONTAINER holding many?
+
+    Order of evidence: explicit asset kind, then URL shape, then duration. An
+    unknown asset is treated as a container so it is scanned rather than assumed
+    to be a single moment.
+    """
+    kind = _norm_kind(asset_kind)
+    if kind in CLIP_ASSET_KINDS:
+        return MODE_SOURCE_AS_MOMENT
+    if kind in CONTAINER_ASSET_KINDS:
+        return MODE_LONG_FORM
+
+    mt = _norm_kind(media_type)
+    if mt in CLIP_ASSET_KINDS:
+        return MODE_SOURCE_AS_MOMENT
+    if mt in CONTAINER_ASSET_KINDS:
+        return MODE_LONG_FORM
+
+    u = str(url or "").lower()
+    # An unambiguous CLIP URL is strong evidence, and it is checked before duration
+    # because clip URLs are distinctive.
+    if u and any(h in u for h in CLIP_URL_HINTS):
+        return MODE_SOURCE_AS_MOMENT
+
+    # DURATION next: a short asset is a moment even when it is served from a
+    # container-shaped URL (Shorts are routinely reachable via /watch), so a weak
+    # container URL must not override a genuinely short duration.
+    if source_duration is not None:
+        return (MODE_SOURCE_AS_MOMENT if float(source_duration) <= SHORT_FORM_MAX_SECONDS
+                else MODE_LONG_FORM)
+
+    # Container URL is the weakest remaining hint; unknown falls through to scanning.
+    if u and any(h in u for h in CONTAINER_URL_HINTS):
+        return MODE_LONG_FORM
+    return MODE_LONG_FORM
+
+
+def _asset_kind_of(record: Any) -> str | None:
+    """Provider asset type when the connector exposes one (never inferred from platform)."""
+    for attr in ("asset_kind", "provider_asset_type", "asset_type", "content_kind",
+                 "source_asset_type"):
+        v = getattr(record, attr, None)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    if getattr(record, "is_clip", None) is True:
+        return "clip"
+    if getattr(record, "is_live", None) is True:
+        return "stream"
+    metrics = getattr(record, "observed_metrics", None)
+    if isinstance(metrics, dict):
+        for key in ("asset_kind", "asset_type", "is_clip", "is_live", "type"):
+            v = metrics.get(key)
+            if isinstance(v, bool) and v:
+                return "clip" if key == "is_clip" else "stream"
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def _duration_of(record: Any) -> float | None:
+    for attr in ("duration_seconds", "duration", "source_duration"):
+        v = getattr(record, attr, None)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            return float(v)
+    metrics = getattr(record, "observed_metrics", None)
+    if isinstance(metrics, dict):
+        for key in ("duration", "duration_seconds", "length_seconds"):
+            v = metrics.get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                return float(v)
+    return None
+
+
+def source_mode_for_record(record: Any) -> str:
+    """Resolve the mode for a discovery record from ITS OWN characteristics."""
+    return source_mode(_duration_of(record),
+                       asset_kind=_asset_kind_of(record),
+                       url=str(getattr(record, "canonical_url", "") or ""),
+                       media_type=getattr(record, "content_type", None))
 
 
 @dataclass
@@ -130,6 +226,7 @@ def locate_moments(segments: Iterable[dict[str, Any]], *, source_id: str = "",
                    source_url: str = "", source_duration: float | None = None,
                    model_timestamps: Iterable[dict[str, Any]] | None = None,
                    signal_peaks: Iterable[dict[str, Any]] | None = None,
+                   asset_kind: Any = None, url: str | None = None,
                    max_zones: int = DEFAULT_MAX_ZONES) -> list[MomentZone]:
     """Cheaply locate candidate moments across the whole source.
 
@@ -138,7 +235,7 @@ def locate_moments(segments: Iterable[dict[str, Any]], *, source_id: str = "",
     zone is never assumed to be at 00:00 unless the evidence actually says so**.
     """
     segs = [s for s in (segments or []) if isinstance(s, dict)]
-    mode = source_mode(source_duration)
+    mode = source_mode(source_duration, asset_kind=asset_kind, url=url)
 
     if mode == MODE_SOURCE_AS_MOMENT:
         start = float(segs[0].get("start_s", 0.0)) if segs else 0.0
