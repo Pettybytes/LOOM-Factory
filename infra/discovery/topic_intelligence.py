@@ -337,12 +337,39 @@ class TopicIntelligence:
             "saturation": _score_saturation(competition_count),
         }
 
-        # Weighted opportunity score (missing signals contribute 0).
-        total = sum(signals[s].score * WEIGHTS[s] for s in WEIGHTS)
-        opportunity_score = _clamp_int(total)
+        # --- SCORING: unavailable signals are UNKNOWN, never zero --------------
+        # Quality is measured over the signals we ACTUALLY have and renormalized,
+        # so a genuinely strong candidate is not punished for a signal its platform
+        # does not expose. Evidence COVERAGE is tracked separately and enforced as a
+        # minimum, so sparse evidence can never be normalized into a qualifying
+        # score. This replaces the old behaviour where an absent signal contributed
+        # 0 and therefore capped the score at whatever coverage happened to exist
+        # (a 150k-view clip scored 26 purely for missing engagement/velocity data).
+        MIN_EVIDENCE_COVERAGE = 0.45
+        INSUFFICIENT_CAP = 50
 
-        # Data completeness = fraction of weighted signals present.
-        completeness = sum(WEIGHTS[s] for s in WEIGHTS if signals[s].present)
+        present_weight = sum(WEIGHTS[s] for s in WEIGHTS if signals[s].present)
+        earned = sum(signals[s].score * WEIGHTS[s] for s in WEIGHTS if signals[s].present)
+        quality = (earned / present_weight) if present_weight > 0 else 0.0
+
+        # Quality is what the present evidence says; COVERAGE decides how much of
+        # that quality we are entitled to believe. Without this discount, a record
+        # with only freshness+relevance+provenance present renormalizes to ~99 and
+        # sparse evidence masquerades as a strong candidate. Missing data is never
+        # treated as a zero score - it is treated as UNPROVEN and discounts the
+        # result instead.
+        # Score = quality x coverage, with NO free full credit: every missing
+        # signal proportionally discounts the result. A view-count-only record
+        # reaches coverage ~0.73 and therefore cannot clear the gate on volume
+        # alone, while a record with engagement AND velocity evidence does.
+        opportunity_score = _clamp_int(quality * present_weight)
+
+        insufficient_evidence = present_weight < MIN_EVIDENCE_COVERAGE
+        if insufficient_evidence:
+            opportunity_score = min(opportunity_score, INSUFFICIENT_CAP)
+
+        # Data completeness = fraction of weighted signals present (coverage).
+        completeness = present_weight
         evidence_conf = sig.evidence_confidence if sig.evidence_confidence is not None else 1.0
         confidence = round(completeness * evidence_conf, 4)
 
@@ -357,6 +384,8 @@ class TopicIntelligence:
             flags.append("MISSING_PUBLICATION_TS")
         if signals["velocity"].present is False and sig.metric_history:
             flags.append("VELOCITY_UNAVAILABLE")
+        if insufficient_evidence:
+            flags.append("INSUFFICIENT_EVIDENCE")
         if confidence < _CONFIDENCE_LOW:
             flags.append("LOW_CONFIDENCE")
         if duplicate_kind:
