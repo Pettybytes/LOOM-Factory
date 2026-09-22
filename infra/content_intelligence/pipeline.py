@@ -450,6 +450,41 @@ class Pass1Pipeline:
              "reaction_angle": assess_reaction_angle(ev)}
         populate_from_inspection(mc, ev, a)
 
+        # Attach the extracted multimodal windows to the inspection evidence.
+        # Found in live testing: windows were extracted and then IGNORED, so
+        # has_visual() stayed False (capping Content at the metadata-only ceiling)
+        # and activity_strength() stayed 0.0 (losing confidence dimensions) on every
+        # candidate regardless of how strong the clip actually was. The window
+        # "basis" names are also aliased onto ACTIVITY_KINDS, since the signal layer
+        # emits visual_motion/scene_cut where the evidence layer expects
+        # motion/scene_change.
+        _BASIS_TO_KIND = {
+            "motion": "motion", "visual_motion": "motion", "movement": "motion",
+            "scene_change": "scene_change", "scene_cut": "scene_change",
+            "visual_change": "scene_change", "cut_density": "cut_density",
+            "audio_energy": "audio_energy", "audio_spike": "audio_spike",
+            "speech_onset": "speech_onset",
+        }
+        _sig_kinds: dict[str, bool] = {}
+        for _w in (signal_windows or []):
+            if isinstance(_w, dict):
+                _kind = _BASIS_TO_KIND.get(str(_w.get("basis") or "").strip().lower())
+                if _kind:
+                    _sig_kinds[_kind] = True
+        if _sig_kinds:
+            try:
+                ev.signals = _sig_kinds
+                if any(k in _sig_kinds for k in ("motion", "scene_change", "cut_density")):
+                    ev.visual_opening = True
+            except Exception:
+                import dataclasses as _dc
+                try:
+                    ev = _dc.replace(ev, signals=_sig_kinds,
+                                     visual_opening=ev.visual_opening or any(
+                                         k in _sig_kinds for k in ("motion", "scene_change", "cut_density")))
+                except Exception:
+                    pass
+
         reaction_ok = bool(a["reaction_angle"].passed)
         payoff_ok = bool(a["payoff"].passed)
         hook_ok = bool(a["stop"].passed)
