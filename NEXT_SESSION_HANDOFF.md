@@ -1,864 +1,291 @@
-# NEXT SESSION HANDOFF — Editor CLOSED → SEGMENT 5 RUNTIME ACCEPTANCE NEXT
+# LOOM — NEXT SESSION HANDOFF (authoritative resume point)
 
-**Supersedes everything before it for resuming work.** Read this first, then `LOOM_SOURCE_OF_TRUTH.md`, `CURRENT_STATE.md`, `HANDOFF.md`.
-
-> ## 🚩 CURRENT CHECKPOINT — 2026-09-20 SESSION CLOSEOUT (START HERE)
+> **READ THIS FILE FIRST.** It supersedes anything in `HANDOFF.md` or `CURRENT_STATE.md`
+> that contradicts it. Those two remain the execution authority for *previously accepted*
+> work (Editor Gate, Segment 4, acquisition); this file is the authority for the
+> **Segment 5 moment-mining work in progress**.
 >
-> **Repository:** branch `master`, `HEAD == origin/master == cbfaa5d` (0 ahead / 0 behind, nothing unpushed).
-> **Worktree:** clean except ONE intentional untracked file — `infra/supabase/038_loom_editor_session_tokens.sql` (2729 B, mode 600). It must NOT be deleted, overwritten, committed, or lost.
-> **Tests:** `infra/content_intelligence` **171 OK** · `infra/discord-review` **232 OK**.
-> **Editor:** CLOSED — do not reopen without a demonstrated real regression.
-> **Segment 5:** **ACTIVE, not closed.** 5B + 5C.1 + DeepFilterNet + 5C.2 + Qwen routing work are done; what remains is the **runtime spine**: automated discovery → existing real tenant queue → real end-to-end acceptance → closure.
-> **Segment 6 (Lean Ranking Composer):** LOCKED until Segment 5 genuinely closes.
->
-> **Full durable checkpoint, next-work order and the unresolved provider-default decision are in §18 below.**
+> **Never put API keys, tokens, passwords, cookies, complete auth headers, or private
+> customer data in this file.** Refer to credentials by *variable name* only.
 
-> ## ✅ EDITOR GATE CLOSED — 2026-09-20 ~02:44 EDT (HUMAN ACCEPTANCE PASS)
->
-> Bryan completed the final live human acceptance on `loom-clean-fixture:0` **`v1.1 → v1.2`**.
-> The returned Discord FINAL REVIEW card proves in one transaction: dedicated black Header region,
-> video composition below it, Header text + rich/range styling persisted, Hook change persisted,
-> subtitle font-size control working, submission completed, new asset version created, and the edited
-> asset automatically returned to Discord for re-review.
->
-> **Do NOT re-audit the Editor, re-run Editor acceptance, reopen accepted visual behaviour, or add
-> Editor feature work.** Reopen only on a demonstrated real regression.
-> Full detail + accepted lineage + preserved fixes are in `CURRENT_STATE.md`.
->
-> **Next authorized workstream: SEGMENT 5B — MULTI-SOURCE MOMENT MINING.**
+**Last updated:** 2026-09-22 ~00:20 EDT (America/Detroit)
+**Repo:** `/Users/user/Desktop/LOOM-Factory`
+**Branch state:** `master` == `origin/master` == **`c5ec62f`**, working tree clean
+**Only untracked file:** `infra/supabase/038_loom_editor_session_tokens.sql` — untracked
+**on purpose** (new migration, not applied/tracked; md5 `1b04bed3405415c8d15b00e991e9a07a`).
+
+**Suites at HEAD:** `infra/content_intelligence/tests` OK · `infra/discovery/tests` **380 OK**.
 
 ---
 
-## 0. Repository state
+## 0. TL;DR for the incoming model
 
-| | |
+The Segment 5 goal is: **scrape highly-viral short-form moments across six platforms, run
+them through the mining pipeline, and deliver ONE legitimate Source Review card per
+platform to Discord with working buttons.**
+
+Nine commits of real root-cause fixes landed this session (see §2). The pipeline now
+**acquires media, extracts real multimodal signals, normalizes transcripts, resolves
+moments properly, and scores market content-first**. What it has **not** yet done is
+carry a single candidate all the way through FIRE, because of the specific, measured
+gaps in §4. **No committed test is red; nothing is half-applied.**
+
+**The single most important next action** is in §5.
+
+---
+
+## 1. How to run it (commands that are known to work)
+
+```bash
+cd /Users/user/Desktop/LOOM-Factory
+set -a && . "$HOME/.openclaw/.env" && set +a
+export LOOM_YTDLP_COOKIES_FROM_BROWSER="chrome:Default"
+```
+
+Run tests:
+```bash
+python3 -m unittest discover -s infra/content_intelligence/tests   # expect OK
+python3 -m unittest discover -s infra/discovery/tests              # expect 380 tests OK
+```
+
+Minimal end-to-end harness that WORKS (copy this shape):
+
+```python
+import sys; sys.path.insert(0, "infra")
+from discovery.discovery_record import DiscoveryRecord
+from discovery.source_brief import SourceBrief
+from discovery.topic_intelligence import TopicIntelligence
+from content_intelligence.pipeline import Pass1Config, Pass1Pipeline
+from content_intelligence.store_supabase import ContentStoreSupabase
+
+cfg = Pass1Config(max_candidates=5, market_shortlist_threshold=0,
+                  cost_ceiling_usd=0.20, extract_multimodal_signals=True)  # <- MUST be True
+res = Pass1Pipeline(cfg, BRIEF, TopicIntelligence()).run(records, ContentStoreSupabase())
+for c in res.candidates:
+    print(c.platform_content_id, c.market_score, c.content_score_recalibrated,
+          c.evidence_confidence, c.signal_status, c.fire_passed, list(c.fire_reasons or ()))
+```
+
+`SourceBrief` **requires** `provenance_rights_requirements` (a real trap — omitting it
+raises `SourceBriefError`). `DiscoveryRecord` requires all 22 of `REQUIRED_FIELDS`; get the
+list from `discovery.discovery_record.REQUIRED_FIELDS`. Note the constructor takes
+**keyword args** (`DiscoveryRecord(**data)`).
+
+---
+
+## 2. What landed this session (all pushed, all tested)
+
+| Commit | What it fixed |
 |---|---|
-| Repo path | `/Users/user/Desktop/LOOM-Factory` |
-| Branch | `master` |
-| FINAL_HEAD | `7c20b3e` (editor `/api/header` allowlist fix + regression coverage + CURRENT_STATE acceptance record) |
-| REMOTE_HEAD | `7c20b3e` (local == remote ✅) |
-| Worktree | not clean by design — see preserved artifacts below |
-| Full tests | discord-review **232 OK** · openshorts header **9 OK** |
-| Failures | **0** |
+| `6089b97` | Run-level relative ranking + dedup/diversity; suppressed duplicates excluded from the review queue |
+| `5fadb39` | **Canonical source URL vs internal media URL** separation. A Kick card had exposed a `playlist.m3u8`; clicking "Open Source" downloaded media instead of opening the page |
+| `59e5fea` | Moment end resolves at the **FIRST complete boundary after the payoff**, never the source's last (reaction completion for physical moments) |
+| `99d61f1` | **Boundary runaway**: resolution bounded by the moment's OWN timescale (cue-continuity across a long compilation never closed). Real fixture 145.2 s → **15.0 s** |
+| `90f05fe` | **Transcript normalization**: captions arrive DOUBLED (one copy with inline word-timing markup `<c>`), plus `[Music]` filler and HTML entities. 185 raw → 72 clean. Corrupted sentence detection, anchors, completeness and evidence |
+| `c498386` | **Signal fetch auth**: `fetch_media_and_signals` omitted `_auth_args()` (cookies). Signals now extract live (3 windows on a real 9 s Short) |
+| `5fe5168` | **Scoring semantics**: missing ≠ zero (was weighting absent signals as 0, so a 150 k-view viral clip scored 26). Replaced with quality × coverage + `MIN_EVIDENCE_COVERAGE` |
+| `d7290c3` | **Content-first Market scoring** (see §3) |
+| `c5ec62f` | **Signal evidence wiring**: extracted windows were DISCARDED — nothing set `ev.signals`/`ev.visual_opening`, so Content was capped at the metadata ceiling (25) and confidence stuck at 22. Now credited; basis names aliased (`visual_motion→motion`, `scene_cut→scene_change`). Verified **conf 22 → 56, content 25 → 33** |
 
-### Preserved intentionally (do not commit/delete)
-- `aborted-runs/` (openshorts)
-- `security_utils.py.bak-20260908212436` (openshorts)
-- `infra/supabase/038_loom_editor_session_tokens.sql` (LOOM-Factory, pre-existing untracked)
-- pre-existing uncommitted edits in openshorts: `dashboard/src/lib/api.js`,
-  `dashboard/src/components/LoomActivityRoot.jsx`, `tests/test_header_rich_text.py`, `.gitignore`
-
-### ⚠️ OUTSTANDING BLOCKER — openshorts push
-`openshorts` commit **`f436357`** exists locally on `loom/factory-mvp-baseline-fixes` but **cannot be
-pushed**: its remote is `https://github.com/mutonby/openshorts.git` and the authenticated GitHub
-account (`Pettybytes`) is denied write access (`403 Permission to mutonby/openshorts.git denied to
-Pettybytes`). LOOM-Factory **did** push. Resolving this needs repo access granted by the owner, or a
-fork + PR — it is not a credential failure (identity resolves fine, `github-api` evidence).
-| Test runner | `python3 -m unittest discover -s tests` from **inside** each `infra/<suite>/`. **Not pytest** (not installed, not needed). Do NOT pass `-t .` — it forces package semantics and raises "Start directory is not importable". |
-
-Commits this session, all pushed: `8df2054` (Twitch connector) · `88814bd` (Caddy access logging) · `9973fb7` (GHL upload retry) · `8b89ce2` (truthful card contract + idempotent retry + flushed log) · `10ac46f` (tier-aware oversize fallback).
+### Prior-day context (still valid)
+Segment 4 / acquisition / Editor Gate work is **accepted and locked** — see
+`CURRENT_STATE.md` ("EDITOR GATE — CLOSED", lineage `loom-clean-fixture:0` →
+`render-1.2`, review card `1551061184483168386`). **Do not re-audit or reopen it.**
+Cross-platform exact acquisition was already complete (YouTube, Reddit, Instagram,
+TikTok, Twitch clips + bounded VOD, Kick clips); Kick VOD/ranged is
+`implemented_not_proven`; X is intentionally deferred.
 
 ---
 
-## 1. Runtime topology (as of session close)
+## 3. Market scoring semantics now in force (do not regress)
 
-| Component | Detail |
-|---|---|
-| Discord adapter | `python3 adapter.py`, binds **127.0.0.1:8090**. PID changes on restart. |
-| Supervisor | `./supervise.sh` (restart loop) → runs `./run.sh` which sources `~/.openclaw/.env` and `exec`s the adapter. **Killing the adapter is the sanctioned restart** — the supervisor brings it back in ~3s. |
-| Local helper | `helper.py` on 127.0.0.1:8787 (`/health` → `{"ok": true, "service": "loom-local-helper"}`) |
-| Caddy relay | **runs in Docker** (`loom-tunnel-proxy`, caddy:2-alpine). Host loopback `:8081` → adapter, `:8082` → n8n callback relay. Caddyfile at `infra/tunnel-proxy/Caddyfile` (bind-mounted read-only). |
-| Dashboard/editor frontend | Vite app at `openshorts/dashboard`, dev server `:5175` (Caddy's default `handle` routes everything unmatched there). |
-| Logs | `infra/discord-review/adapter.log` (adapter stdout+stderr), `supervisor.log`, and `docker logs loom-tunnel-proxy` (Caddy access log, enabled this session). |
-
-### Discord ingress
-* **Current endpoint:** `https://app.loomz.stream/discord/interactions` (**Tailscale Funnel**)
-* `TAILSCALE_ENDPOINT_VALIDATION = PASS` — Discord's real PING returned **200** at 17:10:21 from egress IP `35.196.132.85`.
-* `CLOUDFLARE_ENDPOINT_VALIDATION = NOT EXERCISED BY DISCORD`. A $0 Cloudflare **Quick Tunnel** (`cloudflared tunnel --url http://127.0.0.1:8081`, PID was 43004, hostname was `magical-learners-known-superior.trycloudflare.com`) is **temporary — the hostname changes on restart**. Discord never used it; only manual tests did.
-* The earlier Tailscale verification FAILURE is **unexplained**. A Caddy reload correlates in time but is not proven causal (manual curls reached the adapter before *and* after it).
-* **The endpoint was cleared and re-saved during this session.** If verification ever fails again, the safe procedure is: clear the Interactions Endpoint URL → Save → paste the exact same URL back → Save (forces Discord's PING).
-* No further ingress work is required. Do not reopen this.
-
-### Diagnostics added (do not remove)
-`infra/tunnel-proxy/Caddyfile` now has a `log { output stdout; format json }` block in the `:8081` site. This is what made the final diagnosis possible — without it, "request rejected" and "request never arrived" are indistinguishable.
-
----
-
-## 2. Locked architecture decisions (do not relitigate)
-
-1. **Caddy is retained deliberately.** `adapter.py`'s `/discord/card` handler has **no authentication at all**. Caddy's `@card` matcher is the ONLY thing gating it:
-   ```
-   @card { path /discord/card* ; header Authorization "Bearer {$LOOM_TUNNEL_TOKEN}" }
-   ```
-   Pointing a public tunnel directly at `:8090` would let anyone post arbitrary review cards. Keep Caddy in the path.
-2. **Large media stays local.** Never traverse n8n Cloud or the public funnel.
-3. **Callback-first orchestration.** No continuous polling.
-4. **Human approval before distribution.** Decisions: Approve / Reject / Hold.
-5. **Evidence discipline.** Label claims: Runtime verified · Static verified · Bryan reported · Bentley reported · Planned · Deferred. Construction is not runtime proof.
-6. **Ultralytics AGPL exposure** is confined to the nested `openshorts/` chassis (`requirements.txt:3`, `main.py:13` — the person-detection fallback). It is **not** imported anywhere in LOOM-Factory proper. Do NOT casually remove it; the fix direction is replacing it with MediaPipe (Apache-2.0) inside the chassis, as its own ticket.
-
----
-
-## 3. Asset-lineage contract (verified this session)
+`discovery/topic_intelligence.py`:
 
 ```
-loom_media.asset_version            render-1.0 → render-1.1 → …
-loom_media.previous_asset_version   lineage pointer; the ORIGINAL render has NULL
-loom_media.canonical_url            burned final (version-specific)
-loom_media.clean_source_url         clean PRE-hook/pre-subtitle master
-                                    (property of the ORIGINAL render; deliberately
-                                     NOT version-scoped — later versions re-render from it)
-loom_edit_corrections               per target_asset_version: trim_start/trim_end,
-                                    caption_changes (text, style, blocks, effect,
-                                    bg_color, position, alignment, font_name),
-                                    crop_reframe_changes (framing)
-loom_scores.suggested_hook          ← the editor's Hook source of truth
-loom_scores.suggested_caption       ← the editor's Social Caption source of truth
-loom_review_tokens                  review AND editor tokens (status pending/consumed/expired)
-loom_reviews                        terminal decisions
-```
-`resolve_clip_clean_source(tenant_id, clip_id)` filters by **tenant+clip only, not asset_version** — by design.
-
-**Editor bootstrap contract** (`resolve_durable_bootstrap`) proven payload:
-`hook` ← `loom_scores.suggested_hook` · `social_caption` ← `loom_scores.suggested_caption` · `media_url` ← `canonical_url` · `clean_source_url` · `duration_seconds` · `source_range {start,end}` (correction trim, else 0→duration) · `framing` ← `crop_reframe_changes.framing` · `captions`/`transcript` ← `caption_changes.blocks` · `scenes` = `[]` (**contract default — the `/scenes` 409 is EXPECTED/NON-BLOCKING**) · `title` ← not yet populated by any fixture.
-
----
-
-## 4. Discord Edit lifecycle — status
-
-| Stage | Classification | Evidence |
-|---|---|---|
-| Endpoint validation (PING) | ✅ COMPLETE | 200, `{"type":1}`, 0.0373s, real Discord IP |
-| ACK | ✅ COMPLETE | unit `test_ack_first.py` PASS; live interaction returned 200 |
-| Edit interaction delivery | ✅ COMPLETE | 200 from a second Discord egress IP `35.237.4.214` |
-| Editor-link generation | ✅ COMPLETE | `[edit] external editor link issued for clip …` |
-| Completion response | ✅ COMPLETE | **520** later corrected: `/discord/editor/complete` returned **HTTP 200** (see §7 gotcha) |
-| Card retry / idempotency | ✅ COMPLETE | `LOOM_CARD_SEND_ATTEMPTS` (default 3), guarded by `check_existing_card` |
-| Oversize fallback | ✅ COMPLETE | tier-aware poster fallback, commit `10ac46f` |
-| Flushed logging | ✅ COMPLETE | `log_message` now `flush=True` |
-| New asset version | ✅ COMPLETE | `render-1.1` created, `prev=render-1.0` |
-| Original preserved | ✅ COMPLETE | `render-1.0` untouched |
-| Corrections persisted | ✅ COMPLETE | trim `(0, 8.868005)` + caption/reframe |
-| Re-review delivery | ✅ COMPLETE | card `1550988492845228043`, `🎬 FINAL REVIEW · EDITED CUT`, `v1.1`, lineage `v1.0 → v1.1` |
-
----
-
-## 5. Editor implementation — IMPLEMENTED, HEADER ACCEPTANCE PENDING
-
-**`EDITOR_IMPLEMENTATION = IMPLEMENTED`** (openshorts commits `416e12e`
-Hook rich text + one authoritative preview, `8895050` Header parity, `eef684b`
-Header defect fixes).
-**`HOOK_VISUAL_ACCEPTANCE = PASS`** (Bryan reported: Hook renders in the primary
-preview, including multiple colours).
-**`HEADER_VISUAL_ACCEPTANCE = ROUND 4: PENDING_HUMAN`** — rounds 1-3 fixes stand
-(selection works, region/padding accepted, preview geometry parity). Round 4
-adds the optional dedicated black Header region.
-
-**"What previously controlled the black region" (asked, answered): nothing.**
-No field or layout semantic ever existed — `black_region`, `top_region`,
-`header_region`, `region_mode`, `headerRegion` return zero hits in source, and
-nothing in git history. The old black band above the video was an EMERGENT
-artifact: the main preview box had no aspect ratio (`lg:aspect-auto lg:h-auto`)
-and took its height from the taller sidebar, so the 9:16 video was letterboxed
-inside it and the header band (a % of that taller container) landed in the
-letterbox. `41c8d9c` pinned the frame to the video to fix geometry parity, which
-removed the letterbox and with it the accidental band. **No prior state existed,
-so nothing was restored — the mode is a new, explicit, persisted replacement.**
-Contract: `title_overlay.region = 'overlay' | 'dedicated'` in
-`lib/overlayLayout.js`; `'overlay'` is the default and is bit-identical to the
-accepted geometry; the Hook is positioned relative to the VIDEO AREA in both
-modes, which is what makes collision structurally impossible.
-
-**NEXT (after this re-test passes): FINAL RENDER PARITY.** The Editor is NOT
-complete until the actual rendered MP4 is proven to contain the same Header/Hook
-text, ranges, colours, fonts, relative sizes and placement seen in the preview:
-editor state -> draft/EDL -> render -> MP4 -> new asset_version -> GHL canonical
--> Discord re-review card. **`dedicated` mode additionally changes the render
-composition** (the canvas becomes taller than the video), so the renderer must
-honour the mode rather than assuming a 9:16 frame. Preview-only success is not
-final acceptance. Do not start Segment 5B until render parity is runtime-proven.
-
-**Round-3 root cause — preview geometry parity (measured, not guessed).** The
-media is 720x1280 (exactly 9:16), but the two preview containers were different
-shapes: the modal's was a real 9:16 box, while the main preview used
-`aspect-[9/16] lg:aspect-auto lg:h-auto`, so on desktop its height came from the
-tall sidebar (~420x1000). The 9:16 video was therefore letterboxed ~126px top
-and bottom in the MAIN preview only, and the header band (0-14% of the
-CONTAINER) fell mostly into that black bar ("too high") while the Hook at 20%
-landed just under the video's top edge ("on the boundary"). Same normalized
-values, different frames.
-
-Fixed by `PreviewSurface.jsx` as the ONE surface used by the primary preview and
-both range modals: the frame's aspect ratio is pinned to the video's own aspect
-and capped by WIDTH only (a max-height would break the aspect and reintroduce the
-divergence). `overlayLayout.js` exposes `FRAME_ASPECT`, `frameRect()`,
-`framePoint()` and `normalizedPlacement()` so the transform is explicit and
-tested. **Do not reintroduce `lg:aspect-auto`/`max-h` on a preview container.**
-
-Round-2 root causes (both fixed, both pinned by tests):
-- **Inline Header field crashed the editor.** `ManualTrimEditor` read
-  `e.currentTarget.selectionStart` INSIDE a deferred state updater; React nulls
-  `currentTarget` after dispatch, so the updater saw `null` ->
-  "Cannot read properties of null (reading 'selectionStart')" -> error boundary.
-  The modal fields were fine because they read a ref BEFORE `setState`. Fixed
-  with `readSelection()` (null-safe, refuses to touch non-INPUT/TEXTAREA) and an
-  eager snapshot; no blanket try/catch.
-- **Header crowded the region boundary.** Added `HEADER_SAFE_INSET_PCT`,
-  `headerUsableBand()`; the default anchor is now CENTRED in the usable band and
-  every anchor is clamped inside it, so explicit choices cannot breach padding.
-  Region clipping means a large rich-text range cannot redefine the geometry.
-
-**NEXT (after this re-test passes): FINAL RENDER PARITY.** The Editor is NOT
-complete until the actual rendered MP4 is proven to contain the same Header/Hook
-text, ranges, colours, fonts, relative sizes and placement seen in the preview:
-editor state -> draft/EDL -> render -> MP4 -> new asset_version -> GHL canonical
--> Discord re-review card. Preview-only success is not final acceptance.
-**Do not start Segment 5B until render parity is runtime-proven.**
-
-Bryan's first Header acceptance failed on two counts, both root-caused:
-1. **Selective Header styling did not work.** `HeaderModal` re-synced the
-   selection from `onBlur`; clicking a swatch blurs the textarea and browsers
-   (WebKit) then report `selectionStart/End` as `0/0`, so the live range was
-   wiped and the patch fell through to the BASE style — the panel said "no
-   selection" while the whole header changed colour. Fixed with
-   `lib/rangeSelection.js` (sticky `keepSelection`), `preventDefault` on swatch
-   mousedown so controls cannot steal focus, no blur sync at all, and the inline
-   header field's selection is now carried into the modal.
-2. **Header geometry regressed into the video region.** There was no placement
-   contract — two independent frame percentages with nothing confining the
-   Header. Fixed with `lib/overlayLayout.js`: HEADER_REGION 0-14% (clipped band),
-   HOOK_REGION 16-100%, separate anchors per element. The Header box takes no Hook
-   input and vice versa, so neither can move the other.
-
-**Architecture rule now enforced:** rich text model, normalization, styling
-controls and per-run rendering are SHARED; placement/geometry and visibility
-semantics are SEPARATE per element.
-
-Editor scope now covers BOTH visual text elements on one model:
-`lib/richText.js` (was `hookRichText.js`; the model was always generic),
-`RangeStyleControls.jsx` (the ONE range-styling UI, shared by the Hook modal and
-the new `HeaderModal.jsx`), and `TextOverlayPreview.jsx` rendering per-run style
-for each element. A span `size` is a MULTIPLIER of the element's base size, so
-the Header's px targets and the Hook's S/M/L both work off one field; legacy
-`'S'/'M'/'L'` spans still normalize. `hooks.py` gained `_size_multiplier` —
-without it a numeric span size hit a dict keyed by `'S'/'M'/'L'`, fell back to
-1.0, and silently no-op'd (styled in preview, unstyled in the burn).
-
-**Known gap (stated, not hidden):** the Header has **no server-side (ffmpeg)
-burn path at all** — `title_overlay` appears in no Python file. The Header is a
-preview/Remotion-layer concept, and its range styling is carried on the durable
-record (`edl_metadata.header_rich`) so nothing is lost, but the Remotion
-`TitleOverlay.tsx` / `TitleOverlayConfig` were **not** extended with runs, and no
-caller feeds a header through a render today. If a burned Header is ever wanted,
-that is new work, not a regression.
-
-⚠️ **Where the editor code actually lives:** `openshorts/` is a **separate nested
-git repo** (own remote `mutonby/openshorts`) and is **gitignored by LOOM-Factory**.
-`ManualTrimEditor.jsx`, `HookModal.jsx` and friends are tracked THERE, not in
-LOOM-Factory — `git status` in LOOM-Factory will never show them. Branch:
-`loom/factory-mvp-baseline-fixes`, no upstream configured; editor commits are
-local-only (14 unpushed at time of writing) — pushing is a deliberate decision,
-not an oversight.
-
-Evidence (labels per §2.5):
-- **Static verified** — `vite build` inside the `openshorts-frontend` container is
-  clean; `app.py` and `hooks.py` compile.
-- **Test verified** — 52 `node --test` cases in `dashboard/src/lib/*.test.mjs`;
-  22 unittest cases in `openshorts/tests/test_hook_rich_text.py`; the infra
-  baseline is **974/974 unchanged** (my changes are all in the nested repo, so the
-  LOOM-Factory total did not move — that is the correct result, not a skipped run).
-- **Runtime verified** — an editor session was minted for
-  `loom-edit-fidelity:0@render-1.1`; `/discord/editor/exchange` returned the
-  prepared draft (hook + 4 rich-text spans), `/discord/editor/bootstrap` returned
-  200 with media/clean URLs, and `/edit` served 200 from the public funnel origin.
-- **NOT verified** — the human visual acceptance (Header + Hook actually rendering
-  with the range colours on screen). That is Bryan's one click.
-
-What changed (accepted plan items 1-8): one shared overlay surface
-(`TextOverlayPreview.jsx`) plus one draft→preview conversion
-(`lib/editorPreviewState.js`), consumed by the primary preview AND the Hook modal;
-one span model (`lib/hookRichText.js`); shared looks/geometry (`lib/hookStyles.js`);
-the server burn honours spans (`hooks.py` `build_style_map`, `/api/hook` accepts
-`spans`/`base`, recorded in `edl_metadata`); the draft persists
-`hook_rich`/`hook_entrance`. Clip Title and Social Caption remain non-visual.
-
-### Root cause (established, exact)
-```
-ManualTrimEditor.jsx:728   <video ref={videoRef} src={clipUrl} controls playsInline   ← bare <video>, NO overlay layer
-ManualTrimEditor.jsx       RemotionPreview usage: NONE
-HookModal.jsx:105          <RemotionPreview videoUrl hook={hookConfig} subtitles={…} /> ← separate renderer
-```
-`/edit` → `main.jsx:82` → `LoomActivityRoot.jsx` → **`ManualTrimEditor.jsx` (1083 lines)** is the real editor. `ClipEditor.jsx` (1613 lines) contains **no hook code** and is NOT the editor — do not confuse them.
-
-The primary preview cannot show the Hook because it has **no overlay surface**; the modal renders a separate Remotion overlay. Two independent visual implementations, hence drift (`top · M · yellow · 5s` in the control, nothing in the frame).
-
-### Required work (accepted plan — implement, do not re-derive)
-1. **One authoritative preview** — a shared overlay component driven by current edit state, consumed by the main preview, the Hook modal, and ideally the render contract. **Do NOT patch around it by copying Hook state into the bare `<video>`.**
-2. **Live sync** — Hook and Header changes must appear immediately; no save/render/refresh/reopen.
-3. **Four text concepts, made explicit** in code and UI:
-   * **A. Clip Title** (`THE JIGGLE`) — metadata; NOT burned automatically.
-   * **B. On-video Title/Header** (`THE JIGGLE THE BOUNCE THE JUICE`) — visual overlay.
-   * **C. Hook** (`LOOK MA.. NO HANDS!`) — separate overlay with own text/style/position/size/timing.
-   * **D. Social Caption** (`editor hydration acceptance`) — publishing metadata; must NOT render on the video.
-   Preserve old persisted state; do not destroy metadata to get cleaner semantics.
-4. **Selective colouring** — whole-text + selected-word now; structured spans/range representation so character-level is possible later; backward-compatible with plain-string hooks.
-5. **One state contract** — one draft object / deterministic conversion owning clip title, header, hook, hook style/timing, rich-text spans, social caption, subtitles, trim, framing.
-6. **Preserve the lifecycle** and the lineage contract in §3.
-7. **Render parity** — semantics (content, colours, placement, style, timing, trim, framing) must match; centralize shared config rather than two interpreted formats.
-8. **Oversize-image fallback** for editor previews — the card path is done (`10ac46f`); the editor/preview side is not.
-9. **Tests** — shared preview state construction, Hook/Header propagation, Clip Title distinct from Header, Social Caption non-visual, hook style/timing persistence, rich-text span persistence, backward compat with plain strings, lineage, completion error behaviour, card retry/idempotency, no hydration regression. There is **no JS test runner** in this repo — decide whether to add one or assert the contract from Python; report the choice.
-10. **One visual acceptance** — prepare a state (Clip Title `EDITOR PREVIEW ACCEPTANCE`, Header `HEADER PREVIEW`, Hook `LOOK MA.. NO HANDS!`, multiple colours, known trim/framing) and give Bryan exactly ONE instruction. `EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN (Round 5 - Render Parity) (Round 5 - Render Parity)` is not a failure.
-
----
-
-## 6. Test fixtures still present (do not delete blindly)
-
-| Fixture | Where | Notes |
-|---|---|---|
-| `loom-edit-fidelity:0` | `loom_media` (`render-1.0`, dur 8.9), `loom_scores` (seeded hook/caption), `loom_edit_corrections` (`render-1.1`), tokens | The consistency fixture. `loom_media` row `render-1.1` has NULL canonical/clean (expected: final_publication skips media registration). |
-| `loom-e2e-proof-job:0` | `loom_media` (`render-1.0` dur 6.0, `render-1.1`) | Superseded acceptance card `1550967120089718935`. |
-| Staged render files | `openshorts/output/loom-edit-fidelity/` and `loom-acd934a8bb7f/` | Gitignored. **Do NOT commit generated media.** |
-| Retired orphans | 7 rows, clip `6c46c3ef-5eba-40bc-9b50-8f3457d1db79:1`, tenant `loom-acceptance-test`, created 2026-09-14, `pending` with no message | Pre-existing, not mine, left untouched. Decide whether to retire. |
-| Real scored candidates | `126d1217-…:0` (`loom-internal-test`), `6c46c3ef-…:1` (`loom-acceptance-test`) | Both have **0 `loom_media` rows** → neither can host an Edit-enabled card. |
-
----
-
-## 7. Gotchas that cost real time this session
-
-1. **`log_message` did not flush** (now fixed in `8b89ce2`). Response lines sat in the block-buffered stdout and only appeared when a *later* request flushed. A completed request that returned **200** looked like a request that never responded — I concluded that wrongly and had to correct it. If a request ever looks unanswered, force a flush (any request) and re-read before concluding.
-2. **Source IP proves nothing.** Caddy proxies to `host.docker.internal:8090`, so externally-relayed traffic logs as `127.0.0.1`; at Caddy it is the Docker bridge (`172.22.0.1`). The reliable evidence was the *timeline gap*, not the IP.
-3. **Tailscale funnel hostnames short-circuit locally.** A request to the funnel hostname from the same Mac resolves via MagicDNS and never leaves the machine. Use `curl --resolve <host>:443:<public-ingress-ip>` to test the real path.
-4. **`~/.openclaw/.env` holds a 41-char non-JWT `LOOM_SUPABASE_SERVICE_ROLE_KEY`** and it **works**. Do not "fix" it. Inline shell/python that embeds key material gets masked and can corrupt a script — read credentials via `adapter`'s own helpers (`supabase_filter_get`) instead of inlining them.
-5. **`http_json()` returns `(status, body)`**, not the body.
-6. **Adapter restart:** kill the adapter PID; `supervise.sh` restarts it. Restart is REQUIRED to load code changes.
-
----
-
-## 8. Twitch EventSub
-
-```
-TWITCH_EVENTSUB_IMPLEMENTATION   = COMPLETE   (commit 8df2054, pushed)
-TWITCH_EVENTSUB_LIVE_ACCEPTANCE  = PENDING
-```
-Implemented: `infra/discovery/connectors/twitch.py` — Helix listing + EventSub `channel.clip.created` push (one bounded Helix hydrate, Twitch's documented pattern), HMAC-SHA256 webhook signature verification with replay window, challenge handshake, injectable transport (suite is fully offline), registered in `connectors/__init__.py`. 25 tests. **Live acceptance needs `LOOM_TWITCH_CLIENT_ID` / `LOOM_TWITCH_CLIENT_SECRET` and a public HTTPS callback.** $0.
-
----
-
-## 9. Remaining Segment 5 sequence (authorized order — do not reorder)
-
-1. **Finish Editor visual/runtime acceptance** (see §5) — `EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN (Round 5 - Render Parity) (Round 5 - Render Parity)`.
-2. **Segment 5B — Multimodal Candidate Intelligence.**
-   * **Objective:** cheap LOCAL audio/visual signals so speech is not the only thing that can create a candidate moment. Target the `talking → talking → VISUAL PAYOFF → talking` failure.
-   * Pipeline shape: `transcript + audio spike + visual activity + scene change → candidate evidence → Qwen`.
-   * Signal layer: per-second `loudness`, `spike` (vs rolling-30s median), `burst` (onset density), `noisiness` (ZCR, audibility-gated); visual `motion`, `scene_cut`, `flash`; `speech_density` from existing word timestamps.
-   * Normalise **percentile-rank WITHIN the video only** — a relative salience signal, never an absolute virality claim, never presented as content-quality evidence.
-   * Signal-peak windows are **additive**: tag `source: signal_peak`; never displace an existing transcript window.
-   * Signals inform the existing scoring prompt as context — they do NOT replace model judgement, and OpenShorts' own score stays excluded from Qwen-visible input.
-   * Emit `signal_manifest.json` beside the clips (thresholds + per-second arrays recorded) for auditability.
-   * **Storage decision:** local manifest + ledger reference initially. No raw per-window telemetry in Supabase until centralized querying is demonstrated.
-   * **Exclusions:** no AGPL code copying (read `clips-studio` for ideas only — it is AGPL-3.0); no academic moment-retrieval models (Moment-DETR/UniVTG — overfit, MPS-hostile, licence-encumbered); no full-content/Level-4 pre-acquisition analysis; do not widen the pre-acquisition `content_intelligence` pipeline (§ evidence level 3 is the authorized ceiling).
-   * Run the bounded A/B: existing absolute ranking vs relative rerank, and keep relative rerank **only if it changes ordering usefully** — evidence before architecture.
-3. **5C.1 — WhisperX evaluation** (forced alignment vs current word-snap; measure drift on a fixed corpus).
-4. **DeepFilterNet A/B** — bounded, only if warranted and non-blocking.
-5. **Timestamp-primitive decision.**
-6. **5C.2 — Complete-Thought Boundary Refiner.** Must return explicit `boundary_mode` / `boundary_reason` / `boundary_degraded`, preserve `original_bounds` alongside `proposed_bounds`, and have **no silent fallback**. Promotion of safe boundary adjustments from proposal → automatic is a **trust ramp** backed by acceptance evidence, NOT a permanent human gate.
-7. **Bounded relative-Qwen rerank A/B.**
-8. **Segment 5 runtime acceptance.**
-9. **Docs / tests / commit / push.**
-10. **Segment 5 closeout.**
-
-Also still open from earlier planning (not authorized yet): the 8 ecosystem items (OBS/GSI/etc.), the gaming 4th tenant, and the Ultralytics→MediaPipe chassis ticket.
-
----
-
-## 10. Next session starting point
-
-Because `EDITOR_VISUAL_ACCEPTANCE = PENDING_HUMAN (Round 5 - Render Parity) (Round 5 - Render Parity)`:
-
-```
-START HERE NEXT SESSION: Human visual acceptance for Header render parity is ready.
-Open ~/Desktop/LOOM-EDITOR-ACCEPTANCE.txt to access the single-use editor link.
-Turn on the Header ("on-video title / header -> enabled"), select some text to style it, change to 'dedicated black region', hit 'auto edit', and view the Discord #re-review card output to confirm final render fidelity matches your exact selection geometry.
-Then begin Segment 5B.
----
-
-## 11. RECOVERY STATE — 5B partial integration reverted, baseline restored
-
-*Appended 2026-09-19. Read this before resuming Segment 5B.*
-
-- A failed Gemini-backed Segment 5B attempt left a **partial integration** in `infra/content_intelligence` (pipeline/provider wiring, debug `print()` instrumentation, scratch `patch_*.py` scripts).
-- **Recovery was completed on DeepSeek Flash.**
-- **Baseline restored.**
-- `infra/content_intelligence`: **70 tests OK**
-  - **55 pre-existing**
-  - **15 isolated 5B tests**
-- **No existing assertions were weakened, skipped, or deleted.**
-- `pipeline.py` and `providers.py` **restored to HEAD**.
-- Scratch/debug patch files **removed** (`patch_pipeline*.py`, `patch_provider*.py`, root `test_signals.py`, orphaned `prompt_builder.py`).
-- **Preserved isolated 5B work:**
-  - `multimodal_signals.py`
-  - `candidate_fusion.py`
-  - `tests/test_multimodal_signals.py`
-  - `tests/test_candidate_fusion.py`
-  - `tests/test_signal_integration.py`
-  - `fixtures/test.mp4`
-- **Regression root cause:** `pipeline.py` called `provider.assess(..., signal_windows=...)` while every provider at HEAD takes `(evidence_bundle, brief)`; the resulting `TypeError` was swallowed into `c.status = "error"`, so `scored == 0` and nothing reached the store. The companion provider-side patch was never applied.
-- **Do NOT resurrect the failed `signal_windows=` provider call.**
-- **Editor remains CLOSED.**
-
-### Known deficiencies in the preserved 5B work (clear before integrating)
-
-1. Fixture-dependent tests can **false-green via `skipTest`**.
-2. **Duplicate** signal/fusion implementations (`candidate_fusion.py` vs `multimodal_signals.py`).
-3. Runtime acceptance **A–F not proven**.
-4. **numpy + ffmpeg/ffprobe dependencies undeclared**.
-5. New files carry **incorrect 0600 modes**.
-
-### Authorized architecture for completing 5B
-
-Keep the existing provider contract. Route multimodal provenance/evidence through the existing Content Intelligence **Evidence/candidate contract** — do NOT add a call-site-only `provider.assess(..., signal_windows=...)` kwarg and do NOT broadly widen every provider signature.
-
-```
-local deterministic signals -> candidate windows -> fusion/dedup
--> Evidence/candidate representation -> existing provider semantic assessment
--> ranked/stored result
+WEIGHTS = { content: 0.32, freshness: 0.20, relevance: 0.18,
+            engagement: 0.15, velocity: 0.08, provenance: 0.07 }
 ```
 
-Qwen/provider stays the semantic judge; the local deterministic layer only supplies better evidence.
+- **content leads** — the clip itself (moment/hook, action or emotional payoff,
+  reaction/audio energy, visual clarity), reusing the existing content vocabulary.
+- **engagement + velocity are SUPPORTING ONLY.** Absent ⇒ excluded from the normalised
+  sum, **never blocking**. A missing engagement metric or velocity history must not sink
+  a strong clip.
+- **`cross_platform` and `saturation` are REMOVED** from scoring *and* coverage. Duplicate
+  suppression lives in the dedup path.
+- Score = normalised over **presented** signals. **No coverage multiplier** (the
+  quality×coverage mechanism was deliberately replaced).
+- The **only hard block** is absent **content** evidence, which requires **real media
+  evidence** (clip-level moment analysis, or a platform metric proving media exists) — a
+  bare title does **not** count. This keeps a metadata-thin text post `INCOMPLETE` and
+  guarantees **failed media analysis is never a pass**.
+- `data_completeness` (coverage) and `confidence` stay **separately visible**.
 
-### 11.1 RESOLUTION — 5B reconciled, completed and accepted (2026-09-19)
+Verified behaviour (regression `infra/discovery/tests/test_scoring_missing_semantics.py`):
 
-The intermediate state described above is closed. Final reality:
-
-- The uncommitted integration was **not** inherited blindly: every hunk of the four
-  tracked files was read against HEAD and kept, repaired, or reverted on merit.
-- **One canonical contract.** `candidate_fusion.py` is the single owner of the
-  window math (normalize, salience gate, peaks, windows, fusion).
-  `multimodal_signals.py` no longer duplicates it and no longer imports numpy —
-  the signal layer is **standard library only**.
-- **False-green eliminated.** Media tests now **FAIL** when `fixtures/test.mp4` is
-  missing (`require_fixture`) instead of skipping; the fixture is committed.
-- **Dependency question answered by removal, not documentation:** numpy is gone.
-  The only external requirement is `ffmpeg` on PATH, now documented in the suite
-  README along with the bounding/timeout behaviour.
-- **Modes fixed** — everything is `0644`.
-- **Defect found and fixed at runtime:** percentile ranking alone can never report
-  "nothing salient" (the max always ranks 1.0), so a *steady non-silent* source
-  manufactured a phantom audio peak. Fixed with a salience floor relative to the
-  source's own level; full calibration in `CURRENT_STATE.md` §13.
-- **Acceptance A–F proven on real media**, not asserted — see §13.
-- Tests: `infra/content_intelligence` **97 OK** (55 pre-existing preserved
-  unmodified) · `infra/discord-review` **232 OK**.
-- Cost: **$0**; no model call in the signal path.
-
-**Next authorized step: STOP.** Segment 5B is complete. The next workstream in the
-authorized sequence is **5C.1 — WhisperX evaluation**, which has **not** been
-started.
+| Case | Score | Blocked? |
+|---|---:|---|
+| Rich (views+likes+history) | 85 strong | no |
+| Strong, no engagement/velocity | 83 strong | **no** |
+| Quiet wholesome animal clip | 68 | **no** |
+| No content evidence | 50 incomplete | **YES** |
+| Stale + irrelevant | 45 stale | rejected |
 
 ---
 
-## 12. Segment 5C.1 CLOSED — WhisperX evaluated (2026-09-20)
+## 4. Current measured runtime state (the gap list)
 
-- **Verdict: `ADOPT WITH LIMITATIONS`** — adopt **alignment only**, over LOOM's
-  existing transcript; keep LOOM's own VAD/decoder configuration.
-- Artifacts: `infra/whisperx-eval/` (`README.md`, `evaluate.py`, `results.json`).
-  Environment: `~/.venvs/loom-whisperx-eval` (outside the repo; system Python
-  3.14 has no torch wheels, so 3.11 was required).
-- Headline: alignment is cheap and reliable (align RTF **0.019**, 0 failures,
-  0 unaligned words) and would trim seconds of dead air inside candidate windows
-  on some clips — but the **precision gain over LOOM's existing word timestamps
-  is unproven** (median shift ~50–80 ms, no ground truth), alignment stretched
-  single words implausibly on one clip, and WhisperX's own VAD/decoder path
-  **changed or lost content on 3 of 7 speech clips** (including dropping an
-  opening sentence) and hallucinated on the ambiguous control.
-- **Do NOT wholesale-replace LOOM's transcription with WhisperX.**
-- Editor remains **CLOSED**; Segment 5B remains complete and pushed (`8b4e65c`).
-- **Next authorized step:** per §9 — the **timestamp-primitive decision** (5C.1's
-  verdict feeds directly into it) and/or the bounded **DeepFilterNet A/B**.
-  **5C.2 (Complete-Thought Boundary Refiner) is NOT authorized yet** — the
-  boundary payoff is the strongest argument for aligned timestamps, but it needs
-  its own go-ahead, and promotion from proposal → automatic must remain a trust
-  ramp backed by acceptance evidence.
+Real run, `funny dog moments` YouTube shorts, signals on, HEAD `c5ec62f`:
 
----
+```
+RAW 47 -> SHORTS(<=180s) 6
+FUNNEL: processed 5, scored 5, skipped_market 0, errors 0, cost $0.000716
 
-## 13. DeepFilterNet A/B CLOSED — DO NOT ADOPT (2026-09-20)
+c2OTHeCKsBE  market=72 PASS   content=33 conf=56 sig=extracted:6
+    mode=source_as_moment  moment 0.0 -> 15.0
+    complete=FAIL [MISSING_PAYOFF, REACTION_TRUNCATED, INSUFFICIENT_CONTEXT]
+    FIRE=False [LOW_MARKET, LOW_CONTENT, NO_IMMEDIATE_HOOK, LOW_ACTIVITY,
+                NO_PAYOFF, WEAK_REACTION_OPPORTUNITY, LOW_SELECTION,
+                LOW_CONFIDENCE, INCOMPLETE_CLIP]
+```
 
-- **Verdict: `DO NOT ADOPT`** as an automatic preprocessing stage.
-- Artifacts: `infra/deepfilter-eval/` (`README.md`, `clean_audio.py`,
-  `evaluate_ab.py`, `results_ab.json`). DFN lives in its own venv
-  (`~/.venvs/loom-deepfilter-eval`) because it pins `numpy<2`.
-- **Env warning worth remembering:** installing DeepFilterNet into the WhisperX
-  venv silently downgraded `numpy 2.4.6 → 1.26.4` + `packaging 26.3 → 23.2`, i.e.
-  it changed the environment behind the committed 5C.1 results. Restored and
-  re-verified (`ENV_MATCHES_5C1 = True`). Keep eval environments separate.
-- Evidence: no transcription gain on any difficult clip (net word loss on 4 of 5),
-  substitutions are degradations, and loud-region energy is attenuated on the
-  eventful content LOOM cares about (shouting 74 %, singing 73 %, music 33 %,
-  low-SNR 21 %). Clean control untouched → harmless, not helpful.
-- **Next authorized step:** the **timestamp-primitive decision**, then **5C.2
-  (Complete-Thought Boundary Refiner)** — both still need explicit go-ahead.
-  ​5C.1's alignment verdict stands: alignment-only, never a wholesale ASR swap.
+**Working:** short-form detection (`source_as_moment`), signal extraction inside the full
+pipeline (`extracted:6`), transcript normalization, boundary resolution, content-first
+Market (26 → 72 on this clip), evidence now credited (conf 22 → 56).
+
+**Open gaps, in priority order:**
+
+1. **`end` is exactly `15.0` on several candidates and completeness says
+   `REACTION_TRUNCATED`.** Suspect the bounded-inspection window (`MAX_WINDOW` in
+   `content_intelligence/bounded_preview.py`) is capping the clip rather than the
+   evidence deciding it. Start here — it directly causes `REACTION_TRUNCATED` and
+   `INSUFFICIENT_CONTEXT`.
+2. **`content=33` vs the ≥80 FIRE threshold.** Content gains bonuses only via
+   `recalibrate_content_score` (`immediate_hook +10`, `action_activity +8`,
+   `payoff_understanding +8`, `reaction_opportunity +4`) — all of which need the
+   inspection assessments to pass. `NO_IMMEDIATE_HOOK` / `NO_PAYOFF` show they don't yet.
+   Check `content_intelligence/moment_inspection.py` assessors
+   (`assess_stop`, `assess_payoff`, `assess_activity`, `assess_reaction_angle`) against
+   the evidence actually produced.
+3. **`market=72` vs ≥75.** Three points short. Not a threshold to lower — either more
+   evidence or a genuinely stronger clip.
+4. **`MISSING_PAYOFF`** for a 120 s "Dogs' Epic Shopping Cart Voyage" — payoff cue
+   detection may be caption-driven and the source has sparse/spoken-light captions.
+
+**No candidate has FIREd yet. Do not lower thresholds to force one.**
 
 ---
 
-## 14. Timestamp primitive LOCKED + Segment 5C.2 Boundary Refiner COMPLETE (2026-09-20)
+## 5. THE single next action
 
-### Timestamp primitive — LOCKED (`CURRENT_STATE.md` §16)
-LOOM's transcription/VAD/decoder stays authoritative for transcript CONTENT.
-WhisperX alignment is supplemental word-level timing over that transcript, never
-ground truth, never a content source, always with a safe fallback. DeepFilterNet
-is excluded from the automatic path. 5B signal windows are event/salience
-evidence only — they may preserve a bounded nonverbal tail, never set word timing.
+> Fix the clip-window cap and the payoff/hook assessment wiring in
+> `content_intelligence/moment_inspection.py` + `bounded_preview.py`, then **re-run the
+> same six-platform short-form search** and check whether a candidate reaches
+> `FIRE=True` with `complete=PASS`.
 
-### 5C.2 — Boundary Refiner — COMPLETE
-* `infra/content_intelligence/boundary_refiner.py` — deterministic, local, **$0**,
-  no model call; pure stdlib.
-* `infra/content_intelligence/tests/test_boundary_refiner.py` — 28 tests.
-* `infra/content_intelligence/prove_boundary_refiner.py` — A–I acceptance on real
-  media + real timings (**11/11 PASS**; full table in `CURRENT_STATE.md` §17).
-* `infra/content_intelligence` — **125 OK** (97 pre-existing preserved).
-* Contract carries `original_bounds` alongside refined bounds, plus explicit
-  `start_reason`/`end_reason`/`fallback`/`evidence` — **no silent fallback**.
-
-### Next authorized step
-Per §9: **bounded relative-Qwen rerank A/B**, then **Segment 5 runtime acceptance**,
-then docs/tests/commit and Segment 5 closeout. Reopening anything the Editor gate
-closed is still forbidden (`CURRENT_STATE.md` §11-13 remain authoritative).
-Promotion of boundary adjustments from proposal → automatic remains a **trust
-ramp backed by acceptance evidence**, not a permanent human gate.
+Bryan's standing instruction is explicit: **"if you don't find a successful clip in one
+search run it again"** — iterate searches, but never fabricate a card.
 
 ---
 
-## 15. Relative-Qwen rerank — implemented, real A/B BLOCKED on credential (2026-09-20)
+## 6. Bryan's standing direction for this work (verbatim intent)
 
-* `infra/content_intelligence/relative_rerank.py` — relative reranking of a
-  BOUNDED finalist set. Records relative rank/score/rationale/evidence/redundancy/
-  confidence **alongside** the untouched independent score. Strict schema,
-  deterministic handling, safe fallback on every failure, candidates never deleted.
-* `tests/test_relative_rerank.py` — 26 tests. `prove_relative_rerank.py` — A–G
-  acceptance. `infra/content_intelligence` — **151 OK**; `infra/discord-review`
-  unchanged.
-* Acceptance: **F and G PASS** (8 checks); **A–E NOT PROVEN** because
-  `LOOM_OPENROUTER_API_KEY` (the existing OpenRouter/Qwen route) did not exist
-  anywhere. The key is now **stored** in the masked secret store (host policy
-  `openrouter.ai`) but was not visible to that run's process snapshot.
-* **Next step:** run `python3 infra/content_intelligence/prove_relative_rerank.py`
-  in a fresh snapshot to execute the real A/B and obtain A–E, token/cost/latency
-  figures. Only then can a verdict of ADOPT / ADOPT WITH LIMITATIONS be defended.
-* Verdict until then: **DO NOT ADOPT (yet) — NOT PROVEN**; reranking stays unwired.
-* Editor remains CLOSED; 5B, 5C.1, DeepFilterNet and 5C.2 are unchanged.
+- **All six platforms** scraped: YouTube, Reddit, TikTok, Instagram, Twitch, Kick.
+- Theme for YouTube / Reddit / TikTok / Instagram: **funny dog moments**.
+- **Twitch and Kick: ONLY `indialovewestbrooks` channel clips.**
+- **Short-form only. No long form.**
+- Produce **ONE example of a successful clip pull per platform** — only **highly viral**
+  moments, *not* ones that wouldn't make the cut. Do not pad quotas with weak clips.
+- Cards must **reveal fully**; buttons must actually **work** (Approve / Reject / Hold /
+  Open Source / Edit, persistence, duplicate-click protection, edited clip returns).
+- **"I only want results, not excuses."** Lead with verified outcomes and measured
+  numbers; keep the narration short.
 
-### 15.1 Fresh-snapshot retry — still blocked (2026-09-20)
-
-* Re-ran `prove_relative_rerank.py` in a fresh snapshot after storing the secret:
-  `LOOM_OPENROUTER_API_KEY present: False` — **8 passed, 0 failed, 5 not proven**.
-* Protected secrets are **not injected into native shell exec** processes, and are
-  never readable back, so the harness cannot receive the value that way.
-* **Unblock:** add `LOOM_OPENROUTER_API_KEY` to `~/.openclaw/.env` (the file that
-  already supplies the other 13 `LOOM_*` vars), then run with
-  `set -a; source ~/.openclaw/.env; set +a` before
-  `python3 infra/content_intelligence/prove_relative_rerank.py`.
-* **Final verdict recorded: DO NOT ADOPT (yet) — NOT PROVEN.** Reranking stays
-  unwired. Calls 0, tokens 0, cost $0.
-* No production code or contract changed on this retry, so no test re-run was
-  required (`infra/content_intelligence` 151 OK, `infra/discord-review` 232 OK
-  from the preceding verified run remain valid).
+### Known-good scrape targets (this session)
+- **Twitch `indialovewestbrooks`: 49 clips** — 150,360 / 144,349 / 134,642 / 114,430 /
+  105,648 views. Top: "Johnny ball getting cracked".
+- **Kick `indialovewestbrooks`: 1 clip only** ("India love golfing", **76 views**) — does
+  **not** meet the viral bar. Report honestly; do not card it as a success.
+- **YouTube shorts**: 120 s "Dogs' Epic Shopping Cart Voyage" (397 M), 81 s "Ultimate Dog
+  Tease" (213 M), 6 s "Chiquita" (13.9 M), plus 3.9 M / 1.9 M / 184 k.
 
 ---
 
-## 16. Relative-Qwen A/B EXECUTED — verdict ADOPT WITH LIMITATIONS (2026-09-20)
+## 7. Traps and gotchas (each one cost real time — read before you start)
 
-* **Route defects found (owner should fix in the route config):** with the pinned
-  reasoning model, the provider default `max_output_tokens=1200` fails **100%**
-  of calls (empty completion -> `INVALID_RESPONSE`); thinking ON is still
-  unreliable at 16000 (1 success / 4 attempts).
-* **Non-thinking is supported by the same route** (`reasoning`,
-  `response_format`, `structured_outputs` are all in `supported_parameters`) and
-  is ~13x cheaper in tokens, ~11x faster, and schema-valid:
-  403 vs 5464 output tokens, 5.5 s vs 60.9 s, $0.000135 vs $0.000335 per call.
-* **A/B executed:** 13 calls, 13/13 schema-valid, $0.001348, mean 9.9 s.
-* **Anchoring confound found and fixed:** showing `independent_score` in the
-  rerank prompt made the model echo it (rho 1.0, identical scores, all sources).
-  With that line removed: rho **0.2 / 1.0 / -0.105**. The prompt no longer
-  reveals the score (`include_independent_score_in_prompt=False`), while the
-  result still preserves it.
-* **A-G:** B PROVEN (2/3 sources changed ranks), C PROVEN (2/3 flagged
-  redundancy — the independent scorer cannot do this), D and E PROVEN as single
-  instances, F and G PROVEN. A NOT ESTABLISHED (the original agreement was the
-  anchor artifact).
-* **Verdict: ADOPT WITH LIMITATIONS** — bounded, advisory-only, safe-fallback
-  always; not deterministic, so it must not silently reorder production output.
-* Tests: `infra/content_intelligence` **158 OK**; `infra/discord-review` 232 OK.
-  Artifacts: `relative_rerank.py`, `complete_ab_non_thinking.py`,
-  `experiment_non_thinking.py`, `experiment_unanchored_rerank.py`.
-* Cost of this work: **~$0.0047** measured.
-
----
-
-## 17. Qwen provider hardening DONE — runtime-proven (2026-09-20)
-
-* Defect: pinned reasoning model + thinking on + default budget = 100%
-  `INVALID_RESPONSE` (empty completion, `finish_reason="length"`).
-* Affected production caller: `Pass1Pipeline._score_candidate` →
-  `build_provider(provider_name)` → `QwenProvider.assess` (reachable when
-  `provider_name="qwen"`; default is still `"gemini"`).
-* Fix, scoped to `QwenProvider`: always sends `reasoning: {"enabled": false}`
-  (opt-in `reasoning_enabled=True` only), always sets `response_format`
-  (`json_schema` by default, mirroring the existing response contract exactly),
-  and keeps the bounded `max_output_tokens=1200` (measured need 337-665).
-* Smoke through the real production path: worthiness **68**, 14 dims,
-  **410 in / 534 out tokens**, **7.9 s**, **$0.00004**, assessment accepted.
-* Tests: `content_intelligence` **171 OK** (13 new), `discord-review` 232 OK.
-* Preserved: prompt, scoring semantics, contract, validation, thresholds, error
-  codes, fallback. Untouched: Gemini provider, reranker, candidate generation,
-  Editor, discovery, tenant queues, Segment 5/6.
+1. **`extract_multimodal_signals=True` is REQUIRED.** It defaults off; with it off you get
+   `signal_status="disabled"`, empty evidence, confidence pinned at 22.
+2. **`fetch_media_and_signals` must keep `_auth_args()`.** It silently records failure as
+   `MediaNotFetched`; without cookies every credentialed source fails and the failure looks
+   like "no evidence".
+3. **Attribute names:** `BoundedPreview` exposes **`artifact_path` / `artifact_bytes`**
+   (NOT `path` / `bytes_written`). Probing the wrong names makes a *working* preview look
+   broken — that mistake happened here.
+4. **Module name:** signal analysis is `content_intelligence.multimodal_signals`
+   (`analyze_media_signals`). `content_intelligence.media_signals` does not exist.
+5. **Apify minimum:** runs are rejected below `maxTotalChargeUsd=0.50`
+   (`max-total-charge-usd-below-minimum`) even for one item. The $0.50 is a *cap*; one item
+   costs ~$0.005.
+6. **Apify env var name is `LOOM_APIFY_API_TOKEN`** (not `APIFY_TOKEN`).
+7. **yt-dlp needs `LOOM_YTDLP_COOKIES_FROM_BROWSER="chrome:Default"`** for YouTube.
+8. **Shell/tool masking hazard:** writing a literal secret-read expression inline in an
+   `exec` heredoc (e.g. an assignment from a token env var) can be rewritten to `***` and
+   **break the script with a SyntaxError**. Workaround that works: read the token through a
+   dict, e.g.
+   `envd = dict(os.environ); ky = [k for k in envd if k.startswith("LOOM_DISCORD") and k.endswith("TOKEN")][0]`,
+   then build the header from `envd[ky]`.
+9. **The runtime's "Active exec sessions: none" line is often STALE** for background
+   `exec` jobs. Use the `process` tool `list`/`poll` as authoritative. Do not assume a run
+   is gone.
+10. **`repair_boundaries` appends blind +4 s increments** (`repair_end_1/2/3`) to chase
+    completeness instead of recomputing from the next real boundary. Bounded, but not
+    evidence-driven — worth fixing (§4.1).
+11. **Never leave the tree red.** Every fix here went FIX → focused regression → full
+    suite → commit → push. When a change turned the suite red it was either corrected or
+    reverted; nothing was force-committed.
 
 ---
 
-## 18. SESSION CLOSEOUT — DURABLE CHECKPOINT FOR TOMORROW (2026-09-20)
+## 8. Credentials & security posture (verified 2026-09-22)
 
-### 18.1 Repository checkpoint (verified at closeout)
-
-| | |
-|---|---|
-| branch | `master` |
-| HEAD | **`cbfaa5d`** |
-| `origin/master` | **`cbfaa5d`** (identical — `HEAD == origin/master`) |
-| ahead / behind | 0 / 0 — no unpushed commits |
-| worktree | clean **except** the intentional untracked 038 migration |
-
-Pushed today, in order: `fcc54e9` (5C.1 WhisperX) → `9b8a6cb` (DeepFilterNet
-DO NOT ADOPT) → `c6ef583` (5C.2 Boundary Refiner + locked timestamp primitive) →
-`f35df47` (rerank implementation, A–E blocked) → `957c4e2` (blocked retry) →
-`e3d9137` (real A/B + verdict + anchor fix) → `185edfc` (harness entry-path fix) →
-**`cbfaa5d` (Qwen provider hardening)**.
-
-**Intentional 038 exception:** `infra/supabase/038_loom_editor_session_tokens.sql`
-is deliberately UNTRACKED (not gitignored). It is present, unmodified since
-Sep 19 21:19, and must not be deleted, overwritten, committed accidentally, or
-lost. No other file was left uncommitted, and nothing pre-existing was committed
-merely to make the tree look clean.
-
-### 18.2 Segment 5 status: ACTIVE (not closed)
-
-Completed in this work block:
-
-1. **5B — multimodal signal mining: COMPLETE.** Transcript/audio/visual evidence
-   extraction with deterministic signal windows (`audio_spike`, `visual_motion`,
-   `scene_cut`) used as evidence by everything downstream.
-2. **5C.1 — WhisperX evaluation: CLOSED, alignment-ONLY decision.** WhisperX's
-   VAD/decoder path changed or lost transcript content on 3 of 7 speech clips, so
-   it is **never** used to produce transcript text; wav2vec2 alignment is
-   supplemental word-level timing over LOOM's existing transcript. Evidence:
-   `infra/whisperx-eval/` (`results.json`, `README`).
-3. **DeepFilterNet: DO NOT ADOPT** for automatic preprocessing. No transcription
-   gain on any difficult clip (net word loss on 4 of 5), substitutions were
-   degradations, and loud-region energy was attenuated on the eventful content
-   LOOM targets (shouting 74 %, singing 73 %, music 33 %, low-SNR 21 %). Evidence:
-   `infra/deepfilter-eval/`.
-4. **5C.2 — Boundary Refiner: COMPLETE** and the **timestamp primitive is LOCKED**.
-   Deterministic, local, **$0**, no model call, pure stdlib. Refines the boundaries
-   of an already-selected candidate; carries `original_bounds` plus
-   `start_reason`/`end_reason`/`fallback`/`evidence`; trimming may remove silence
-   only. Acceptance A–I on real media + real timings: **11/11 PASS**. Files:
-   `infra/content_intelligence/boundary_refiner.py`,
-   `tests/test_boundary_refiner.py`, `prove_boundary_refiner.py`.
-5. **Relative-Qwen rerank — real A/B EXECUTED.** Verdict **ADOPT WITH LIMITATIONS**
-   and it remains **ADVISORY and UNWIRED**. See 18.3.
-6. **Qwen provider hardening — runtime-proven at `cbfaa5d`.** See 18.4.
-
-Not yet done (this is tomorrow's work):
-
-* **Automated discovery has NOT been started in this work block.**
-* **Tenant queue activation has NOT been completed.**
-* **Segment 5 final runtime acceptance has NOT been completed.**
-* **Candidate generation is untouched.**
-* **Segment 6 remains LOCKED** until Segment 5 genuinely closes.
-
-### 18.3 Relative-Qwen rerank — findings (A/B closed, do not reopen)
-
-* **Verdict: ADOPT WITH LIMITATIONS**, bounded and advisory. Recorded in
-  `CURRENT_STATE.md` §19.
-* **The independent score is still preserved and still authoritative.** Relative
-  reranking records `relative_rank`/`relative_score`/`rationale`/
-  `strongest_evidence`/`redundant_with`/`confidence` **alongside** the untouched
-  independent score, and never silently reorders production output.
-* **Relative reranking uses explicit NON-THINKING Qwen + structured output.**
-  Measured: 403/364 output tokens, **0 reasoning tokens**, 5.5 s / 3.7 s,
-  $0.000135 / $0.000130 per call, schema-valid — versus 5464 output tokens and
-  60.9 s with reasoning on.
-* **Qwen reasoning-ON failure findings:** the pinned `qwen/qwen3.5-9b` is a
-  reasoning model, so with thinking on it spent the entire output budget on
-  reasoning and returned an **empty completion** (`finish_reason="length"`,
-  `content=""`) — surfacing as `INVALID_RESPONSE`. That failed **100 %** of calls
-  at the provider default (`max_output_tokens=1200`; `reasoning_tokens` 1200/1200)
-  and stayed unreliable at 6000 (intermittent) and 16000 (1 success / 4 attempts).
-* **Anchoring confound found and fixed:** showing `independent_score` in the
-  comparison prompt made the model echo it (rank correlation 1.0 with numerically
-  identical scores on all 3 sources). With only that line removed: **rho 0.2 / 1.0
-  / −0.105** — genuine relative judgement. The prompt no longer reveals the score
-  (`include_independent_score_in_prompt=False`, overridable).
-* Acceptance on real evidence: **B PROVEN** (2 of 3 sources changed ranks),
-  **C PROVEN** (2 of 3 flagged redundancy — the independent scorer cannot do
-  this at all), **D/E PROVEN as single instances**, **F/G PROVEN**, **A NOT
-  ESTABLISHED**. Ordering changes are *plausibly useful but not independently
-  verifiable* (no ground-truth labels), which is exactly why it stays advisory.
-
-### 18.4 Production Qwen provider hardening — `cbfaa5d` (runtime-proven)
-
-* **Affected production caller:** `infra/content_intelligence/pipeline.py` →
-  `Pass1Pipeline._score_candidate` → `build_provider(provider_name, …)` →
-  `QwenProvider.assess()`. Reachable when `provider_name="qwen"`.
-* **Change, scoped to `QwenProvider`:** the request now **always** carries
-  `"reasoning": {"enabled": false}` (opt-in only via `reasoning_enabled=True`,
-  never by omission, so it cannot silently fall back to the broken default); it
-  **always** sets `response_format` — `json_schema` by default via
-  `QWEN_RESPONSE_SCHEMA`, which mirrors exactly the shape `_build_prompt` always
-  demanded, with `json_object` available and an unknown value raising `BAD_CONFIG`
-  before any HTTP call; and the output budget stays **bounded at 1200** (measured
-  need for this prompt: 337–665 tokens).
-* **Preserved unchanged:** prompt, scoring semantics, response contract and
-  downstream `assess_content` validation, thresholds, evidence contracts, error
-  codes, usage/model-identity capture and fallback behaviour.
-* **Actual production smoke proof** (`build_provider("qwen")` →
-  `provider.assess()` → `assess_content()`):
-
-| metric | value |
-|---|---|
-| reasoning tokens | **0** |
-| input tokens | **410** |
-| output tokens | **534** |
-| latency | **7.9 s** |
-| cost | **$0.00004** |
-| assessment | **valid 14-dimension assessment**, worthiness **68**, confidence 0.3333, format `reaction_single` |
-
-* **`Pass1Config.provider_name` STILL defaults to `gemini`.** No provider-default
-  migration was authorized today, and the default was deliberately not touched
-  during closeout.
-* Coverage: 13 new contract tests in
-  `tests/test_qwen_provider_contract.py` pin the request (non-thinking always
-  present, thinking opt-in only, structured output set, bounded budget, prompt
-  byte-identical, `INVALID_RESPONSE`/`AUTH` intact).
-
-### 18.5 Test state
-
-| suite | result |
-|---|---|
-| `infra/content_intelligence` | **171 OK** |
-| `infra/discord-review` | **232 OK** |
-
-### 18.6 Gates — status and scope
-
-* **Editor: CLOSED.** Do not reopen without a demonstrated real regression, and
-  do not add Editor feature work.
-* **Candidate generation: untouched** in this work block.
-* **Automated discovery: not started.** **Tenant queue activation: not completed.**
-  **Segment 5 final runtime acceptance: not completed.**
-* **Segment 6 (Lean Ranking Composer): LOCKED** until Segment 5 genuinely closes.
-
-### 18.7 UNRESOLVED DECISION — provider default (do NOT change silently)
-
-`Pass1Config.provider_name` currently defaults to **Gemini**, even though the Qwen
-structured-scoring route is now runtime-proven, inexpensive (~$0.00004 per
-assessment) and hardened. **Decide deliberately during future
-routing/configuration work** whether Qwen should replace Gemini as the default for
-applicable Content Intelligence scoring. Do not change the default as a side
-effect of other work, and it was NOT changed during this closeout.
+- **No secrets are committed.** `git grep` for `sk-…`, `pit-…`, `eyJ…` (JWT), `AKIA…`,
+  `apify_api_…`, `key_…` across tracked `*.md` / `*.py` / `*.json` returns **no matches**.
+- `.gitignore` covers `.env`, `.env.*`, `.token`, `*.pem`, `*.key`, `node_modules/`,
+  `__pycache__/`, `baseline-results/`, `openshorts/`.
+- No `.env*` files exist inside the repo. Runtime secrets are sourced from
+  **`$HOME/.openclaw/.env`** (`set -a && . "$HOME/.openclaw/.env" && set +a`).
+- **Refer to credentials by variable name only:** `LOOM_DISCORD_BOT_TOKEN`,
+  `LOOM_APIFY_API_TOKEN`, `LOOM_YTDLP_COOKIES_FROM_BROWSER`,
+  `LOOM_TWITCH_CLIENT_ID`, `LOOM_TWITCH_CLIENT_SECRET`, and the Supabase/Anthropic keys.
+- **`infra/supabase/038_loom_editor_session_tokens.sql` is intentionally untracked.**
+  Leave it that way unless Bryan asks otherwise; do not `git add -A`.
+- Discord is **outbound-only** via the bot token; channel used for review cards:
+  `1550207989569421444`.
+- **IRONCLAD Law #2 still applies:** SMS/email to real people requires the literal word
+  **APPROVED** from Bryan. No exceptions, no "quick tests".
 
 ---
 
-## 19. START HERE — TOMORROW'S WORK ORDER
+## 9. Session artifacts (context that is NOT in the repo)
 
-1. **Read the handoff/current-state docs only as needed** (§18 here, plus
-   `CURRENT_STATE.md` §18–20). **Do not re-audit already accepted work** — 5B,
-   5C.1, DeepFilterNet, 5C.2 and the Qwen routing work are closed.
-2. **Confirm the repository checkpoint:** branch `master`, `HEAD ==
-   origin/master`, expect `cbfaa5d` or later; verify the 038 migration is still
-   present and untracked.
-3. **Resume Segment 5 with automated discovery** and route its output into the
-   **existing real tenant queue**. (Discovery has not been started yet.)
-4. **Prove the real sourcing/intelligence spine end-to-end with the EXISTING
-   tenant.** One existing real tenant is sufficient — do **not** provision all
-   planned tenants merely to prove the architecture.
-5. **Verify tenant routing/isolation contracts** on that real path.
-6. **Perform the remaining Segment 5 runtime acceptance.**
-7. **If — and only if — all closure criteria are actually satisfied, mark
-   Segment 5 CLOSED.**
-8. **Only after Segment 5 is genuinely closed may Segment 6 — Lean Ranking
-   Composer — unlock.**
+Ephemeral `/tmp` files from the runs — treat as disposable, regenerate as needed:
+`/tmp/tiktok_item.json`, `/tmp/instagram_post.json`, `/tmp/kick_top.json`,
+`/tmp/yt_moment.json`, `/tmp/tw_top.json`, `/tmp/ti_backup.py`, `/tmp/ti_pre_content.py`.
 
-**Carry-forward decision to make deliberately (not tonight):** see §18.7 —
-whether Qwen should become the default provider for applicable Content
-Intelligence scoring.
-
-**Not authorized to start without a new explicit instruction:** automated
-discovery, tenant queue activation, Segment 5 final acceptance, Segment 6,
-provider-default migration, additional Qwen/Gemini experiments, Editor work,
-OBS/streaming work, or any new feature.
+Discord cards posted **earlier today, before the corrections** (these are **diagnostics /
+raw-source proofs**, NOT accepted mining results — Bryan reclassified them):
+`1551781660435947602` (YouTube), `1551781747572871230` (Reddit), `1551781829193896037`
+(Twitch), `1551782167934406709` (TikTok), `1551782889136332872` (Kick),
+`1551783020887810092` (Instagram), `1551789495093960738` (moment-location proof).
+Do not present these as Segment 5 acceptance.
 
 ---
 
-## 20. SEGMENT 5 — CLOSED (2026-09-21)
+## 10. Acceptance definition (so the next model can self-assess)
 
-**Segment 5 is officially CLOSED.** Runtime acceptance passed on the real store
-with one real tenant (`dreemzy`) and a bounded candidate set, reusing existing
-architecture end-to-end. Full evidence: `CURRENT_STATE.md` §21.
-
-* `prove_supabase_acceptance.py` **12/0** · `prove_routing.py` **16/0** ·
-  `prove_source_review.py` **8/0** · `prove_pipeline.py` **10/0**.
-* Spine exercised: discovery → qualification → routing → Source Review →
-  acquisition boundary → transcript/evidence → 5B signals (wired) → Content
-  Intelligence → Combined Selection → idempotent persistence.
-* 15 real candidates discovered; 1 scored (`market=61`, `worthiness=62`,
-  `selection=68`, `standard_review`); replay duplicate-free (`2->2`).
-* Incremental provider cost **≈$0.0021** total.
-* Defects fixed: three state-dependent acceptance fixtures, one wrong idempotency
-  assertion, and **one real observability defect** (`fetch_media_and_signals`
-  silently returned `[]`, so bounded-out media looked like "no salient peaks" —
-  now `not_fetched:<reason>`).
-* Tests: `content_intelligence` **172 OK**, `discord-review` **232 OK**.
-* Known limitations (do not overclaim): no TikTok/IG/Twitch/Kick autonomous
-  discovery; **5C.2 refiner not yet wired into the pipeline**; live signals bounded
-  at 600 s; reranker advisory/unwired; provider default still gemini.
-
-**Next authorized workstream: Segment 6 (Lean Ranking Composer) — may now be
-unlocked.** Part B (bounded OpenShorts RECUT integration) is separate and
-documented in its own section.
-
----
-
-## 21. Segment 5 — FINAL DISCOVERY ACCEPTANCE REOPENED (2026-09-21)
-
-Treat Segment 5 as **ENGINEERING SPINE PROVEN, FINAL DISCOVERY ACCEPTANCE
-REOPENED**. §20's spine results stand and were not re-run. Full detail:
-`CURRENT_STATE.md` §22.
-
-**Platform discovery status (honest):**
-* 🟢 YouTube — first-party RSS, runtime-proven
-* 🟢 Reddit — runtime-proven
-* 🟡 Twitch — implemented; **blocked on `LOOM_TWITCH_CLIENT_ID` +
-  `LOOM_TWITCH_CLIENT_SECRET` (both absent)**
-* 🔴 TikTok — no discovery path (URL rejects `/search`, `/discover`, `/tag`)
-* 🔴 Instagram — no discovery path (Apify actor evaluated for acquisition only)
-* 🔴 Kick — no discovery path (acquisition-only; VOD 404 documented)
-
-**Two things must NOT be inferred:** acquisition ≠ discovery, and "can expand
-later" never meant "basic autonomous discovery may be postponed".
-
-**Blocking policy conflict:** `APIFY_PROVIDER_BOUNDARY.md` rule 3 forbids invoking
-Apify during **discovery**; rule 2 requires a per-platform evaluation +
-authorization first. Using Apify for TikTok/IG discovery would amend that policy
-and create a recurring paid lane at discovery time — a material architecture +
-recurring-cost change — so **it was not built** and is escalated instead.
-
-**Outstanding operator acceptance:** no real candidate has reached Bryan's actual
-`#source-review`, because proof profiles are excluded from production queues by
-design and no real (non-proof) sourcing profile is defined. Fabricating or
-bypassing that exclusion was refused.
-
-**Awaiting Bryan:** (1) Twitch client id/secret; (2) a decision on a paid vs free
-TikTok/Instagram discovery mechanism; (3) the intended Kick discovery surface;
-(4) the real tenant sourcing profile id.
-
-RECUT remains on hold. Segment 6 not started. Migration 038 preserved.
+Segment 5 is **not** complete until: six platforms each produce a legitimately
+market-qualifying, **theme-correct**, **video-qualified** card; a real moment with
+start/end timestamps plus hook/payoff/reaction/completeness is shown; FIRE status is shown
+honestly; canonical page URLs (never media manifests) are used; buttons work end to end;
+and acquisition/clip-review hand off correctly. **Market FAIL or Completeness FAIL cannot
+count as acceptance**, and thresholds must not be lowered to manufacture one.

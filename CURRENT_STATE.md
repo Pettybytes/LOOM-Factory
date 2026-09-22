@@ -4,6 +4,19 @@
 
 ---
 
+> ## ⚠️ SEGMENT 5 IN PROGRESS — 2026-09-22
+>
+> **Read `NEXT_SESSION_HANDOFF.md` FIRST.** It is the authoritative resume point for the
+> Segment 5 moment-mining work in progress (repo `master` == `origin/master` == `c5ec62f`,
+> tree clean, only `infra/supabase/038_loom_editor_session_tokens.sql` untracked by design).
+> It carries the nine-commit fix chain, the measured runtime gaps, the exact next action,
+> Bryan's standing direction, the credential/security posture, and the gotchas.
+>
+> Everything in THIS file about the **Editor Gate, Segment 4, and cross-platform
+> acquisition remains accepted and locked — do not re-audit or revert it.**
+
+---
+
 ## EDITOR GATE — CLOSED · 2026-09-20 ~02:44 EDT — HUMAN ACCEPTANCE PASS
 
 **Editor acceptance is complete and locked. Do not re-audit, re-test, or add Editor feature work.**
