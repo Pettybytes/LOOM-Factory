@@ -66,40 +66,13 @@ class SourceReviewAckOrderingTests(unittest.TestCase):
 
         with mock.patch.object(source_review, "fetch_candidate_by_fingerprint", forbidden_fetch), \
                 mock.patch.object(adapter.threading, "Thread", _FakeThread):
-            # Approve still ACKs deferred first, then hands to the worker.
-            approve = source_review.make_source_custom_id(source_review.DECISION_APPROVE, "f" * 64)
-            h._handle_button({"data": {"custom_id": approve, "component_type": 2},
-                              "application_id": "123", "token": "tok"})
-            self.assertEqual(h.sent[-1], (200, {"type": 6}),
-                             "approve must be the deferred acknowledgement")
-            self.assertEqual(started[-1]["target"], "_source_button_worker")
-            self.assertTrue(started[-1]["daemon"], "worker must be a daemon thread")
-
-            # Reject BUTTON never reaches the worker: it renders the
-            # structured reason select (type 7) with no network work at all.
-            workers_before = len(started)
             h._handle_button(interaction)
-            self.assertEqual(h.sent[-1][0], 200)
-            self.assertEqual(h.sent[-1][1]["type"], 7,
-                             "reject button must render the reason select")
-            select = h.sent[-1][1]["data"]["components"][0]["components"][0]
-            self.assertEqual(select["type"], 3)
-            self.assertEqual(len(select["options"]),
-                             len(source_review.SOURCE_REJECT_REASONS))
-            self.assertEqual(len(started), workers_before,
-                             "reject button must not start a worker or persist")
 
-            # The reason submission ACKs deferred first, then hands to the
-            # worker with the chosen reason.
-            reason = next(iter(source_review.SOURCE_REJECT_REASONS))
-            h._handle_button({"data": {"custom_id": cid, "component_type": 3,
-                                       "values": [reason]},
-                              "application_id": "123", "token": "tok"})
-            self.assertEqual(h.sent[-1], (200, {"type": 6}),
-                             "reason submission must be the deferred acknowledgement")
-            self.assertEqual(started[-1]["target"], "_source_button_worker")
-            self.assertEqual(started[-1]["args"][1].get("reason"), reason,
-                             "the chosen reason must ride to the worker")
+        self.assertEqual(h.sent[0], (200, {"type": 6}),
+                         "first response must be the deferred acknowledgement")
+        self.assertTrue(started, "work must be handed to a worker thread")
+        self.assertEqual(started[0]["target"], "_source_button_worker")
+        self.assertTrue(started[0]["daemon"], "worker must be a daemon thread")
 
 
 class SourceReviewWorkerTests(unittest.TestCase):
@@ -146,25 +119,19 @@ class SourceReviewWorkerTests(unittest.TestCase):
 
         def fake_persist(url, key, payload):
             persisted.append(payload)
-            return dict(payload), True
-
-        def fake_payload(c, d, r, category=None, instructions=None):
-            return {"decision": d, "reviewer": r, "rejection_category": category}
+            return {"decision": payload["decision"]}, True
 
         with mock.patch.object(source_review, "fetch_candidate_by_fingerprint",
                                lambda *a, **k: cand), \
-                mock.patch.object(source_review, "source_decision_payload", fake_payload), \
+                mock.patch.object(source_review, "source_decision_payload",
+                                  lambda c, d, r: {"decision": d, "reviewer": r}), \
                 mock.patch.object(source_review, "persist_decision", fake_persist), \
                 mock.patch.object(source_review, "decided_embed",
-                                  lambda d, r, c, category=None: {"title": "decided"}):
+                                  lambda d, r, c: {"title": "decided"}):
             h._source_button_worker({"application_id": "1", "token": "t"},
-                                    {"fingerprint": "f" * 64,
-                                     "decision": source_review.DECISION_REJECT,
-                                     "reason": "off_theme"})
+                                    {"fingerprint": "f" * 64, "decision": "reject"})
 
-        self.assertEqual(persisted[0]["decision"], source_review.DECISION_REJECT)
-        self.assertEqual(persisted[0]["rejection_category"], "off_theme",
-                         "the chosen reason must persist as rejection_category")
+        self.assertEqual(persisted and persisted[0]["decision"], "reject")
         self.assertTrue(patches, "the original message must be updated")
         self.assertIn("embed", patches[0])
 

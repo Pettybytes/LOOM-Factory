@@ -2560,7 +2560,6 @@ class Handler(BaseHTTPRequestHandler):
             fp = src["fingerprint"]
             decision = src["decision"]
             reviewer = self._reviewer_name(interaction)
-            category = src.get("reason") or None
             stage = "candidate_lookup"
             candidate = source_review.fetch_candidate_by_fingerprint(
                 SUPABASE_URL, SUPABASE_KEY, fp)
@@ -2568,8 +2567,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._patch_original(application_id, interaction_token,
                                      content="Unknown candidate.")
                 return
-            payload = source_review.source_decision_payload(candidate, decision, reviewer,
-                                                            category=category)
+            payload = source_review.source_decision_payload(candidate, decision, reviewer)
             stage = "persist_decision"
             row, created = source_review.persist_decision(
                 SUPABASE_URL, SUPABASE_KEY, payload)
@@ -2581,12 +2579,7 @@ class Handler(BaseHTTPRequestHandler):
             stored = (row or {}).get("decision") if row is not None else None
             shown = stored if not created and stored else decision
             winner = row.get("reviewer") or reviewer
-            # Duplicate clicks render the STORED decision and its stored reason;
-            # an attempted category only shows when the attempt is the winner.
-            shown_category = ((row or {}).get("rejection_category")
-                              if shown == source_review.DECISION_REJECT else None)
-            decision_embed = source_review.decided_embed(shown, winner, created,
-                                                         category=shown_category)
+            decision_embed = source_review.decided_embed(shown, winner, created)
             embed = source_review.format_source_embed(candidate)
             embed["fields"] = [*(embed.get("fields") or []), *(decision_embed.get("fields") or [])]
             embed["color"] = decision_embed.get("color", embed.get("color"))
@@ -2675,24 +2668,6 @@ class Handler(BaseHTTPRequestHandler):
         # Source Review Inbox buttons use a distinct compact encoding.
         src = source_review.parse_source_custom_id(custom_id)
         if src is not None:
-            # Reject is a two-step decision: the button never persists a
-            # reasonless reject. It renders the structured-reason STRING_SELECT
-            # on the card itself (type 7, static payload, still inside the
-            # 3-second deadline); the select submission carries the chosen
-            # reason in data.values and only then reaches the worker.
-            if src["decision"] == source_review.DECISION_REJECT and component_type == 2:
-                message = interaction.get("message") or {}
-                self._send_json(200, source_review.reject_reason_update_payload(
-                    src["fingerprint"], message.get("components")))
-                return
-            if src["decision"] == source_review.DECISION_REJECT and component_type == 3:
-                values = data.get("values") or []
-                reason = (values[0] if values else "") or ""
-                if reason not in source_review.SOURCE_REJECT_REASONS:
-                    self._send_json(200, {"type": 4, "data": {
-                        "content": "Unknown reject reason.", "flags": 64}})
-                    return
-                src = {**src, "reason": reason}
             # ACK inside Discord's 3-second deadline FIRST. This branch previously
             # did a Supabase read + write BEFORE responding, which is why real
             # presses answered "The application didn't respond in time". Same

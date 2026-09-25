@@ -45,17 +45,6 @@ DECISION_LABELS: dict[str, str] = {
     DECISION_REJECT: "Reject",
 }
 
-# Structured reject reasons for SOURCE review cards. Small, fixed, queryable
-# vocabulary: rejection_category values feed the next mining pass
-# (theme enforcement, moment scoring, quality gating). The reject button
-# never persists alone — it first renders an ephemeral STRING_SELECT whose
-# chosen value becomes rejection_category in loom_source_reviews.
-SOURCE_REJECT_REASONS: dict[str, str] = {
-    "weak_moment": "Moment isn't funny / no clear payoff",
-    "off_theme": "Wrong theme or niche for this lane",
-    "low_quality": "Audio/visual/rights problems",
-}
-
 # Non-production markers (mirrors content_intelligence/store.py; kept inline so
 # this module stays self-contained for the adapter).
 _NON_PRODUCTION_MARKERS = (
@@ -331,65 +320,19 @@ def source_decision_payload(candidate: dict[str, Any], decision: str, reviewer: 
     }
 
 
-def decided_embed(decision: str, reviewer: str, created: bool,
-                  category: str | None = None) -> dict[str, Any]:
+def decided_embed(decision: str, reviewer: str, created: bool) -> dict[str, Any]:
     import time
     ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
     label = DECISION_LABELS.get(decision, decision)
     color = {"approved_for_acquisition": 0x2ECC71, "hold": 0xF1C40F, "rejected": 0xE74C3C}.get(decision, 0x95A5A6)
-    fields = [
-        {"name": "Decision", "value": label, "inline": True},
-        {"name": "Reviewer", "value": reviewer, "inline": True},
-        {"name": "Timestamp", "value": ts, "inline": True},
-    ]
-    if decision == DECISION_REJECT and category:
-        fields.append({"name": "Reason",
-                       "value": SOURCE_REJECT_REASONS.get(category, category),
-                       "inline": True})
     return {
         "title": "✅ Decision recorded" if created else "ℹ️ Already decided",
         "color": color,
-        "fields": fields,
-    }
-
-
-def reject_reason_update_payload(fingerprint: str,
-                                existing_rows: list | None = None) -> dict[str, Any]:
-    """type 7 card UPDATE replacing the Reject button with a structured-reason
-    STRING_SELECT, attached to the review card itself.
-
-    Sent inside Discord's 3-second ACK window when the Reject button is
-    clicked; persists nothing until a reason is chosen. Keeping the select on
-    the card (not an ephemeral) means the submission's @original message IS
-    the review card, so the normal worker PATCH still updates the card.
-    Existing button rows are preserved verbatim below the select so Approve,
-    Hold and the Open Source link stay clickable; a second Reject click just
-    re-renders this payload (idempotent, still no persistence).
-    """
-    select_row = {
-        "type": 1,
-        "components": [{
-            "type": 3,
-            "custom_id": make_source_custom_id(DECISION_REJECT, fingerprint),
-            "placeholder": "Pick the reject reason",
-            "min_values": 1,
-            "max_values": 1,
-            "options": [
-                {"label": reason_label, "value": reason_value}
-                for reason_value, reason_label in SOURCE_REJECT_REASONS.items()
-            ],
-        }],
-    }
-    rows = [select_row]
-    if isinstance(existing_rows, list):
-        rows.extend(existing_rows)
-    return {
-        "type": 7,
-        "data": {
-            "content": "Pick the reject reason below — it is stored with the "
-                       "decision and feeds the next mining pass.",
-            "components": rows,
-        },
+        "fields": [
+            {"name": "Decision", "value": label, "inline": True},
+            {"name": "Reviewer", "value": reviewer, "inline": True},
+            {"name": "Timestamp", "value": ts, "inline": True},
+        ],
     }
 
 
