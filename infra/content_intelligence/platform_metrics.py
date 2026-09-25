@@ -131,7 +131,7 @@ def normalize_market_evidence(record: Any, *, creator_baseline: float | None = N
         native["reddit_rank"] = metrics.get("rank") or metrics.get("hot_rank") or ""
         native["reddit_is_meta"] = bool(metrics.get("is_meta") or metrics.get("stickied"))
     if platform == "twitch":
-        native["twitch_category"] = metrics.get("game_name") or metrics.get("game") or ""
+        native["twitch_category"] = metrics.get("game_name") or metrics.get("game") or metrics.get("game_id") or ""
         native["twitch_duration"] = metrics.get("duration") or metrics.get("duration_seconds")
         native["twitch_thumbnail"] = metrics.get("thumbnail_url") or metrics.get("thumbnail") or ""
     if platform == "kick":
@@ -172,7 +172,7 @@ class PlatformMarketDecision:
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
-def _reddit_gate(ev: MarketEvidence) -> PlatformMarketDecision:
+def _reddit_gate(ev: MarketEvidence, *, max_age_hours=STALE_AGE_HOURS) -> PlatformMarketDecision:
     """Reddit-native gate: score, score/hour and freshness. NEVER view floors."""
     reasons: list[str] = []
     score = ev.native.get("reddit_score")
@@ -189,7 +189,7 @@ def _reddit_gate(ev: MarketEvidence) -> PlatformMarketDecision:
             reasons.append(LOW_SCORE_VELOCITY)
     if age is None:
         reasons.append(INSUFFICIENT_MARKET_EVIDENCE)
-    elif age > STALE_AGE_HOURS:
+    elif age > max_age_hours:
         reasons.append(STALE)
     if ev.native.get("reddit_is_meta"):
         # sticky / pinned / admin meta posts are never the moment
@@ -197,19 +197,20 @@ def _reddit_gate(ev: MarketEvidence) -> PlatformMarketDecision:
     return PlatformMarketDecision(not reasons, tuple(dict.fromkeys(reasons)), ev.as_dict())
 
 
-def platform_market_gate(ev: MarketEvidence, *, now: _dt.datetime | None = None) -> PlatformMarketDecision:
+def platform_market_gate(ev: MarketEvidence, *, now: _dt.datetime | None = None,
+                         max_age_hours: float = STALE_AGE_HOURS) -> PlatformMarketDecision:
     """Dispatch to the right market gate for the platform.
 
     View-floor platforms use the age-adjusted deterministic gate; Reddit uses its
     own score/velocity gate. Missing evidence fails closed with an explicit code.
     """
     if ev.platform == "reddit":
-        return _reddit_gate(ev)
+        return _reddit_gate(ev, max_age_hours=max_age_hours)
 
     if ev.views is None:
         return PlatformMarketDecision(False, (INSUFFICIENT_MARKET_EVIDENCE,), ev.as_dict())
 
-    if ev.age_hours is not None and ev.age_hours > STALE_AGE_HOURS:
+    if ev.age_hours is not None and ev.age_hours > max_age_hours:
         return PlatformMarketDecision(False, (STALE,), ev.as_dict())
 
     d = market_gate(views=ev.views, likes=ev.likes, comments=ev.comments, shares=ev.shares,

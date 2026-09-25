@@ -1,15 +1,15 @@
-"""YouTube/search + competitor-channel discovery connector (free RSS path).
+"""YouTube channel RSS and explicit public metadata-only keyword discovery.
 
 Compliant access: YouTube's public RSS feeds (``/feeds/videos.xml?channel_id=``)
 require no API key and no scraping workaround — they are a first-party,
 supported surface. This connector uses RSS for channel-discovery and
 video-list discovery.
 
-``youtube/search`` keyword search (YouTube Data API v3) is DECLARED here but not
-wired to a live credential: it requires ``YOUTUBE_DATA_API_V3_KEY`` (name only,
-never a value). When that credential is absent, ``discover`` raises
-``AuthRequiredError`` deterministically rather than falling back to an unsafe
-scrape. The RSS path does not need any credential.
+``ytsearch:<query>`` explicitly selects the existing local yt-dlp public search
+route, bounded by the request limit, with flat metadata only and all downloads
+disabled. Unprefixed keyword queries preserve the declared Data API v3 path:
+they require ``YOUTUBE_DATA_API_V3_KEY`` (name only, never a value). Neither
+channel RSS nor the opt-in public metadata route needs that credential.
 
 No media is ever downloaded. No publication is authorized.
 """
@@ -17,6 +17,9 @@ No media is ever downloaded. No publication is authorized.
 from __future__ import annotations
 
 import datetime as _dt
+import json
+import re
+import subprocess
 import time
 import xml.etree.ElementTree as ET
 import urllib.parse
@@ -49,8 +52,7 @@ _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML
 
 
 class YouTubeConnector(Connector):
-    """YouTube discovery via first-party RSS (no credential) + declared Data API
-    search (credential ``YOUTUBE_DATA_API_V3_KEY``)."""
+    """Free RSS/public metadata discovery; legacy Data API dispatch preserved."""
 
     name = "youtube"
     version = "1.0.0"
@@ -61,7 +63,8 @@ class YouTubeConnector(Connector):
         "no_download",
         "no_publication",
         "no_scraping_workaround",
-        "rss_first_party_only",
+        "public_metadata_only",
+        "keyword_search_explicit_opt_in",
     )
     rate_limit = RateLimit(requests_per_window=60, window_seconds=60)
 
@@ -83,19 +86,79 @@ class YouTubeConnector(Connector):
 
         * ``channel:<channel_id_or_handle_or_url>`` → competitor-channel feed
           discovery (RSS, no credential).
+        * ``ytsearch:<query>`` → bounded public keyword metadata (yt-dlp,
+          no credential, no media download).
         * anything else → keyword search, which requires
           ``YOUTUBE_DATA_API_V3_KEY`` (Data API v3). Without that credential we
-          raise ``AuthRequiredError`` deterministically — never scrape.
+          raise ``AuthRequiredError`` deterministically; no implicit fallback.
         """
         query = (request.query or "").strip()
         if query.startswith("channel:"):
             yield from self._discover_channel(request, query[len("channel:"):].strip())
+            return
+        if query.startswith("ytsearch:"):
+            yield from self._discover_keywords(request, query[len("ytsearch:"):].strip())
             return
         # Keyword search: requires Data API v3 credential (name only).
         self.check_credentials(set())  # no RSS credential; search needs a key
         # check_credentials passes for RSS (empty required set) — so explicitly
         # require the search credential for non-channel queries.
         raise AuthRequiredError("YOUTUBE_DATA_API_V3_KEY")
+
+    def _discover_keywords(self, request: DiscoveryRequest, query: str) -> Iterator[DiscoveryRecord]:
+        """One bounded, metadata-only search; normalize through the shared builder."""
+        if not query:
+            raise ConnectorError("INVALID_QUERY", "public YouTube search query is empty")
+        limit = max(0, int(request.limit))
+        if not limit:
+            return
+        args = [
+            "yt-dlp", "--ignore-config", "--no-cache-dir", "--skip-download",
+            "--simulate", "--flat-playlist", "--dump-single-json", "--no-warnings",
+            "--no-progress", "--socket-timeout", str(self._timeout), "--retries", "0",
+            "--playlist-end", str(limit), "--", f"ytsearch{limit}:{query}",
+        ]
+        try:
+            result = subprocess.run(
+                args, capture_output=True, text=True, timeout=max(1.0, self._timeout * 3),
+                check=False,
+            )
+        except FileNotFoundError:
+            raise ConnectorError("SEARCH_DEPENDENCY_MISSING", "public search requires local yt-dlp") from None
+        except subprocess.TimeoutExpired:
+            raise ConnectorError("SEARCH_TIMEOUT", "public metadata search exceeded its timeout", retryable=True) from None
+        except OSError:
+            raise ConnectorError("SEARCH_PROCESS_ERROR", "could not start public metadata search") from None
+        if result.returncode:
+            # Never expose provider stdout/stderr: they may contain internal URLs.
+            stderr = (result.stderr or "").lower()
+            if "429" in stderr or "too many requests" in stderr:
+                raise ConnectorError("SEARCH_RATE_LIMITED", "public YouTube search rate limited", retryable=True)
+            if any(hint in stderr for hint in ("sign in", "login required", "authentication required")):
+                raise ConnectorError("SEARCH_AUTH_REQUIRED", "public YouTube search requires authentication")
+            raise ConnectorError("SEARCH_FAILED", f"public metadata search exited with status {result.returncode}")
+        try:
+            payload = json.loads(result.stdout)
+        except (TypeError, ValueError):
+            raise ConnectorError("SEARCH_PARSE_ERROR", "public metadata search returned invalid JSON") from None
+        if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
+            raise ConnectorError("SEARCH_SCHEMA_ERROR", "public metadata search returned no entries list")
+        emitted = 0
+        seen: set[str] = set()
+        for metadata in payload["entries"][:limit]:
+            if not isinstance(metadata, dict) or metadata.get("_type") == "playlist":
+                continue
+            video_id = metadata.get("id")
+            if not isinstance(video_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+                continue
+            if video_id in seen:
+                continue
+            record = self.metadata_to_record(request, metadata)
+            seen.add(video_id)
+            yield record
+            emitted += 1
+            if emitted >= limit:
+                break
 
     # ------------------------------------------------------------------
     def _discover_channel(self, request: DiscoveryRequest, channel_ref: str) -> Iterator[DiscoveryRecord]:
@@ -232,6 +295,36 @@ class YouTubeConnector(Connector):
             connector_name=self.name,
             connector_version=self.version,
         )
+
+    def metadata_to_record(self, request: DiscoveryRequest, metadata: dict[str, Any]) -> DiscoveryRecord:
+        """Normalize public yt-dlp metadata through the existing record builder.
+
+        Accepts cached metadata, so qualifying/replaying a search costs no
+        additional transfer. Internal media URLs are deliberately not retained.
+        """
+        entry = ET.Element(f"{_ATOM}entry")
+        stamp = metadata.get("timestamp")
+        published = (_dt.datetime.fromtimestamp(stamp, _dt.timezone.utc).isoformat()
+                     if isinstance(stamp, (int,float)) else "")
+        for tag,value in ((f"{_YT}videoId", metadata.get("id")),
+                          (f"{_YT}channelId", metadata.get("channel_id")),
+                          (f"{_ATOM}title",metadata.get("title")),
+                          (f"{_ATOM}published",published)):
+            ET.SubElement(entry, tag).text = str(value or "")
+        author = ET.SubElement(entry, f"{_ATOM}author")
+        ET.SubElement(author, f"{_ATOM}name").text = str(metadata.get("channel") or "")
+        ET.SubElement(author, f"{_ATOM}uri").text = str(metadata.get("channel_url") or "")
+        record = self._entry_to_record(request, entry, "public metadata")
+        if record is None:
+            raise ConnectorError("MISSING_ID", "metadata lacks video ID")
+        record.body_excerpt = str(metadata.get("description") or "")[:4000]
+        record.observed_metrics.update({k:v for k,v in {
+            "views":metadata.get("view_count"), "likes":metadata.get("like_count"),
+            "comments":metadata.get("comment_count"), "duration":metadata.get("duration"),
+            "media_type":"video", "thumbnail_url":metadata.get("thumbnail")}.items() if v is not None})
+        record.discovery_reason = "public yt-dlp keyword discovery; metadata only"
+        record.provenance_rights_evidence = "public platform metadata; rights not granted"
+        return record
 
 
 def _child_text(parent: ET.Element, tag: str) -> str:

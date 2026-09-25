@@ -18,6 +18,8 @@ import sys
 import unittest
 from pathlib import Path
 from unittest import mock
+from types import SimpleNamespace
+import json
 
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
@@ -27,7 +29,7 @@ from discovery.discovery_record import DiscoveryRecord  # noqa: E402
 from discovery.source_brief import SourceBrief  # noqa: E402
 from discovery.topic_intelligence import TopicIntelligence  # noqa: E402
 from content_intelligence.pipeline import Pass1Config, Pass1Pipeline  # noqa: E402
-from content_intelligence.store_supabase import ContentStoreSupabase  # noqa: E402
+from test_pipeline import _FakeProvider, _FakeStore, _patched_fetch  # noqa: E402
 
 
 def _brief():
@@ -57,10 +59,10 @@ def _record():
 
 
 class _FakePreview:
-    artifact_path = "/tmp/loom-fake.mp4"
-    artifact_bytes = 1024
-    available = True
-    method = "section_download"
+    artifact_path = ""
+    artifact_bytes = 0
+    available = False
+    method = "unavailable"
 
     def __getattr__(self, _name):        # tolerate any other attribute access
         return None
@@ -75,17 +77,35 @@ def _run(windows):
     """
     cfg = Pass1Config(max_candidates=1, market_shortlist_threshold=0, cost_ceiling_usd=0.15,
                       extract_multimodal_signals=True)
-    p = Pass1Pipeline(cfg, _brief(), TopicIntelligence())
+    p = Pass1Pipeline(cfg, _brief(), TopicIntelligence(), provider=_FakeProvider())
     p._inspection_preview = lambda *a, **k: _FakePreview()
     p._inspection_captions = lambda *a, **k: (
         [{"start_s": 0.0, "end_s": 4.0, "text": "and then he did it!"}], "auto_generated")
     with mock.patch("content_intelligence.pipeline.fetch_media_and_signals",
-                    lambda *a, **k: windows):
-        res = p.run([_record()], ContentStoreSupabase())
+                    lambda *a, **k: windows), _patched_fetch([]):
+        res = p.run([_record()], _FakeStore())
+    assert res.candidates[0].status == "scored", res.candidates[0]
     return res.candidates[0]
 
 
 class SignalEvidenceWiringTests(unittest.TestCase):
+    def test_media_prompt_preserves_payoff_timecodes_and_removes_caption_rollover(self):
+        provider = SimpleNamespace(assess_media=mock.Mock(return_value={}), max_transcript_chars=12000)
+        brief = _brief()
+        brief.mining_requirements = {'require_timed_payoff': True}
+        pipe = Pass1Pipeline(Pass1Config(), brief, TopicIntelligence(), provider=provider)
+        ev = SimpleNamespace(caption_text='setup then recovery', spoken_hook='', timestamps=(),
+                             source_start=0, window_seconds=80, last_artifact_path='inspected.mp4',
+                             caption_segments=(
+                                 {'start_s': 10, 'end_s': 12, 'text': '<c>setup</c> begins'},
+                                 {'start_s': 12, 'end_s': 12.02, 'text': 'display refresh'},
+                                 {'start_s': 69, 'end_s': 73, 'text': 'setup begins then recovery'}))
+        pipe._media_assess(ev, _record())
+        prompt = provider.assess_media.call_args.args[1]
+        timed = json.loads(prompt.split('TIMECODED CAPTION EVIDENCE (absolute source seconds): ')[1])
+        self.assertEqual(timed, [{'start': 10, 'end': 12, 'text': 'setup begins'},
+                                {'start': 69, 'end': 73, 'text': 'then recovery'}])
+
     def test_extracted_windows_are_credited_as_visual_evidence(self):
         """Windows must RAISE confidence; discarding them pinned it at the floor."""
         with_windows = _run([{"basis": "visual_motion", "start_s": 0.0, "end_s": 3.0},

@@ -52,6 +52,12 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(ev.native["twitch_category"], "Just Chatting")
         self.assertEqual(ev.native["twitch_duration"], 42)
 
+    def test_twitch_official_category_id_is_not_dropped(self):
+        ev=normalize_market_evidence(_rec('twitch', {'game_id':'509658',
+                    'thumbnail_url':'https://example.invalid/clip.jpg'}), now=NOW)
+        self.assertEqual(ev.native['twitch_category'], '509658')
+        self.assertEqual(ev.native['twitch_thumbnail'], 'https://example.invalid/clip.jpg')
+
     def test_kick_keeps_only_available_fields(self):
         ev = normalize_market_evidence(_rec("kick", {"view_count": 1500, "category": "Gaming"}), now=NOW)
         self.assertEqual(ev.views, 1500)

@@ -287,6 +287,9 @@ class TwitchConnector(Connector):
             metrics["language"] = language
         if creator:
             metrics["clip_creator"] = creator
+        thumbnail = str(row.get("thumbnail_url") or "")
+        if thumbnail.startswith("https://"):
+            metrics["thumbnail_url"] = thumbnail
 
         canonical = normalize_url(url or f"https://clips.twitch.tv/{clip_id}")
 

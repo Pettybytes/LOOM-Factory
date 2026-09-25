@@ -47,6 +47,8 @@ class _Record:
 
 
 class _Brief:
+    tenant_id = "dreemzy"
+    profile_id = "bryan-face-reaction"
     topics = ["pets", "animals"]
     keywords = ["rescue", "viral"]
     entities = ["puppy"]

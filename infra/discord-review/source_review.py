@@ -245,6 +245,7 @@ def format_mining_embed(c, base):
     add("Funnel", " · ".join(f"{k.replace('_', ' ')}: {v}" for k,v in funnel.items()) or "See recorded run evidence")
     add("Market evidence", "\n".join([
         f"Views/plays {val('views')} · Likes {val('likes')} · Comments {val('comments')}",
+        f"Native demand {val('demand_volume')} ({val('demand_metric')})",
         f"Shares {val('shares')} · Saves {val('saves')} · Age {val('age_hours')} h",
         f"Lifetime avg VPH {val('lifetime_average_vph')} · Observed velocity/h {val('observed_velocity_per_hour')}",
         f"Engagement {val('engagement')} · Outlier {val('outlier_multiple')} · Route {val('route')}",
@@ -261,8 +262,15 @@ def format_mining_embed(c, base):
     add("Reaction / commentary angle", me.get("reaction_angle"))
     add("Completeness & boundary evidence", f"{c.get('completeness_verdict')}\nStart: {p.get('start_reason')}\nEnd: {p.get('end_reason')}")
     add("Quality", f"Content {c.get('content_worthiness_score')} · Selection {c.get('source_selection_score')} · Confidence {c.get('source_selection_confidence')} · FIRE {'PASS' if c.get('fire_passed') else 'FAIL'}")
-    add("Ranking", f"Moment rank #{c.get('source_relative_rank')} of {c.get('source_candidate_count', 0)} complete qualifying moments")
-    base.update(title="SEGMENT 5 — VIRAL MOMENT MINING ACCEPTANCE", fields=fields)
+    if context.get("review_mode") == "human_curated":
+        add("Review status", "HUMAN REVIEW OPTION — scores are advisory; not automatic Grade-A acceptance.\n"
+            + str(context.get("review_reason") or "Operator requested review of this complete inspected moment."))
+        add("Ranking", f"Review option #{context.get('review_rank')} of {context.get('review_count')} complete inspected options")
+        header = "SEGMENT 5 — SOURCE MOMENT FOR YOUR REVIEW"
+    else:
+        add("Ranking", f"Moment rank #{c.get('source_relative_rank')} of {c.get('source_candidate_count', 0)} complete qualifying moments")
+        header = "SEGMENT 5 — VIRAL MOMENT MINING ACCEPTANCE"
+    base.update(title=header, fields=fields)
     # A platform-derived thumbnail URL alone is not verification that the image
     # exists or represents this candidate. Strict cards only embed a verified
     # candidate thumbnail, or a verified still from within the resolved window.
@@ -423,12 +431,17 @@ def fetch_pending_candidates(url: str, key: str, limit: int = DEFAULT_LIMIT) -> 
     decided = decided_fingerprints(url, key)
     if _candidates_table_available(url, key):
         rows = _get(url, key,
-                    "loom_source_candidates?select=*&fire_passed=is.true"
+                    "loom_source_candidates?select=*&or=(fire_passed.is.true,moment_evidence->review_context->>review_mode.eq.human_curated)"
                     "&duplicate_state=neq.DUPLICATE_SUPPRESSED"
                     "&order=selection_score.desc")
         out: list[dict[str, Any]] = []
         for s in (rows or []):
             if not isinstance(s, dict):
+                continue
+            context = (s.get("moment_evidence") or {}).get("review_context") or {}
+            if not s.get("fire_passed") and (context.get("review_mode") != "human_curated"
+                    or s.get("completeness_verdict") != "PASS"
+                    or not s.get("boundary_plan")):
                 continue
             if _is_non_production(s.get("profile_id") or "", s.get("tenant_id") or ""):
                 continue

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Iterable
+import re
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -79,7 +80,7 @@ def _hits(terms: Iterable[str], haystack: str) -> list[str]:
 
 def tenant_fit(*, title: str = "", description: str = "", hashtags: Iterable[str] = (),
                creator: str = "", category: str = "", topics: Iterable[str] = (),
-               universe_terms: tuple[str, ...] | None = None) -> TenantFitResult:
+               universe_terms: tuple[str, ...] | None = None, brief=None) -> TenantFitResult:
     """PASS / FAIL / AMBIGUOUS with grounded reasons.
 
     Only a clear FAIL stops the pipeline. Creator names are used only as ordinary
@@ -88,6 +89,22 @@ def tenant_fit(*, title: str = "", description: str = "", hashtags: Iterable[str
     terms = universe_terms if universe_terms is not None else STRONG_MOMENT_TERMS
     text = " ".join(str(x) for x in [title, description, category, *hashtags, *topics]).lower()
     ctx = " ".join(str(x) for x in [title, description, category, creator]).lower()
+
+    requirements = getattr(brief, "mining_requirements", {}) or {}
+    if requirements:
+        allowed = requirements.get("creator_identities") or []
+        if allowed and creator.casefold() not in {str(x).casefold() for x in allowed}:
+            return TenantFitResult(FAIL, ("target_creator_mismatch",))
+        groups = requirements.get("required_concepts") or []
+        found = [[t for t in group if re.search(r"(?<!\w)" + re.escape(t.lower()) + r"(?!\w)", text)]
+                 for group in groups]
+        if any(not hits for hits in found):
+            return TenantFitResult(FAIL, ("required_lane_concept_missing",),
+                                   {"missing": ["|".join(g) for g, h in zip(groups, found) if not h]})
+        # Metadata is only a shortlist. Inspected media must independently
+        # corroborate every required concept and the real reaction-worthy event.
+        return TenantFitResult(PASS, ("lane_metadata_qualified_pending_inspection",),
+                               {"concepts": [t for group in found for t in group]})
 
     moment_hits = _hits(terms, text)
     off_hits = _hits(OFF_UNIVERSE_TERMS, ctx)

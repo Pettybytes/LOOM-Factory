@@ -261,6 +261,18 @@ class TestMiningPresentation(unittest.TestCase):
         self.assertIn("Event Unavailable", text)
         self.assertIn("End 00:08.625", text)
 
+    def test_human_review_keeps_honest_scores_and_does_not_claim_grade_a(self):
+        c = self.candidate(review_mode="human_curated", review_rank=1, review_count=2,
+                           review_reason="Promising awkward interaction; Bryan decides.")
+        c["fire_passed"] = False
+        e = format_source_embed(c)
+        text = json_fields_text(e)
+        self.assertEqual(e["title"], "SEGMENT 5 — SOURCE MOMENT FOR YOUR REVIEW")
+        self.assertIn("FIRE FAIL", text)
+        self.assertIn("Review option #1 of 2", text)
+        self.assertIn("not automatic Grade-A", text)
+        self.assertNotIn("complete qualifying moments", text)
+
     def test_verified_candidate_thumbnail_takes_precedence_over_still(self):
         e = format_source_embed(self.candidate(
             verified_thumbnail_url="https://images.example/candidate.jpg",
@@ -305,7 +317,8 @@ class TestAuthoritativeCandidateQueue(unittest.TestCase):
         self.assertTrue(out[0]["fire_passed"])
         # The queue asked for FIRE-passing, non-suppressed rows.
         call = get.call_args_list[0][0][2]
-        self.assertIn("fire_passed=is.true", call)
+        self.assertIn("fire_passed.is.true", call)
+        self.assertIn("review_mode.eq.human_curated", call)
         self.assertIn("duplicate_state=neq.DUPLICATE_SUPPRESSED", call)
 
     def test_falls_back_to_legacy_join_without_candidate_table(self):
@@ -340,6 +353,23 @@ class TestAuthoritativeCandidateQueue(unittest.TestCase):
             out = sr.fetch_pending_candidates("http://sb", "k")
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["title"], "Legacy title")
+
+    def test_advisory_queue_requires_explicit_policy_and_complete_window(self):
+        from unittest import mock
+        import source_review as sr
+        row = {'duplicate_fingerprint': 'a' * 64, 'tenant_id': 'tenant-a',
+               'profile_id': 'main', 'fire_passed': False, 'completeness_verdict': 'PASS',
+               'boundary_plan': {'recommended_clip_start': 0, 'recommended_clip_end': 8},
+               'moment_evidence': {'review_context': {'review_mode': 'human_curated'}}}
+        with mock.patch.object(sr, '_candidates_table_available', return_value=True), \
+             mock.patch.object(sr, 'decided_fingerprints', return_value=set()), \
+             mock.patch.object(sr, '_get', return_value=[row]):
+            self.assertEqual(len(sr.fetch_pending_candidates('http://sb', 'k')), 1)
+            row['completeness_verdict'] = 'FAIL'
+            self.assertEqual(sr.fetch_pending_candidates('http://sb', 'k'), [])
+            row['completeness_verdict'] = 'PASS'
+            row['moment_evidence'] = {}
+            self.assertEqual(sr.fetch_pending_candidates('http://sb', 'k'), [])
 
     def test_candidate_row_carries_boundary_plan_for_handoff(self):
         from unittest import mock

@@ -15,6 +15,7 @@ only — they do NOT represent provisioned tenants.
 from __future__ import annotations
 
 from typing import Any
+import copy
 
 SCHEMA_VERSION = "1.0.0"
 
@@ -150,6 +151,14 @@ class SourceBrief:
         self.min_evidence_requirements: list[str] = _require_string_list(
             data.get("min_evidence_requirements"), "min_evidence_requirements"
         )
+        requirements = data.get("mining_requirements") or {}
+        if not isinstance(requirements, dict):
+            raise SourceBriefError("mining_requirements must be an object")
+        groups = requirements.get("required_concepts", [])
+        if not isinstance(groups, list) or any(not isinstance(g, list) or not g or
+                any(not isinstance(t, str) or not t.strip() for t in g) for g in groups):
+            raise SourceBriefError("required_concepts must contain nonempty term groups")
+        self.mining_requirements = copy.deepcopy(requirements)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SourceBrief":
@@ -177,4 +186,5 @@ class SourceBrief:
             "manual_review_required": self.manual_review_required,
             "connector_restrictions": list(self.connector_restrictions),
             "min_evidence_requirements": list(self.min_evidence_requirements),
+            "mining_requirements": copy.deepcopy(self.mining_requirements),
         }

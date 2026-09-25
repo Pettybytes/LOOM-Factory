@@ -95,6 +95,7 @@ class InspectionEvidence:
     preview_reference: str = ""
     visual_opening: bool = False          # frames actually examined
     caption_text: str = ""
+    caption_segments: tuple[dict[str, Any], ...] = ()
     spoken_hook: str = ""
     signals: dict[str, Any] = field(default_factory=dict)   # 5B deterministic
     signal_window: tuple[float, float] | None = None
@@ -242,7 +243,7 @@ def inspect_bounded(record: Any, *, fetch_captions: Callable[[str], Any] | None 
     url = str(getattr(record, "canonical_url", "") or "")
     ev = InspectionEvidence(provider_hints=dict(provider_hints or {}),
                             preview_reference=preview_reference or
-                            str(getattr(record, "thumbnail_reference", "") or ""))
+                            str(getattr(record, "thumbnail_reference", "") or (getattr(record, "observed_metrics", {}) or {}).get("thumbnail_url") or ""))
     prov: list[str] = []
 
     # 2/3. captions first (cheapest text evidence)
@@ -337,7 +338,7 @@ def inspect_with_escalation(record: Any, *, fetch_preview: Callable[..., Any],
     """
     import time as _time
     url = str(getattr(record, "canonical_url", "") or "")
-    ev = InspectionEvidence(preview_reference=str(getattr(record, "thumbnail_reference", "") or ""))
+    ev = InspectionEvidence(preview_reference=str(getattr(record, "thumbnail_reference", "") or (getattr(record, "observed_metrics", {}) or {}).get("thumbnail_url") or ""))
     prov: list[str] = []
     log: list[dict[str, Any]] = []
     all_segments: list[dict[str, Any]] = []
@@ -360,6 +361,7 @@ def inspect_with_escalation(record: Any, *, fetch_preview: Callable[..., Any],
                   and float(s.get("start_s", 0.0) or 0.0) <= start + win_end + 0.5]
         text = " ".join(x.get("text", "") for x in scoped[:40])[:2000]
         ev.caption_text = text
+        ev.caption_segments = tuple(scoped)
         ev.spoken_hook = text[:200]
 
     for end in windows:
@@ -378,6 +380,16 @@ def inspect_with_escalation(record: Any, *, fetch_preview: Callable[..., Any],
                  "available": bool(getattr(preview, "available", False)),
                  "fallback": bool(getattr(preview, "fallback_used", False)),
                  "reason": getattr(preview, "reason", "")}
+        # Provider metadata may round the source duration. The inspection
+        # contract carries actual visual coverage separately from the request;
+        # never tell the model that a missing terminal fraction was observed.
+        actual_start = getattr(preview, "inspected_start", start)
+        actual_end = getattr(preview, "inspected_end", start + end)
+        actual_length = end
+        if (isinstance(actual_start, (int, float)) and isinstance(actual_end, (int, float))
+                and actual_end > actual_start and abs(actual_start - start) <= .001):
+            actual_length = min(end, actual_end - start)
+            entry.update(inspected_start=actual_start, inspected_end=start + actual_length)
         try:
             if analyze_signals is not None and getattr(preview, "available", False):
                 manifest = analyze_signals(getattr(preview, "artifact_path"), max_seconds=int(end)) or {}
@@ -391,10 +403,10 @@ def inspect_with_escalation(record: Any, *, fetch_preview: Callable[..., Any],
                 entry["signals"] = sorted(ev.signals)
             if getattr(preview, "available", False):
                 ev.visual_opening = True
-                ev.window_seconds = end
-                ev.media_segment_seconds = end
-                _scope_captions(end)
-                prov.append(f"bounded_preview_{int(start)}s+{int(end)}s")
+                ev.window_seconds = actual_length
+                ev.media_segment_seconds = actual_length
+                _scope_captions(actual_length)
+                prov.append(f"bounded_preview_{start:g}s+{actual_length:g}s")
             else:
                 prov.append("bounded_preview_unavailable")
         except Exception as exc:  # noqa: BLE001

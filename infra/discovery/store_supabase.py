@@ -101,6 +101,9 @@ class SupabaseStore:
     def upsert_brief(self, brief: SourceBrief) -> None:
         payload = brief.to_dict()
         payload["payload"] = json.dumps(brief.to_dict(), sort_keys=True)
+        # Extension contracts live in the existing JSON payload, not invented
+        # PostgREST columns. Older schema deployments remain compatible.
+        payload.pop("mining_requirements", None)
         self._request(
             "POST",
             "loom_source_briefs?on_conflict=tenant_id,profile_id,version",

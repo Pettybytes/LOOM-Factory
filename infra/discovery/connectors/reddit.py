@@ -10,9 +10,9 @@ What RSS provides per entry:
     body HTML (excerpt), published/updated timestamps, embedded source URLs.
 
 What RSS does NOT provide: score / ups / num_comments (those need the JSON or
-OAuth API). ``observed_metrics`` therefore carries only ``content_type=post``
-plus any source URL references, and provenance records this limitation
-honestly rather than fabricating metrics.
+OAuth API). ``observed_metrics`` carries post/media-type evidence and source
+references, but never invents engagement metrics. Native media references stay
+internal; the canonical URL always addresses the Reddit post.
 
 No media is ever downloaded. No publication is authorized.
 """
@@ -20,6 +20,8 @@ No media is ever downloaded. No publication is authorized.
 from __future__ import annotations
 
 import datetime as _dt
+from html.parser import HTMLParser
+from itertools import islice
 import re
 import time
 import urllib.error
@@ -86,12 +88,17 @@ class RedditConnector(Connector):
         return {"connector": self.name, "version": self.version, "estimated_cost_usd": 0.0}
 
     def discover(self, request: DiscoveryRequest) -> Iterator[DiscoveryRecord]:
+        limit = max(0, int(request.limit))
+        if not limit:
+            return
         query = (request.query or "").strip()
         if query.startswith("subreddit:"):
-            yield from self._discover_subreddit(request, query[len("subreddit:"):].strip())
+            yield from islice(self._discover_subreddit(
+                request, query[len("subreddit:"):].strip()), limit)
             return
         if query.startswith("search:"):
-            yield from self._discover_search(request, query[len("search:"):].strip())
+            yield from islice(self._discover_search(
+                request, query[len("search:"):].strip()), limit)
             return
         raise ConnectorError(
             "INVALID_QUERY",
@@ -104,7 +111,8 @@ class RedditConnector(Connector):
         sub = (sub or "").strip().lstrip("r/").strip("/")
         if not sub:
             raise ConnectorError("INVALID_SUBREDDIT", "empty subreddit name", retryable=False)
-        url = f"{self.RSS_BASE}/r/{sub}/.rss"
+        params = urllib.parse.urlencode({"limit": min(int(request.limit), 100)})
+        url = f"{self.RSS_BASE}/r/{sub}/.rss?{params}"
         root = self._fetch(url)
         entries = list(root.iter(f"{_ATOM}entry"))
         if not entries:
@@ -118,7 +126,10 @@ class RedditConnector(Connector):
         query = (query or "").strip()
         if not query:
             raise ConnectorError("INVALID_QUERY", "empty search query", retryable=False)
-        params = urllib.parse.urlencode({"q": query, "restrict_sr": "1"})
+        params = urllib.parse.urlencode({
+            "q": query, "restrict_sr": "1", "type": "link",
+            "limit": min(int(request.limit), 100),
+        })
         url = f"{self.RSS_BASE}/search.rss?{params}"
         root = self._fetch(url)
         entries = list(root.iter(f"{_ATOM}entry"))
@@ -162,18 +173,17 @@ class RedditConnector(Connector):
     # ------------------------------------------------------------------
     def _entry_to_record(self, request: DiscoveryRequest, entry: ET.Element, subreddit: str) -> DiscoveryRecord | None:
         post_id = _child_text(entry, f"{_ATOM}id")
-        if not post_id:
+        # Search feeds can include t5_ communities (and other non-post things).
+        # Only a Reddit submission ID establishes a source candidate.
+        if not re.fullmatch(r"t3_[a-z0-9]+", post_id):
             return None
-        # Reddit ids come as t3_<base36>; normalize to the bare id.
-        if post_id.startswith("t3_"):
-            post_id = post_id[3:]
+        post_id = post_id[3:]
 
         title = _child_text(entry, f"{_ATOM}title") or ""
         published = _child_text(entry, f"{_ATOM}published") or ""
         updated = _child_text(entry, f"{_ATOM}updated") or published
 
         author = _author_name(entry)
-        link = _entry_link(entry)
 
         # Subreddit: prefer the category term, else the passed sub.
         cat_term = _category_term(entry)
@@ -184,14 +194,21 @@ class RedditConnector(Connector):
 
         # Source URL references embedded in the body (external links).
         source_urls = _source_urls(entry)
+        native_urls = _native_video_urls(entry)
 
         observed_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
         metrics: dict[str, Any] = {"content_type": "post"}
         if source_urls:
             metrics["source_url_references"] = source_urls
+        if native_urls:
+            metrics.update({
+                "is_video": True,
+                "media_type": "video",
+                "media_type_evidence": "first-party RSS submission link to v.redd.it",
+                "internal_media_url_references": native_urls,
+            })
 
-        canonical = link or f"https://www.reddit.com/r/{sub}/comments/{post_id}/"
-        canonical = normalize_url(canonical)
+        canonical = _canonical_post_url(entry, post_id, sub)
 
         provenance = (
             f"first-party Reddit RSS; subreddit=r/{sub}; "
@@ -247,6 +264,71 @@ def _entry_link(entry: ET.Element) -> str:
         if href:
             return href
     return ""
+
+
+def _canonical_post_url(entry: ET.Element, post_id: str, sub: str) -> str:
+    """Keep malformed/enclosure links out of the operator's Open Source URL."""
+    for link in entry.iter(f"{_ATOM}link"):
+        try:
+            parts = urllib.parse.urlsplit(link.get("href") or "")
+        except ValueError:
+            continue
+        if (parts.scheme == "https" and
+                parts.netloc.lower() in {"reddit.com", "www.reddit.com", "old.reddit.com"} and
+                re.match(rf"^/(?:r/[A-Za-z0-9_]+/)?comments/{post_id}(?:/|$)", parts.path)):
+            # Reddit query/fragment values do not establish the post identity.
+            return normalize_url(urllib.parse.urlunsplit(
+                (parts.scheme, parts.netloc, parts.path, "", "")))
+    prefix = f"r/{sub}/" if re.fullmatch(r"[A-Za-z0-9_]+", sub) else ""
+    return normalize_url(f"https://www.reddit.com/{prefix}comments/{post_id}/")
+
+
+class _AnchorParser(HTMLParser):
+    """Read RSS HTML anchors without treating thumbnail URLs as source media."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self.href = ""
+        self.label: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self.href = dict(attrs).get("href") or ""
+            self.label = []
+
+    def handle_data(self, data):
+        if self.href:
+            self.label.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self.href:
+            self.links.append((self.href, "".join(self.label).strip()))
+            self.href = ""
+            self.label = []
+
+
+def _native_video_urls(entry: ET.Element) -> list[str]:
+    """Only Reddit's submission [link], not a link in selftext, proves video."""
+    content = _child_text(entry, f"{_ATOM}content")
+    # Self-posts may quote/link a video but are not themselves native videos.
+    content = re.sub(
+        r"<!--\s*SC_OFF\s*-->.*?(?:<!--\s*SC_ON\s*-->|$)", "", content, flags=re.S)
+    parser = _AnchorParser()
+    parser.feed(content)
+    urls = []
+    for href, label in parser.links:
+        try:
+            parts = urllib.parse.urlsplit(href)
+        except ValueError:
+            continue
+        if (label == "[link]" and parts.scheme == "https" and
+                parts.netloc.lower() == "v.redd.it" and
+                re.fullmatch(r"/[A-Za-z0-9]+/?", parts.path)):
+            url = urllib.parse.urlunsplit(("https", "v.redd.it", parts.path.rstrip("/"), "", ""))
+            if url not in urls:
+                urls.append(url)
+    return urls
 
 
 def _category_term(entry: ET.Element) -> str:

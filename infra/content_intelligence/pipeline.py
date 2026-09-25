@@ -255,14 +255,23 @@ def eligible_selection(s: dict[str, Any] | None) -> bool:
 
 
 def apply_run_level_ranking(candidates: list[Any], *, overlap_threshold: float = 0.6,
-                             gap_s: float = 6.0) -> list[Any]:
+                             gap_s: float = 6.0, strict: bool = False,
+                             _scoped: bool = False) -> list[Any]:
     """RUN-LEVEL pass: within-source relative ranking + dedup/diversity.
 
     Reuses the existing moment_quality ranking. Absolute FIRE stays mandatory and is
     untouched: this only ORDERS surviving candidates and suppresses near-identical
     versions of the SAME event, preserving lineage rather than deleting rows.
     """
-    from .moment_quality import RankInput, dedup
+    from .moment_quality import RankInput, dedup, relative_rank
+
+    if strict and not _scoped:
+        groups = {}
+        for c in candidates:
+            if c.fire_passed and (c.completeness or {}).get("completeness_verdict") == "PASS":
+                groups.setdefault((c.tenant_id, c.profile_id), []).append(c)
+        return [r for group in groups.values() for r in apply_run_level_ranking(
+            group, overlap_threshold=overlap_threshold, gap_s=gap_s, strict=True, _scoped=True)]
 
     inputs: list[Any] = []
     by_fp: dict[str, Any] = {}
@@ -274,6 +283,9 @@ def apply_run_level_ranking(candidates: list[Any], *, overlap_threshold: float =
         start = plan.get("recommended_clip_start")
         end = plan.get("recommended_clip_end")
         fp = f"{getattr(c, 'platform_content_id', '?')}|{start}|{end}"
+        if strict:
+            fp = (f"{c.tenant_id}|{c.profile_id}|{c.platform}|{fp}|"
+                  f"{plan.get('event_timestamp')}|{getattr(c, 'duplicate_fingerprint', '')}")
         inputs.append(RankInput(
             fingerprint=fp,
             event_timestamp=float(plan.get("event_timestamp") or 0.0),
@@ -292,7 +304,23 @@ def apply_run_level_ranking(candidates: list[Any], *, overlap_threshold: float =
         ))
         by_fp[fp] = c
 
-    rankings = dedup(inputs, overlap_threshold=overlap_threshold, gap_s=gap_s)
+    if strict:
+        # Absolute source timestamps are comparable only WITHIN one source.
+        # A 0–8s moment on source A cannot duplicate 0–8s on unrelated source B.
+        rankings = relative_rank(inputs)
+        by_source = {}
+        for item in inputs:
+            candidate = by_fp[item.fingerprint]
+            by_source.setdefault((candidate.platform, candidate.platform_content_id), []).append(item)
+        states = {r.fingerprint: r for group in by_source.values()
+                  for r in dedup(group, overlap_threshold=overlap_threshold, gap_s=gap_s)}
+        for r in rankings:
+            local = states[r.fingerprint]
+            r.duplicate_state = local.duplicate_state
+            r.rank_evidence.update({k: v for k, v in local.rank_evidence.items()
+                                   if k in {"suppressed_by", "overlap_ratio"}})
+    else:
+        rankings = dedup(inputs, overlap_threshold=overlap_threshold, gap_s=gap_s)
     for r in rankings:
         c = by_fp.get(r.fingerprint)
         if c is None:
@@ -362,6 +390,29 @@ class Pass1Pipeline:
             label = "CAPTIONS SCOPED TO THE INSPECTED OPENING (REAL MEDIA ATTACHED)"
             prompt = _build_prompt(caption, getattr(provider, "max_transcript_chars", 12000),
                                    windows, label=label, note=note)
+        requirements = getattr(self.brief, "mining_requirements", {}) or {}
+        if requirements:
+            from .mining_contract import inspection_prompt
+            prompt += inspection_prompt(requirements, source_start=getattr(ev, "source_start", 0.0),
+                                        inspected_duration=ev.window_seconds)
+            # Preserve the timing evidence instead of flattening captions into
+            # prose: a payoff described later cannot validate an earlier end.
+            import json
+            import re
+            timed, previous = [], []
+            for seg in getattr(ev, "caption_segments", ()):
+                if float(seg.get("end_s", 0)) - float(seg.get("start_s", 0)) < .04:
+                    continue  # auto-caption display refresh, not new speech
+                words = re.sub(r"<[^>]+>", "", seg.get("text", "")).split()
+                overlap = next((n for n in range(min(len(previous), len(words)), 0, -1)
+                                if previous[-n:] == words[:n]), 0)
+                spoken = words[overlap:]
+                previous = words
+                if spoken:
+                    timed.append({"start": seg["start_s"], "end": seg["end_s"],
+                                  "text": " ".join(spoken)})
+            if timed:
+                prompt += "\nTIMECODED CAPTION EVIDENCE (absolute source seconds): " + json.dumps(timed)[:16000]
         return fn(ev.last_artifact_path, prompt)
 
     @staticmethod
@@ -391,12 +442,30 @@ class Pass1Pipeline:
         for rec in records[: self.config.max_candidates]:
             c = self._process(rec, store, result)
             result.candidates.append(c)
+            # A source can contain several independently inspected complete
+            # moments. Expand before ranking/persistence, not merely in a JSON
+            # evidence list which the producer inbox never ranks or displays.
+            result.candidates.extend(c.__dict__.pop("_complete_moment_candidates", ()))
             if result.total_cost_usd >= self.config.cost_ceiling_usd:
                 break  # hard run-level ceiling
         # RUN-LEVEL pass: relative ranking within the run + dedup/diversity. Absolute
         # FIRE is unchanged; this only orders survivors and suppresses near-identical
         # versions of the same event.
-        apply_run_level_ranking(result.candidates)
+        apply_run_level_ranking(result.candidates,
+                               strict=bool(getattr(self.brief, "mining_requirements", {})))
+        policy = (getattr(self.brief, "mining_requirements", {}) or {}).get("review_policy") or {}
+        if policy.get("mode") == "human_curated":
+            options = [c for c in result.candidates if c.status == "scored"
+                       and c.boundary_plan and (c.completeness or {}).get("completeness_verdict") == "PASS"
+                       and c.duplicate_state != "DUPLICATE_SUPPRESSED"
+                       and (c.content_score_recalibrated or 0) >= policy.get("minimum_content", 50)]
+            options.sort(key=lambda c: (c.content_score_recalibrated or 0, c.selection_score or 0), reverse=True)
+            seen = set()
+            options = [c for c in options if not (c.duplicate_fingerprint in seen or seen.add(c.duplicate_fingerprint))]
+            for rank, c in enumerate(options, 1):
+                c.moment_evidence.setdefault("review_context", {}).update(
+                    review_mode="human_curated", review_rank=rank, review_count=len(options),
+                    review_reason="Complete inspected moment; tenant requested advisory scores and human judgment.")
         # Persist the AUTHORITATIVE joined candidate AFTER FIRE + ranking so the
         # Source Review queue reads the final state (not pre-FIRE selection rows).
         for c in result.candidates:
@@ -413,8 +482,163 @@ class Pass1Pipeline:
                     c.error = f"persist_candidate: {type(exc).__name__}"
         return result
 
+    def _materialize_inspected_moments(self, c: Any, rec: Any, moments: list[dict],
+                                      ev: Any, mc: Any, *, segments: Any,
+                                      signal_windows: Any) -> None:
+        """One independently gated, stable persisted candidate per real window.
+
+        Reuses one inspected artifact/model response; each window receives only
+        its own deterministic signals, hook/payoff, content score and lineage.
+        Source metadata and paid-call costs are not manufactured or duplicated.
+        """
+        import copy
+        import hashlib
+        import json
+        import math
+        from .fire import evidence_confidence, fire_gate, selection_score
+        from .moment_inspection import (assess_activity, assess_escalation, assess_payoff,
+                                        assess_reaction_angle, assess_setup, assess_stop,
+                                        normalize_signal_kinds, populate_from_inspection)
+        from .moment_quality import BoundaryPlan
+        from .platform_metrics import normalize_market_evidence
+        from .selection import _idempotency_key
+
+        template = copy.deepcopy(c)
+        source_fp = rec.duplicate_fingerprint
+        source_idem = template.idempotency_key
+        market = normalize_market_evidence(rec)
+        inspected_start = float(getattr(ev, "source_start", 0.0))
+        windows = []
+        # Analyzer timestamps are relative to its bounded artifact; pipeline
+        # scan windows are already absolute source seconds.
+        for item in ev.timestamps or ():
+            if isinstance(item, dict):
+                windows.append({**item,
+                    "start_s": float(item.get("start_s") or 0.0) + inspected_start,
+                    "end_s": float(item.get("end_s") or 0.0) + inspected_start})
+        windows.extend(w for w in (signal_windows or []) if isinstance(w, dict))
+
+        variants = []
+        seen = set()
+        for moment in moments:
+            start, end = moment["recommended_clip_start"], moment["recommended_clip_end"]
+            identity = ["inspected_moment_v1", rec.tenant_id, rec.profile_id, rec.platform,
+                        rec.platform_content_id, source_fp, float(start), float(end),
+                        float(moment["event_timestamp"])]
+            fingerprint = hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            target = c if not variants else copy.deepcopy(template)
+            target.__dict__.pop("_complete_moment_candidates", None)
+            target.duplicate_fingerprint = fingerprint
+            target.idempotency_key = _idempotency_key(
+                fingerprint, target.scoring_policy_version or SELECTION_POLICY_VERSION)
+            target.tenant_id, target.profile_id = rec.tenant_id, rec.profile_id
+            target.platform = rec.platform
+            target.source_relative_rank, target.source_candidate_count = None, 0
+            target.duplicate_state, target.rank_evidence = "", None
+            if variants:
+                target.cost_usd = 0.0  # shared inspection is charged exactly once
+
+            scoped = copy.deepcopy(ev)
+            scoped.source_start = start
+            scoped.window_seconds = end - start
+            scoped.signal_window = (start, end)
+            scoped.timestamps = tuple({**w, "start_s": max(start, float(w["start_s"])),
+                                       "end_s": min(end, float(w["end_s"]))}
+                                      for w in windows
+                                      if isinstance(w.get("start_s"), (int, float))
+                                      and isinstance(w.get("end_s"), (int, float))
+                                      and w["start_s"] < end and w["end_s"] > start)
+            scoped.signals = normalize_signal_kinds(scoped.timestamps)
+            scoped.caption_text = " ".join(str(s.get("text") or "") for s in (segments or [])
+                if isinstance(s, dict) and float(s.get("start_s") or 0.0) < end
+                and float(s.get("end_s") or 0.0) > start)
+            scoped.spoken_hook = scoped.caption_text[:200]
+            scoped.provider_hints = {"hook": bool(moment["hook_0_3s"]),
+                                     "payoff": bool(moment["payoff"]),
+                                     "reaction_angle": moment["reaction_angle"]}
+            assessments = {"stop": assess_stop(scoped), "activity": assess_activity(scoped),
+                "setup": assess_setup(scoped), "escalation": assess_escalation(scoped),
+                "payoff": assess_payoff(scoped), "reaction_angle": assess_reaction_angle(scoped)}
+            candidate = copy.deepcopy(mc)
+            populate_from_inspection(candidate, scoped, assessments)
+            hook = assessments["stop"].passed
+            payoff = assessments["payoff"].passed
+            reaction = assessments["reaction_angle"].passed
+            conf_ev = scoped.as_confidence_evidence(immediate_hook=hook, payoff=payoff,
+                                                    reaction_angle=moment["reaction_angle"])
+            conf_ev.update(market_metrics=market.views is not None, age=market.age_hours is not None,
+                           engagement=market.engagement is not None)
+            conf_ev["category_metadata"] = bool(market.native.get("twitch_category"))
+            conf_ev["preview"] = bool(scoped.preview_reference or market.native.get("twitch_thumbnail"))
+            confidence = evidence_confidence(platform=rec.platform, evidence=conf_ev)
+            raw_content = moment.get("content_score")
+            content = (max(0, min(100, int(raw_content)))
+                       if isinstance(raw_content, (int, float)) and not isinstance(raw_content, bool)
+                       and math.isfinite(raw_content) else 0)
+            selection = selection_score(market=target.market_score, content=content,
+                tenant_fit_verdict="PASS", reaction_opportunity=reaction,
+                evidence_completeness=confidence.score, duplicate_risk=False)
+            decision = fire_gate(market_score=target.market_score, content_score=content,
+                selection=selection, confidence=confidence.score,
+                market_gate_pass=target.market_gate_passed, tenant_fit_pass=True,
+                immediate_hook=hook, action_activity=assessments["activity"].passed,
+                payoff_present=payoff, duplicate_risk=False, reaction_opportunity=reaction)
+
+            plan = BoundaryPlan(event_timestamp=moment["event_timestamp"],
+                recommended_clip_start=start, recommended_clip_end=end,
+                start_reason=moment["start_reason"], end_reason=moment["end_reason"],
+                moment_type=moment.get("moment_type", "unknown"),
+                provenance=tuple(moment["provenance"]))
+            target.boundary_plan = plan.as_dict()
+            target.clip_start_plan = plan.as_dict()
+            target.moment_type = {"moment_type": plan.moment_type}
+            target.completeness = {"completeness_verdict": "PASS", "reasons": [], "evidence": moment}
+            target.tenant_fit_verdict = "PASS"
+            target.content_score_recalibrated = content
+            target.selection_score = selection
+            target.evidence_confidence = confidence.score
+            target.market_score_final = target.market_score
+            target.fire_passed, target.fire_reasons = decision.passed, decision.reasons
+            target.rejection_reason = ",".join(decision.reasons)
+            target.moment_evidence = {**candidate.moment_evidence,
+                "inspected_moments": [copy.deepcopy(moment)],
+                "source_complete_moment_count": len(moments),
+                "qualification": (target.media_assessment or {}).get("qualification", {}),
+                "market_evidence": target.market_evidence,
+                "intent": (getattr(self.brief, "mining_requirements", {}) or {}).get("intent", ""),
+                "what_happens": moment["what_happens"], "hook_0_3s": moment["hook_0_3s"],
+                "payoff": moment["payoff"], "reaction_angle": moment["reaction_angle"],
+                "why_selected": moment["why_reaction_worthy"],
+                "lineage": {"source_duplicate_fingerprint": source_fp,
+                    "source_selection_idempotency_key": source_idem,
+                    "moment_fingerprint": fingerprint, "identity_version": "inspected_moment_v1",
+                    "tenant_id": rec.tenant_id, "profile_id": rec.profile_id,
+                    "platform": rec.platform, "platform_content_id": rec.platform_content_id,
+                    "inspection_start": inspected_start,
+                    "inspection_end": inspected_start + ev.window_seconds}}
+            candidate.moment_start, candidate.moment_end = start, end
+            candidate.moment_duration = end - start
+            candidate.source_duration = _record_duration(rec)
+            candidate.market_score = target.market_score
+            candidate.content_score, candidate.selection_score = content, selection
+            candidate.evidence_confidence = confidence.score
+            candidate.fire_result = "PASS" if decision.passed else "FAIL"
+            candidate.moment_evidence = copy.deepcopy(target.moment_evidence)
+            target.moment_candidate = candidate.to_dict()
+            target.evidence_depth = candidate.evidence_depth
+            variants.append(target)
+        if variants:
+            c._complete_moment_candidates = tuple(variants[1:])
+
     def _apply_fire(self, c: Any, rec: Any, *, segments: Any = None,
-                    model_timestamps: Any = None, signal_windows: Any = None) -> None:
+                    model_timestamps: Any = None, signal_windows: Any = None,
+                    _zone_override: Any = None, _inspect_other_zones: bool = True) -> None:
+        import copy
+        source_template = copy.deepcopy(c)
+        strict_mining = bool(getattr(self.brief, "mining_requirements", {}) or {})
         from .transcript_normalize import normalize_transcript_segments
         # Raw captions arrive doubled and markup-bearing; clean ONCE here so the
         # locator, anchors, completeness gate and evidence all see real speech.
@@ -439,7 +663,8 @@ class Pass1Pipeline:
 
         market_ev = normalize_market_evidence(rec)
         fit = _tenant_fit(title=getattr(rec, "title", "") or "",
-                          creator=getattr(rec, "creator_channel_identity", "") or "")
+                          description=getattr(rec, "body_excerpt", "") or "",
+                          creator=getattr(rec, "creator_channel_identity", "") or "", brief=self.brief)
         mc = from_market_and_market_evidence(rec, market_ev, tenant_fit_result=fit)
 
         # ---- WHOLE-SOURCE MOMENT LOCATION --------------------------------
@@ -447,7 +672,8 @@ class Pass1Pipeline:
         # optimise where the clip should BEGIN. Short-form: the source IS the
         # moment, so the locator is deliberately bypassed.
         from .clip_start import optimize_clip_start  # noqa: F401 (kept for API compat)
-        from .moment_locator import (locate_moments, promote_zones, source_mode,
+        from .moment_locator import (DEFAULT_PROMOTE, SHORT_FORM_MAX_SECONDS,
+                                     locate_moments, promote_zones, source_mode,
                                      source_mode_for_record)
         from .moment_quality import (build_boundary_plan, classify_moment_type,
                                      completeness_gate, repair_boundaries)
@@ -458,16 +684,20 @@ class Pass1Pipeline:
         mode = source_mode_for_record(rec)
         zones = locate_moments(segments or [], source_id=str(getattr(rec, "platform_content_id", "")),
                                source_url=str(getattr(rec, "canonical_url", "")),
-                               source_duration=duration, model_timestamps=model_timestamps,
-                               signal_peaks=signal_windows)
-        promoted = promote_zones(zones, keep=1)
-        zone = promoted[0] if promoted else None
+                               source_duration=duration,
+                               model_timestamps=(model_timestamps if segments or not strict_mining else None),
+                               signal_peaks=signal_windows,
+                               **({"asset_kind": "long_form"} if strict_mining else {}))
+        promoted = promote_zones(zones, keep=DEFAULT_PROMOTE if strict_mining else 1)
+        zone = _zone_override if _zone_override is not None else (promoted[0] if promoted else None)
+        native_full_inspection = (strict_mining and mode == "source_as_moment"
+                                  and duration is not None and duration <= SHORT_FORM_MAX_SECONDS)
         plan = None
         inspect_start = 0.0
         type_result = None
         gate = None
         repairs: tuple = ()
-        if mode == "source_as_moment" and duration is not None:
+        if mode == "source_as_moment" and duration is not None and (not strict_mining or native_full_inspection or zone is None):
             # A native Short IS the moment. The complete asset is the clip:
             # boundaries are [0, duration] BY CONSTRUCTION, so no locator
             # rebuild and no blind boundary repair can truncate it. A 120s
@@ -532,58 +762,123 @@ class Pass1Pipeline:
                         and assess_payoff(e).passed)
             return "decisive" if decisive else "ambiguous"
 
-        ev, attempts = inspect_with_escalation(
-            rec,
-            fetch_preview=getattr(self, "_inspection_preview", fetch_bounded_preview),
-            analyze_signals=getattr(self, "_inspection_analyze", analyze_media_signals),
-            decide=_decide,
-            fetch_captions=getattr(self, "_inspection_captions", fetch_transcript),
-            start=inspect_start,
-            retain_last=True,
-        )
+        requirements = getattr(self.brief, "mining_requirements", {}) or {}
+
+        def _inspect_window(length=None):
+            from . import bounded_preview
+            # Known native durations can be rounded upward even below 12s.
+            # Always use verified media probing for the terminal native request;
+            # never let the legacy transfer helper claim requested == inspected.
+            use_contiguous = native_full_inspection or (length is not None and length > 12.0)
+            fetcher = getattr(self, "_inspection_contiguous_preview" if use_contiguous
+                              else "_inspection_preview", None)
+            if fetcher is None:
+                fetcher = (getattr(bounded_preview, "fetch_contiguous_inspection_preview")
+                           if use_contiguous else fetch_bounded_preview)
+            if native_full_inspection:
+                from functools import partial
+                # Only the terminal native chunk may end short. The helper
+                # reports real inspected_end, which inspection and the resolver
+                # propagate as the hard upper bound; no padding is requested.
+                fetcher = partial(fetcher, allow_terminal_partial=True)
+            evidence, logs = inspect_with_escalation(
+                rec, fetch_preview=fetcher,
+                analyze_signals=getattr(self, "_inspection_analyze", analyze_media_signals),
+                decide=_decide,
+                fetch_captions=getattr(self, "_inspection_captions", fetch_transcript),
+                start=inspect_start, retain_last=True,
+                **({"windows": (length,), "max_window": length} if length is not None else {}))
+            evidence.source_start = inspect_start
+            from .moment_inspection import normalize_signal_kinds
+            extra_signals = normalize_signal_kinds(signal_windows or [])
+            evidence.signals.update(extra_signals)
+            if any(k in extra_signals for k in ("motion", "scene_change", "cut_density")):
+                evidence.visual_opening = True
+            parsed = None
+            if evidence.last_artifact_path:
+                from .bounded_preview import cleanup
+                try:
+                    parsed = self._media_assess(evidence, rec)
+                    c.media_assessment_status = "ok" if parsed else "unsupported_provider"
+                except ProviderError as exc:
+                    c.media_assessment_status = f"unavailable:{exc.code}"
+                except Exception as exc:
+                    c.media_assessment_status = f"failed:{type(exc).__name__}"
+                finally:
+                    cleanup(evidence.last_artifact_path)
+                    evidence.last_artifact_path = ""
+            else:
+                c.media_assessment_status = "no_artifact"
+            if parsed:
+                c.media_assessment = dict(parsed)
+                self._merge_media_hints(evidence, parsed)
+                extra_cost = float((parsed.get("usage") or {}).get("cost_usd", 0.0) or 0.0)
+                c.cost_usd = round((c.cost_usd or 0.0) + extra_cost, 6)
+                self._media_cost_usd += extra_cost
+            return evidence, logs, parsed
+
+        initial_length = min(12.0, max(0.0, duration - inspect_start)) if duration else 12.0
+        if native_full_inspection:
+            # A bounded SHORT source is inspected completely once, assembled
+            # from cached <=12s transfers. This does NOT select the whole asset:
+            # only independently resolved event windows can become candidates.
+            initial_length = duration
+        ev, attempts, media_assessment = _inspect_window(initial_length if requirements else None)
         c.inspection_attempts = attempts
 
-        # Fold the pipeline-level extracted windows into the inspection evidence
-        # BEFORE any assessment runs (canonical kind names). This is what makes
-        # extracted activity reach activity_strength()/confidence; previously it
-        # happened after the assessments, so hook/activity/confidence saw nothing.
-        from .moment_inspection import normalize_signal_kinds
-        _extra = normalize_signal_kinds(signal_windows or [])
-        for _k, _v in _extra.items():
-            ev.signals[_k] = _v
-        if any(_k in _extra for _k in ("motion", "scene_change", "cut_density")):
-            ev.visual_opening = True
-
-        # MEDIA-AWARE MODEL PASS: the bounded video/audio the pipeline actually
-        # fetched goes INTO the existing provider, so hook/payoff/content
-        # evidence is grounded in real media instead of captions alone. Signal
-        # kinds were already canonicalized at collection (moment_inspection),
-        # so assessments see the resolved activity names.
-        media_assessment: dict[str, Any] | None = None
-        if ev.last_artifact_path:
-            from .bounded_preview import cleanup
-            try:
-                media_assessment = self._media_assess(ev, rec)
-                c.media_assessment_status = "ok" if media_assessment else "unsupported_provider"
-            except ProviderError as exc:
-                media_assessment = None
-                c.media_assessment_status = f"unavailable:{exc.code}"
-            except Exception as exc:  # noqa: BLE001
-                media_assessment = None
-                c.media_assessment_status = f"failed:{type(exc).__name__}"
-            finally:
-                cleanup(ev.last_artifact_path)
-                ev.last_artifact_path = ""
-        else:
-            c.media_assessment_status = "no_artifact"
-        if media_assessment:
-            c.media_assessment = dict(media_assessment)
-            self._merge_media_hints(ev, media_assessment)
-            um = media_assessment.get("usage") or {}
-            extra = float(um.get("cost_usd", 0.0) or 0.0)
-            if extra:
-                c.cost_usd = round((c.cost_usd or 0.0) + extra, 6)
-                self._media_cost_usd += extra
+        resolved_moments = []
+        inspection_rejections = []
+        if requirements:
+            from .mining_contract import resolve_inspected_moments
+            resolved_moments, inspection_rejections = resolve_inspected_moments(
+                media_assessment or {}, requirements, inspected_start=inspect_start,
+                inspected_end=min(inspect_start + ev.window_seconds, duration or float("inf")),
+                duration=duration)
+            # The 12s transfer chunk is NOT a clip-end cap. An unresolved event
+            # advances through contiguous real coverage until its first complete
+            # boundary, the actual source end, an honest retrieval failure, or the
+            # existing run budget. No coverage gap may masquerade as inspected.
+            while (not resolved_moments and inspection_rejections == ["no_complete_inspected_moment"]
+                   and media_assessment and duration and not native_full_inspection):
+                covered_end = inspect_start + ev.window_seconds
+                parsed_events = media_assessment.get("moments") or []
+                limit = duration if parsed_events else min(duration, max(
+                    zone.provisional_end if zone is not None else covered_end,
+                    (zone.event_timestamp + 12.0) if zone is not None else covered_end))
+                if covered_end >= limit:
+                    break
+                if self._media_cost_usd >= self.config.cost_ceiling_usd:
+                    inspection_rejections.append("inspection_budget_before_completeness")
+                    break
+                next_length = min(ev.window_seconds + 12.0, limit - inspect_start)
+                next_ev, next_attempts, next_assessment = _inspect_window(next_length)
+                c.inspection_attempts = (*c.inspection_attempts, *next_attempts)
+                if next_ev.window_seconds <= ev.window_seconds or not next_assessment:
+                    inspection_rejections.append("inspection_extension_unavailable")
+                    break
+                ev, media_assessment = next_ev, next_assessment
+                resolved_moments, inspection_rejections = resolve_inspected_moments(
+                    media_assessment, requirements, inspected_start=inspect_start,
+                    inspected_end=min(inspect_start + ev.window_seconds, duration), duration=duration)
+            if resolved_moments:
+                # Relative ordering is applied to REAL inspected complete moments,
+                # never to titles. Every alternative stays in the evidence record.
+                resolved_moments.sort(key=lambda m: m["event_timestamp"])
+                chosen = resolved_moments[0]
+                from .moment_quality import BoundaryPlan
+                plan = BoundaryPlan(event_timestamp=chosen["event_timestamp"],
+                    recommended_clip_start=chosen["recommended_clip_start"],
+                    recommended_clip_end=chosen["recommended_clip_end"],
+                    start_reason=chosen["start_reason"], end_reason=chosen["end_reason"],
+                    moment_type=chosen.get("moment_type", "unknown"),
+                    provenance=tuple(chosen["provenance"]))
+                c.boundary_plan = plan.as_dict()
+                c.moment_type = {"moment_type": plan.moment_type}
+                ev.provider_hints.update(hook=True, payoff=True, reaction_angle=chosen["reaction_angle"])
+                c.tenant_fit_verdict = "PASS"
+            else:
+                c.tenant_fit_verdict = "FAIL"
+                c.rejection_reason = ",".join(inspection_rejections)
 
         a = {"stop": assess_stop(ev), "activity": assess_activity(ev), "setup": assess_setup(ev),
              "escalation": assess_escalation(ev), "payoff": assess_payoff(ev),
@@ -612,6 +907,12 @@ class Pass1Pipeline:
                                      media_evidence=_media_ev)
             c.completeness = gate.as_dict()
             c.boundary_plan = plan.as_dict()
+        if requirements:
+            c.completeness = {"completeness_verdict": "PASS" if resolved_moments else "FAIL",
+                              "reasons": inspection_rejections,
+                              "evidence": resolved_moments[0] if resolved_moments else None}
+            if not resolved_moments:
+                c.boundary_plan = None
 
         reaction_ok = bool(a["reaction_angle"].passed)
         payoff_ok = bool(a["payoff"].passed)
@@ -624,6 +925,8 @@ class Pass1Pipeline:
         conf_ev["market_metrics"] = market_ev.views is not None
         conf_ev["age"] = market_ev.age_hours is not None
         conf_ev["engagement"] = market_ev.engagement is not None
+        conf_ev["category_metadata"] = bool(market_ev.native.get("twitch_category"))
+        conf_ev["preview"] = bool(ev.preview_reference or market_ev.native.get("twitch_thumbnail"))
         conf = evidence_confidence(platform=rec.platform, evidence=conf_ev)
         # A media-aware model pass grounds the content score in what the clip
         # actually showed; without one the text-only score stands.
@@ -631,6 +934,9 @@ class Pass1Pipeline:
         if media_assessment and isinstance(media_assessment.get("content_worthiness_score"), int):
             _base_content = int(media_assessment["content_worthiness_score"])
         content = recalibrate_content_score(_base_content, conf_ev)
+        if requirements:
+            content = int(resolved_moments[0].get("content_score", _base_content or 0)) if resolved_moments else 0
+            content = max(0, min(100, content))
 
         # EVIDENCE-INFORMED MARKET: qualification is computed AFTER real content
         # evidence exists, so the market dimension reflects the grounded content
@@ -643,7 +949,8 @@ class Pass1Pipeline:
             _enriched.moment_evidence = dict(mc.moment_evidence)
             _enriched.moment_evidence["content_worthiness_score"] = content
             _reassess = self.topic.assess(_enriched, self.brief, competition_count=0)
-            _market_final = int(_reassess.opportunity_score)
+            if not requirements:
+                _market_final = int(_reassess.opportunity_score)
         except Exception:  # noqa: BLE001 — keep the pre-evidence score
             pass
         c.market_score_final = _market_final
@@ -670,6 +977,9 @@ class Pass1Pipeline:
         if gate is not None and not gate.passed:
             c.fire_passed = False
             c.fire_reasons = tuple(dict.fromkeys((*decision.reasons, "INCOMPLETE_CLIP")))
+        if requirements:
+            c.fire_passed = decision.passed and bool(resolved_moments)
+            c.fire_reasons = tuple(dict.fromkeys((*decision.reasons, *inspection_rejections)))
         # The evidence-informed selection replaces the pre-evidence combined
         # selection on the authoritative record (the pre-fire one reflects the
         # text-only content score and would contradict a FIRE pass).
@@ -677,8 +987,41 @@ class Pass1Pipeline:
         c.content_score_recalibrated = content
         c.evidence_confidence = conf.score
         c.moment_evidence = dict(mc.moment_evidence)
+        if requirements:
+            c.moment_evidence.update({"inspected_moments": resolved_moments,
+                                     "qualification": (media_assessment or {}).get("qualification", {}),
+                                     "market_evidence": c.market_evidence,
+                                     "intent": requirements.get("intent", "")})
+            if resolved_moments:
+                chosen = resolved_moments[0]
+                c.moment_evidence.update({"what_happens": chosen["what_happens"],
+                    "hook_0_3s": chosen["hook_0_3s"], "payoff": chosen["payoff"],
+                    "reaction_angle": chosen["reaction_angle"],
+                    "why_selected": chosen["why_reaction_worthy"]})
         c.moment_candidate = mc.to_dict()
         c.evidence_depth = mc.evidence_depth
+        if requirements and resolved_moments:
+            self._materialize_inspected_moments(c, rec, resolved_moments, ev, mc,
+                                               segments=segments, signal_windows=signal_windows)
+        if requirements and _inspect_other_zones and not native_full_inspection:
+            variants = list(c.__dict__.pop("_complete_moment_candidates", ()))
+            for alternative in promoted:
+                if alternative is zone:
+                    continue
+                if self._media_cost_usd >= self.config.cost_ceiling_usd:
+                    break
+                sibling = copy.deepcopy(source_template)
+                sibling.cost_usd = 0.0
+                try:
+                    self._apply_fire(sibling, rec, segments=segments,
+                        model_timestamps=model_timestamps, signal_windows=signal_windows,
+                        _zone_override=alternative, _inspect_other_zones=False)
+                except Exception as exc:
+                    sibling.status = "error"
+                    sibling.error = f"zone_inspection:{type(exc).__name__}"
+                variants.append(sibling)
+                variants.extend(sibling.__dict__.pop("_complete_moment_candidates", ()))
+            c._complete_moment_candidates = tuple(variants)
 
     def _process(self, rec: Any, store: Any, run: Pass1RunResult) -> Pass1CandidateResult:
         c = Pass1CandidateResult(
@@ -686,13 +1029,40 @@ class Pass1Pipeline:
             platform_content_id=rec.platform_content_id,
             title=rec.title, market_score=0,
         )
+        if (rec.tenant_id != self.brief.tenant_id or
+                getattr(rec, "profile_id", "") != self.brief.profile_id):
+            c.status = "filtered_tenant"
+            c.rejection_reason = "tenant_or_profile_mismatch"
+            return c
+        requirements = getattr(self.brief, "mining_requirements", {}) or {}
+        if requirements:
+            from .mining_contract import media_qualification
+            from .tenant_fit import tenant_fit
+            media_ok, media_reason = media_qualification(rec)
+            if not media_ok:
+                c.status, c.rejection_reason = "filtered_media", media_reason
+                return c
+            fit = tenant_fit(title=rec.title, description=getattr(rec, "body_excerpt", ""),
+                             creator=rec.creator_channel_identity, brief=self.brief)
+            c.tenant_fit_verdict, c.tenant_fit_reasons = fit.verdict, fit.reasons
+            if fit.failed:
+                c.status, c.rejection_reason = "filtered_tenant", ",".join(fit.reasons)
+                return c
 
         # 1. Topic Intelligence (market) — no model cost.
         topic = self.topic.assess(rec, self.brief, competition_count=0)
         c.market_score = topic.opportunity_score
+        demand = None
+        if requirements.get("market_policy") == "observed_demand_v1":
+            from .market_demand import assess_market_demand
+            demand = assess_market_demand(rec,
+                max_age_hours=self.brief.freshness_window_days * 24 if self.brief.freshness_window_days else None)
+            c.market_score = demand.score
+            c.market_evidence = demand.evidence
 
         # 2. Market shortlist threshold.
-        if c.market_score < self.config.market_shortlist_threshold:
+        advisory_review = (requirements.get("review_policy") or {}).get("mode") == "human_curated"
+        if not advisory_review and c.market_score < (75 if requirements else self.config.market_shortlist_threshold):
             c.status = "skipped_market"
             return c
 
@@ -702,10 +1072,16 @@ class Pass1Pipeline:
         # persisted so a rejection is explainable, never silent.
         from .platform_metrics import normalize_market_evidence, platform_market_gate
         market_ev = normalize_market_evidence(rec)
-        decision = platform_market_gate(market_ev)
+        decision = demand or platform_market_gate(market_ev,
+            **({"max_age_hours": self.brief.freshness_window_days * 24}
+               if requirements and self.brief.freshness_window_days > 0 else {}))
         c.market_gate_passed = decision.passed
         c.market_evidence = decision.evidence
-        if not decision.passed:
+        # Tenant-configured human review makes numerical demand scores advisory,
+        # without changing the score, FIRE result, or structural/safety gates.
+        structural_market_failure = any(r in {"UNSUPPORTED_MARKET_PLATFORM", "SUBREDDIT_META"}
+                                        for r in decision.reasons)
+        if not decision.passed and (not advisory_review or structural_market_failure):
             c.status = "filtered_market"
             c.rejection_reason = ",".join(decision.reasons)
             return c
@@ -716,7 +1092,7 @@ class Pass1Pipeline:
         from .tenant_fit import tenant_fit
         fit = tenant_fit(title=getattr(rec, "title", "") or "",
                          description=getattr(rec, "body_excerpt", "") or "",
-                         creator=getattr(rec, "creator_channel_identity", "") or "")
+                         creator=getattr(rec, "creator_channel_identity", "") or "", brief=self.brief)
         c.tenant_fit_verdict = fit.verdict
         c.tenant_fit_reasons = tuple(fit.reasons)
         if fit.failed:
@@ -782,7 +1158,16 @@ class Pass1Pipeline:
                 thumbnail_available=bool(getattr(rec, "thumbnail_reference", "")
                                          or getattr(rec, "thumbnail_available", False)),
                 thumbnail_reference=getattr(rec, "thumbnail_reference", "") or "")
-            raw = provider.assess(ev, self.brief)
+            if (self.config.enable_fire_gate and advisory_review
+                    and (requirements.get("review_policy") or {}).get("media_first") is True):
+                # No paid title/metadata opinion before an already-required
+                # media inspection. Zero means unassessed, never a content claim.
+                raw = {"scores": {}, "content_worthiness_score": 0,
+                       "reasons": [{"code": "SEMANTIC_ASSESSMENT_DEFERRED_TO_ACTUAL_MEDIA"}],
+                       "model_identity": {"provider": "deterministic", "resolved_model": "deferred_to_media"},
+                       "usage": {"cost_usd": 0, "input_tokens": 0, "output_tokens": 0}}
+            else:
+                raw = provider.assess(ev, self.brief)
             assessment = assess_content(
                 record=rec, brief=self.brief, evidence_bundle=ev, provider=provider,
                 competition_count=0, raw=raw,

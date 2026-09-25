@@ -154,10 +154,10 @@ class ContentStoreSupabase:
             "canonical_url": getattr(c, "canonical_url", "") or "",
             "creator_channel_identity": getattr(c, "creator_channel_identity", "") or "",
             "publication_timestamp": getattr(c, "publication_timestamp", None),
-            "market_score": int(getattr(c, "market_score_final", None)
-                                or c.market_score or 0),
-            "content_score": int(getattr(c, "content_score_recalibrated", None)
-                                or c.content_worthiness or 0),
+            "market_score": int(c.market_score_final if getattr(c, "market_score_final", None) is not None
+                                else c.market_score or 0),
+            "content_score": int(c.content_score_recalibrated if getattr(c, "content_score_recalibrated", None) is not None
+                                else c.content_worthiness or 0),
             "selection_score": int(getattr(c, "selection_score", None) or 0),
             "confidence_score": int(getattr(c, "evidence_confidence", None) or 0),
             "selection_outcome": c.selection_outcome or "",
@@ -199,8 +199,8 @@ class ContentStoreSupabase:
             "platform": getattr(c, "platform", "") or "",
             "duplicate_fingerprint": c.duplicate_fingerprint,
             "scoring_policy_version": getattr(c, "scoring_policy_version", "") or "",
-            "market_opportunity_score": int(getattr(c, "market_score_final", None)
-                                             or c.market_score or 0),
+            "market_opportunity_score": int(c.market_score_final if getattr(c, "market_score_final", None) is not None
+                                             else c.market_score or 0),
             "market_confidence": 0,
             "content_worthiness_score": int(c.content_worthiness or 0),
             "content_confidence": 0,
