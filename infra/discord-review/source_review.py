@@ -20,6 +20,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+import re
 from typing import Any
 
 COMMAND_NAME = "source-review"
@@ -73,6 +74,8 @@ def make_source_custom_id(decision: str, fingerprint: str) -> str:
     code = CODE_BY_DECISION.get(decision)
     if not code:
         raise ValueError(f"unknown decision {decision!r}")
+    if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        raise ValueError("source card requires a tenant-scoped SHA-256 fingerprint")
     return f"{code}_{fingerprint}"
 
 
@@ -81,7 +84,7 @@ def parse_source_custom_id(custom_id: str) -> dict[str, str] | None:
     if not custom_id or "_" not in custom_id:
         return None
     code, fp = custom_id.split("_", 1)
-    if code not in DECISION_CODES or len(fp) != 64:
+    if code not in DECISION_CODES or not re.fullmatch(r"[0-9a-f]{64}", fp):
         return None
     return {"decision": DECISION_CODES[code], "fingerprint": fp}
 
@@ -92,12 +95,14 @@ def class_color(outcome: str) -> int:
 
 def _fmt_seconds(s: float, force_hms: bool = False) -> str:
     """Human display of seconds: MM:SS under 1 hour, H:MM:SS at/over 1 hour.
-    Fractional seconds are floored for display only; raw numeric values are
-    preserved upstream (never mutated)."""
-    s = max(0, int(float(s)))
+    Preserve subsecond boundaries to millisecond precision; never make a short
+    resolved moment appear to start/end at a different whole second."""
+    milliseconds = int(round(max(0.0, float(s)) * 1000))
+    s, remainder = divmod(milliseconds, 1000)
+    fraction = f".{remainder:03d}".rstrip("0") if remainder else ""
     if force_hms or s >= 3600:
-        return f"{s // 3600}:{(s % 3600) // 60:02d}:{s % 60:02d}"
-    return f"{s // 60:02d}:{s % 60:02d}"
+        return f"{s // 3600}:{(s % 3600) // 60:02d}:{s % 60:02d}{fraction}"
+    return f"{s // 60:02d}:{s % 60:02d}{fraction}"
 
 
 def _format_timestamps(ts: list[dict[str, Any]] | None) -> str | None:
@@ -185,9 +190,13 @@ def format_source_embed(candidate: dict[str, Any], *, fixture: bool = False) -> 
         fields.append({"name": "Why selected", "value": why[:600], "inline": False})
 
     # 9. Suggested timestamps.
-    ts_line = _format_timestamps(candidate.get("suggested_timestamps"))
+    plan = candidate.get("boundary_plan") or {}
+    start, end = plan.get("recommended_clip_start"), plan.get("recommended_clip_end")
+    resolved = ([{"start_s": start, "end_s": end, "basis": "resolved moment"}]
+                if isinstance(start, (int, float)) and isinstance(end, (int, float)) and end > start else None)
+    ts_line = _format_timestamps(resolved or candidate.get("suggested_timestamps"))
     if ts_line:
-        fields.append({"name": "Suggested timestamps", "value": ts_line, "inline": False})
+        fields.append({"name": "Clip window" if resolved else "Suggested timestamps", "value": ts_line, "inline": False})
 
     # 10. Recommended angle.
     if angle:
@@ -214,7 +223,59 @@ def format_source_embed(candidate: dict[str, Any], *, fixture: bool = False) -> 
         footer.append(str(candidate["profile_id"]))
     if footer:
         embed["footer"] = {"text": " · ".join(footer)[:2048]}
+    evidence = candidate.get("moment_evidence") or {}
+    if evidence.get("intent"):
+        embed = format_mining_embed(candidate, embed)
     return embed
+
+
+def format_mining_embed(c, base):
+    """Acceptance source card from durable resolved evidence, not start anchors."""
+    p, me = c.get("boundary_plan") or {}, c.get("moment_evidence") or {}
+    market = me.get("market_evidence") or {}
+    context = me.get("review_context") or {}
+    fields = []
+    def add(name, value, inline=False):
+        fields.append({"name": name, "value": str(value or "Unavailable")[:1000], "inline": inline})
+    def val(key):
+        v = market.get(key)
+        return "Unavailable" if v is None else str(v)
+    add("Identity", f"Tenant: {c.get('tenant_id')} · {c.get('platform')}\nCreator: {c.get('creator_channel_identity')}\nTitle: {c.get('title')}\nIntent: {me.get('intent')}")
+    funnel = context.get("funnel") or {}
+    add("Funnel", " · ".join(f"{k.replace('_', ' ')}: {v}" for k,v in funnel.items()) or "See recorded run evidence")
+    add("Market evidence", "\n".join([
+        f"Views/plays {val('views')} · Likes {val('likes')} · Comments {val('comments')}",
+        f"Shares {val('shares')} · Saves {val('saves')} · Age {val('age_hours')} h",
+        f"Lifetime avg VPH {val('lifetime_average_vph')} · Observed velocity/h {val('observed_velocity_per_hour')}",
+        f"Engagement {val('engagement')} · Outlier {val('outlier_multiple')} · Route {val('route')}",
+        f"Market **{c.get('market_opportunity_score')} / 100**"]))
+    add("Moment", f"{me.get('what_happens', 'Unavailable')}\nType: {(c.get('moment_type') or {}).get('moment_type', 'unknown')}")
+    if all(isinstance(p.get(k), (int,float)) for k in ('recommended_clip_start','recommended_clip_end')):
+        s,e=p['recommended_clip_start'],p['recommended_clip_end']
+        event = p.get('event_timestamp')
+        event_label = _fmt_seconds(event) if isinstance(event, (int, float)) else "Unavailable"
+        add("Resolved window", f"Event {event_label}\nStart {_fmt_seconds(s)} · End {_fmt_seconds(e)} · Duration {e-s:g}s")
+    add("Why selected", me.get("why_selected"))
+    add("First 0–3 second hook", me.get("hook_0_3s"))
+    add("Payoff / resolution", me.get("payoff"))
+    add("Reaction / commentary angle", me.get("reaction_angle"))
+    add("Completeness & boundary evidence", f"{c.get('completeness_verdict')}\nStart: {p.get('start_reason')}\nEnd: {p.get('end_reason')}")
+    add("Quality", f"Content {c.get('content_worthiness_score')} · Selection {c.get('source_selection_score')} · Confidence {c.get('source_selection_confidence')} · FIRE {'PASS' if c.get('fire_passed') else 'FAIL'}")
+    add("Ranking", f"Moment rank #{c.get('source_relative_rank')} of {c.get('source_candidate_count', 0)} complete qualifying moments")
+    base.update(title="SEGMENT 5 — VIRAL MOMENT MINING ACCEPTANCE", fields=fields)
+    # A platform-derived thumbnail URL alone is not verification that the image
+    # exists or represents this candidate. Strict cards only embed a verified
+    # candidate thumbnail, or a verified still from within the resolved window.
+    base.pop("thumbnail", None)
+    base.pop("image", None)
+    if context.get("verified_thumbnail_url"):
+        base["image"] = {"url": context["verified_thumbnail_url"]}
+    elif context.get("verified_frame_url"):
+        frame_time = context.get("verified_frame_timestamp_s")
+        start, end = p.get("recommended_clip_start"), p.get("recommended_clip_end")
+        if all(isinstance(v, (int, float)) for v in (frame_time, start, end)) and start <= frame_time <= end:
+            base["image"] = {"url": context["verified_frame_url"]}
+    return base
 
 
 def format_source_buttons(fingerprint: str, *, disabled: bool = False,
@@ -343,6 +404,9 @@ def _candidate_from_row(s: dict[str, Any]) -> dict[str, Any]:
         "completeness_verdict": s.get("completeness_verdict", ""),
         "duplicate_state": s.get("duplicate_state", ""),
         "source_relative_rank": s.get("source_relative_rank"),
+        "source_candidate_count": s.get("source_candidate_count", 0),
+        "moment_evidence": s.get("moment_evidence") or {},
+        "moment_type": s.get("moment_type") or {},
         "boundary_plan": s.get("boundary_plan") or {},
         "suggested_timestamps": (s.get("boundary_plan") or {}).get("start_anchors") or [],
         "top_reasons": [],

@@ -57,6 +57,22 @@ def _candidate(**overrides):
 
 
 class TestCustomId(unittest.TestCase):
+    def test_rejects_the_actual_broken_live_card_before_posting(self):
+        # Original card used the YouTube ID as its fingerprint; router refused
+        # it before the worker ran, despite HTTP200 for the private error reply.
+        self.assertIsNone(parse_source_custom_id("sa_ZaIDxlEuKpc"))
+        with self.assertRaisesRegex(ValueError, "tenant-scoped"):
+            make_source_custom_id(DECISION_APPROVE, "ZaIDxlEuKpc")
+        self.assertIsNone(parse_source_custom_id("sa_" + "z" * 64))
+
+    def test_zero_to_eight_window_renders_without_anchors(self):
+        c = _candidate(suggested_timestamps=[], boundary_plan={
+            "recommended_clip_start": 0.0, "recommended_clip_end": 8.0, "start_anchors": []})
+        embed = format_source_embed(c)
+        window = next(f for f in embed["fields"] if f["name"] == "Clip window")
+        self.assertIn("00:00", window["value"])
+        self.assertIn("00:08", window["value"])
+
     def test_roundtrip(self):
         for decision in (DECISION_APPROVE, DECISION_HOLD, DECISION_REJECT):
             cid = make_source_custom_id(decision, "a" * 64)
@@ -152,17 +168,22 @@ class TestDecisionPayload(unittest.TestCase):
 
 
 class TestTimestampFormatting(unittest.TestCase):
-    def test_fractional_seconds_floored(self):
+    def test_milliseconds_and_minute_rollover(self):
+        self.assertEqual(_fmt_seconds(0.125), "00:00.125")
+        self.assertEqual(_fmt_seconds(59.9996), "01:00")
+        self.assertEqual(_fmt_seconds(3600.375), "1:00:00.375")
+
+    def test_fractional_seconds_preserved(self):
         out = _format_timestamps([{"start_s": 10.5, "end_s": 22.5}])
-        self.assertEqual(out, "00:10–00:22")
+        self.assertEqual(out, "00:10.5–00:22.5")
 
     def test_below_hour_mmss(self):
         out = _format_timestamps([
             {"start_s": 110.0, "end_s": 116.5},
             {"start_s": 215.5, "end_s": 228.3},
         ])
-        self.assertIn("01:50–01:56", out)
-        self.assertIn("03:35–03:48", out)
+        self.assertIn("01:50–01:56.5", out)
+        self.assertIn("03:35.5–03:48.3", out)
 
     def test_above_hour_hms(self):
         out = _format_timestamps([{"start_s": 3661.0, "end_s": 3720.0}])
@@ -188,11 +209,11 @@ class TestTimestampFormatting(unittest.TestCase):
 
     def test_reason_label_preserved(self):
         out = _format_timestamps([{"start_s": 10.5, "end_s": 22.5, "basis": "Opening hook"}])
-        self.assertEqual(out, "00:10–00:22 — Opening hook")
+        self.assertEqual(out, "00:10.5–00:22.5 — Opening hook")
 
     def test_never_raw_format(self):
         out = _format_timestamps([{"start_s": 110, "end_s": 116.5}])
-        self.assertEqual(out, "01:50–01:56")
+        self.assertEqual(out, "01:50–01:56.5")
         self.assertNotIn("110", out)   # no raw seconds
         self.assertNotIn("116.5", out)  # no fractional raw
         self.assertNotIn("s", out)      # no 's' suffix
@@ -202,6 +223,59 @@ class TestNonProduction(unittest.TestCase):
     def test_is_non_production(self):
         self.assertTrue(_is_non_production("supabase-acceptance-proof", "dreemzy"))
         self.assertFalse(_is_non_production("bryan-face-reaction", "dreemzy"))
+
+
+class TestMiningPresentation(unittest.TestCase):
+    def candidate(self, **context):
+        return _candidate(
+            boundary_plan={"recommended_clip_start": 0.125,
+                           "recommended_clip_end": 8.625, "event_timestamp": 2.75,
+                           "start_reason": "setup starts", "end_reason": "reaction settles",
+                           "start_anchors": []},
+            moment_evidence={"intent": "tenant-configured intent",
+                             "review_context": context,
+                             "market_evidence": {"views": 123456, "likes": 0},
+                             "what_happens": "A concrete event", "hook_0_3s": "Visible setup",
+                             "payoff": "Visible resolution", "reaction_angle": "Explain the surprise"},
+            source_relative_rank=1, source_candidate_count=3,
+            completeness_verdict="PASS", fire_passed=True)
+
+    def test_strict_card_preserves_exact_window_link_and_market_unknowns(self):
+        e = format_source_embed(self.candidate())
+        text = json_fields_text(e)
+        self.assertEqual(e["title"], "SEGMENT 5 — VIRAL MOMENT MINING ACCEPTANCE")
+        self.assertIn("Event 00:02.75", text)
+        self.assertIn("Start 00:00.125", text)
+        self.assertIn("End 00:08.625", text)
+        self.assertIn("Duration 8.5s", text)
+        self.assertIn("Likes 0", text)
+        self.assertIn("Comments Unavailable", text)
+        self.assertIn("Moment rank #1 of 3 complete qualifying moments", text)
+        self.assertEqual(e["url"], self.candidate()["canonical_url"])
+        self.assertNotIn("thumbnail", e, "strict cards cannot imply an unverified image is verified")
+
+    def test_absent_event_does_not_hide_resolved_native_window(self):
+        c = self.candidate()
+        del c["boundary_plan"]["event_timestamp"]
+        text = json_fields_text(format_source_embed(c))
+        self.assertIn("Event Unavailable", text)
+        self.assertIn("End 00:08.625", text)
+
+    def test_verified_candidate_thumbnail_takes_precedence_over_still(self):
+        e = format_source_embed(self.candidate(
+            verified_thumbnail_url="https://images.example/candidate.jpg",
+            verified_frame_url="https://images.example/moment.jpg", verified_frame_timestamp_s=3.5))
+        self.assertEqual(e["image"]["url"], "https://images.example/candidate.jpg")
+        self.assertNotIn("thumbnail", e)
+
+    def test_still_preview_must_be_from_inside_recommended_window(self):
+        for when, allowed in ((3.5, True), (0.0, False), (9.0, False), (None, False)):
+            with self.subTest(frame_timestamp=when):
+                e = format_source_embed(self.candidate(
+                    verified_frame_url="https://images.example/moment.jpg",
+                    verified_frame_timestamp_s=when))
+                self.assertEqual("image" in e, allowed)
+                self.assertEqual(e["url"], self.candidate()["canonical_url"])
 
 
 class TestAuthoritativeCandidateQueue(unittest.TestCase):

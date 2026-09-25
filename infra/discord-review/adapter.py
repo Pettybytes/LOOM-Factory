@@ -45,10 +45,12 @@ import secrets
 import subprocess
 import tempfile
 import threading
+import traceback
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import discord_media  # tier-aware upload limit + poster fallback (shared with the acquisition path)
 from urllib.request import Request, urlopen
@@ -2106,7 +2108,8 @@ def source_review_health():
     the running system, never the repo file.
     """
     block = {"route": "SR", "route_active": True, "approve_handoff": True,
-             "duplicate_click_stored_decision": True, "open_source_button": True}
+             "duplicate_click_stored_decision": True, "open_source_button": True,
+             "worker_error_boundary": "identity_through_patch_v2"}
     try:
         block["candidates_table"] = bool(
             source_review._candidates_table_available(SUPABASE_URL, SUPABASE_KEY))
@@ -2353,10 +2356,14 @@ class Handler(BaseHTTPRequestHandler):
                 source_url=candidate.get("canonical_url") or ""),
         }
         try:
-            http_json("POST", f"{DISCORD_API}/channels/{channel_id}/messages",
-                      DISCORD_BOT_TOKEN, body=payload, timeout=15)
+            code, posted = http_json("POST", f"{DISCORD_API}/channels/{channel_id}/messages",
+                                    DISCORD_BOT_TOKEN, body=payload, timeout=15)
+            if code not in (200, 201) or not posted.get("id"):
+                raise RuntimeError("source card post did not return a Discord message ID")
+            return posted
         except Exception as e:
-            print(f"[source-review] card post failed: {e}", flush=True)
+            print(f"[source-review] card post failed: {type(e).__name__}", flush=True)
+            raise
 
     def _handle_submit_source_command(self, interaction):
         data = interaction.get("data", {})
@@ -2543,12 +2550,17 @@ class Handler(BaseHTTPRequestHandler):
         PENDING job (gate 1, zero spend authorized). The acquire-for-reaction
         (gate 2, spend) step still requires Bryan's separate Acquire click.
         """
-        application_id = str(interaction.get("application_id") or "")
-        interaction_token = str(interaction.get("token") or "")
-        fp = src["fingerprint"]
-        decision = src["decision"]
-        reviewer = self._reviewer_name(interaction)
+        application_id = interaction_token = ""
+        fp = "unknown"
+        stage = "identity"
+        saved = False
         try:
+            application_id = str(interaction.get("application_id") or "")
+            interaction_token = str(interaction.get("token") or "")
+            fp = src["fingerprint"]
+            decision = src["decision"]
+            reviewer = self._reviewer_name(interaction)
+            stage = "candidate_lookup"
             candidate = source_review.fetch_candidate_by_fingerprint(
                 SUPABASE_URL, SUPABASE_KEY, fp)
             if not candidate:
@@ -2556,59 +2568,79 @@ class Handler(BaseHTTPRequestHandler):
                                      content="Unknown candidate.")
                 return
             payload = source_review.source_decision_payload(candidate, decision, reviewer)
+            stage = "persist_decision"
             row, created = source_review.persist_decision(
                 SUPABASE_URL, SUPABASE_KEY, payload)
+            if not isinstance(row, dict) or not row.get("decision"):
+                raise RuntimeError("decision store returned no durable decision")
+            saved = True
             # Duplicate clicks render the STORED winning decision, never the
             # attempted one (first terminal decision wins at the database level).
             stored = (row or {}).get("decision") if row is not None else None
             shown = stored if not created and stored else decision
-            embed = source_review.decided_embed(shown, reviewer, created)
+            winner = row.get("reviewer") or reviewer
+            decision_embed = source_review.decided_embed(shown, winner, created)
+            embed = source_review.format_source_embed(candidate)
+            embed["fields"] = [*(embed.get("fields") or []), *(decision_embed.get("fields") or [])]
+            embed["color"] = decision_embed.get("color", embed.get("color"))
             content = None
-            if created and decision == source_review.DECISION_APPROVE:
-                content = self._source_approve_handoff(candidate, reviewer)
+            # A stored approval whose dispatch was interrupted still owes its
+            # idempotent pending job. Never dispatch a losing attempted decision.
+            stage = "pending_job"
+            if shown == source_review.DECISION_APPROVE:
+                content = self._source_approve_handoff(candidate, winner)
+            stage = "card_update"
             self._patch_original(application_id, interaction_token,
                                  embed=embed, content=content)
+            print(f"[source-review] completed fingerprint={fp} decision={shown} created={created}", flush=True)
         except Exception as e:  # noqa: BLE001
-            print(f"[source-review] decision failed: {type(e).__name__}: {e}", flush=True)
+            # Frame locations make failures actionable without logging exception
+            # values, interaction tokens, signed URLs, headers, or payloads.
+            frames = ";".join(f"{Path(f.filename).name}:{f.lineno}:{f.name}"
+                              for f in traceback.extract_tb(e.__traceback__))
+            print(f"[source-review] failed fingerprint={fp} stage={stage} error={type(e).__name__} frames={frames}", flush=True)
             try:
                 self._patch_original(application_id, interaction_token,
-                                     content="Failed to record decision.")
-            except Exception:  # noqa: BLE001
-                pass
+                                     content=("Decision saved; follow-up failed" if saved else
+                                              "Failed to record decision") +
+                                             f" at {stage} ({type(e).__name__}). Retry is idempotent.",
+                                     preserve_controls=True)
+            except Exception as patch_error:  # noqa: BLE001
+                print(f"[source-review] card_update_failed fingerprint={fp} error={type(patch_error).__name__}", flush=True)
 
     def _source_approve_handoff(self, candidate: dict[str, Any], reviewer: str) -> str | None:
         """Plan + persist the single PENDING acquisition job for an approved
         source. Gate 1 only: never authorizes spending. Returns a one-line
         status for the card, or None when the handoff is unavailable."""
-        try:
-            import approved_lane as _lane
-            store = _acquisition_store()
-            plan = candidate.get("boundary_plan") or {}
-            start_s = plan.get("recommended_clip_start")
-            end_s = plan.get("recommended_clip_end")
-            job = _lane.plan_pending_job(
-                fingerprint=candidate.get("duplicate_fingerprint", ""),
-                platform=candidate.get("platform", ""),
-                platform_content_id=candidate.get("platform_content_id", "")
-                or candidate.get("duplicate_fingerprint", ""),
-                canonical_url=candidate.get("canonical_url", ""),
-                actor=reviewer,
-                requested_start_s=(float(start_s) if isinstance(start_s, (int, float)) else None),
-                requested_end_s=(float(end_s) if isinstance(end_s, (int, float)) else None),
-            )
-            row, job_created = store.create_job(job)
-            if not job_created:
-                return "ℹ️ Acquisition job already pending for this source."
-            return "📥 Queued for acquisition — approve the range, then click Acquire."
-        except Exception as e:  # noqa: BLE001
-            print(f"[source-review] approve handoff failed: {type(e).__name__}: {e}", flush=True)
-            return "⚠️ Decision saved; acquisition handoff failed (see logs)."
+        import approved_lane as _lane
+        store = _acquisition_store()
+        plan = candidate.get("boundary_plan") or {}
+        start_s = plan.get("recommended_clip_start")
+        end_s = plan.get("recommended_clip_end")
+        job = _lane.plan_pending_job(
+            fingerprint=candidate.get("duplicate_fingerprint", ""),
+            platform=candidate.get("platform", ""),
+            platform_content_id=candidate.get("platform_content_id", "")
+            or candidate.get("duplicate_fingerprint", ""),
+            canonical_url=candidate.get("canonical_url", ""),
+            actor=reviewer,
+            correlation_id=candidate.get("duplicate_fingerprint", ""),
+            rights_usage_note=json.dumps({"tenant_id": candidate.get("tenant_id"),
+                "profile_id": candidate.get("profile_id"), "boundary_plan": plan,
+                "lineage": (candidate.get("moment_evidence") or {}).get("lineage", {})}, sort_keys=True),
+            requested_start_s=(float(start_s) if isinstance(start_s, (int, float)) else None),
+            requested_end_s=(float(end_s) if isinstance(end_s, (int, float)) else None),
+        )
+        row, job_created = store.create_job(job)
+        if not job_created:
+            return "ℹ️ Acquisition job already pending for this source."
+        return "📥 Queued for acquisition — approve the range, then click Acquire."
 
     def _patch_original(self, application_id, interaction_token, *,
-                        content=None, embed=None):
+                        content=None, embed=None, preserve_controls=False):
         """PATCH the deferred interaction's original message. Outbound only —
         the interaction token (NOT the bot token) authorizes this endpoint."""
-        data = {"components": []}
+        data = {} if preserve_controls else {"components": []}
         if embed is not None:
             data["embeds"] = [embed]
         if content is not None:
@@ -3744,9 +3776,7 @@ class Handler(BaseHTTPRequestHandler):
         member = interaction.get("member") or {}
         user = interaction.get("user") or {}
         u = member.get("user") or user or {}
-        name = u.get("username") or u.get("global_name") or "unknown"
-        uid = u.get("id") or ""
-        return f"{name}#{uid}" if uid else name
+        return member.get("nick") or u.get("global_name") or u.get("username") or "unknown"
 
     def _reviewer_user_id(self, interaction):
         """Numeric Discord user id of the interacting user (from member or user

@@ -76,6 +76,40 @@ class SourceReviewAckOrderingTests(unittest.TestCase):
 
 
 class SourceReviewWorkerTests(unittest.TestCase):
+    def test_reviewer_exception_is_observable_not_a_silent_thread_death(self):
+        h = _handler()
+        patches = []
+        h._patch_original = lambda *args, **kw: patches.append(kw)
+        h._reviewer_name = mock.Mock(side_effect=ValueError("malformed identity"))
+        with mock.patch.object(source_review, "persist_decision") as persist:
+            h._source_button_worker({"application_id": "1", "token": "t"},
+                                    {"fingerprint": "f" * 64, "decision": "hold"})
+        persist.assert_not_called()
+        self.assertIn("identity", patches[0]["content"])
+
+    def test_stored_approval_recovers_missing_dispatch_and_keeps_winning_reviewer(self):
+        h = _handler()
+        h._patch_original = mock.Mock()
+        h._source_approve_handoff = mock.Mock(return_value="pending")
+        cand = {"duplicate_fingerprint": "f" * 64}
+        winner = {"decision": source_review.DECISION_APPROVE, "reviewer": "original operator"}
+        with mock.patch.object(source_review, "fetch_candidate_by_fingerprint", return_value=cand), \
+             mock.patch.object(source_review, "persist_decision", return_value=(winner, False)):
+            h._source_button_worker({"application_id": "1", "token": "t"},
+                                   {"fingerprint": "f" * 64, "decision": "hold"})
+        h._source_approve_handoff.assert_called_once_with(cand, "original operator")
+        self.assertIn("original operator", str(h._patch_original.call_args))
+
+    def test_failure_to_patch_does_not_claim_decision_was_not_saved(self):
+        h = _handler()
+        h._patch_original = mock.Mock(side_effect=[RuntimeError("patch failed"), None])
+        with mock.patch.object(source_review, "fetch_candidate_by_fingerprint",
+                               return_value={"duplicate_fingerprint": "f" * 64}), \
+             mock.patch.object(source_review, "persist_decision", return_value=({"decision": "hold"}, True)):
+            h._source_button_worker({"application_id": "1", "token": "t"},
+                                   {"fingerprint": "f" * 64, "decision": "hold"})
+        self.assertIn("Decision saved", h._patch_original.call_args.kwargs["content"])
+
     def test_worker_persists_decision_then_patches_original(self):
         h = _handler()
         patches: list[dict] = []
