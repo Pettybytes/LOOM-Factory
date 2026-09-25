@@ -294,7 +294,7 @@ def fetch_contiguous_inspection_preview(url: str, *, start: float, end: float,
                 raise _InspectionCoverageError("invalid_chunk_progress")
             # Versioned, exact coordinates avoid rounded-window cache collisions
             # and prevent reuse of files published by the older non-atomic code.
-            cache_identity = ["packet-coverage-v2", url, cursor.hex(), stop.hex()]
+            cache_identity = ["packet-coverage-v3-640px", url, cursor.hex(), stop.hex()]
             if terminal_partial:
                 # A permissive terminal cache must never satisfy a strict caller.
                 cache_identity.append("allow-terminal-partial")
@@ -353,10 +353,14 @@ def fetch_contiguous_inspection_preview(url: str, *, start: float, end: float,
                             proc = runner([
                                 "ffmpeg", "-v", "error", "-nostdin", "-y", "-i", str(source),
                                 "-map", "0:v:0", "-map", "0:a:0?", "-t", str(actual_duration),
-                                "-vf", "setpts=PTS-STARTPTS", "-af", "asetpts=PTS-STARTPTS",
+                                # Inspection proxy only: preserve time/whole frame,
+                                # bound bytes before inline model upload (20 MiB).
+                                "-vf", "setpts=PTS-STARTPTS,scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2",
+                                "-af", "asetpts=PTS-STARTPTS",
                                 "-fps_mode", "passthrough",
                                 "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
-                                "-pix_fmt", "yuv420p", "-c:a", "aac", str(staged),
+                                "-maxrate", "640k", "-bufsize", "1280k",
+                                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "64k", str(staged),
                             ], capture_output=True, text=True, timeout=120)
                             if proc.returncode:
                                 raise _InspectionCoverageError("chunk_normalization_failed")

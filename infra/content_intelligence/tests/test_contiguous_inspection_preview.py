@@ -99,6 +99,28 @@ class TestContiguousInspectionPreview(unittest.TestCase):
         self.assertTrue(Path(second.artifact_path).is_file())
         self.assertEqual(len(list(Path(self.cache.name).glob("*.mp4"))), 4)
 
+    def test_large_native_video_becomes_bounded_inline_proxy_without_time_loss(self):
+        with tempfile.TemporaryDirectory() as folder:
+            large = Path(folder) / 'large.mp4'
+            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', str(self.source),
+                            '-t', '4', '-vf', 'scale=1920:1080', '-c:v', 'libx264',
+                            '-preset', 'ultrafast', str(large)],
+                           capture_output=True, check=True, timeout=30)
+            self.source = large
+            result = self.inspect(end=4)
+            self.assertTrue(result.available, result.reason)
+            def probe(path):
+                out = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                    '-show_entries', 'stream=width,height,avg_frame_rate,duration',
+                    '-of', 'json', str(path)], capture_output=True, text=True, check=True)
+                return json.loads(out.stdout)['streams'][0]
+            before, after = probe(large), probe(result.artifact_path)
+            self.assertEqual((after['width'], after['height']), (640, 360))
+            self.assertEqual(before['avg_frame_rate'], after['avg_frame_rate'])
+            self.assertAlmostEqual(float(after['duration']), 4, delta=.05)
+            self.assertEqual((result.inspected_start, result.inspected_end), (0, 4))
+            self.assertLess(result.artifact_bytes, 20 * 1024 * 1024)
+
     def test_corrupt_cached_chunk_is_repaired_without_refetching_other_chunks(self):
         first = self.inspect(end=8)
         self.assertTrue(first.available, first.reason)
