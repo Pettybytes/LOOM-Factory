@@ -104,10 +104,12 @@ class SourceReviewWireTests(unittest.TestCase):
         self.server.server_close()
         self.server_thread.join(2)
 
-    def post_interaction(self, custom_id, member=None):
+    def post_interaction(self, custom_id, member=None, component_type=2, values=None):
         payload = {"type": 3, "application_id": "fixture-app", "token": "fixture-token",
                    "member": member or {"nick": "Original reviewer", "user": {"id": "1", "username": "reviewer"}},
-                   "data": {"custom_id": custom_id, "component_type": 2}}
+                   "data": {"custom_id": custom_id, "component_type": component_type}}
+        if values is not None:
+            payload["data"]["values"] = values
         body = json.dumps(payload).encode()
         timestamp = str(int(time.time()))
         signature = self.signer.sign(timestamp.encode() + body).hex()
@@ -140,10 +142,17 @@ class SourceReviewWireTests(unittest.TestCase):
         self.assertEqual(lineage["boundary_plan"], self.candidate["boundary_plan"])
 
         # A repeated approval AND a losing reject must keep the original winner.
-        for decision in (source_review.DECISION_APPROVE, source_review.DECISION_REJECT):
+        # Reject is two-step: the button renders the reason select (type 7);
+        # only the select submission (component_type 3 + chosen value) reaches
+        # the worker and can become the losing attempted decision.
+        for decision, ctype, values in (
+            (source_review.DECISION_APPROVE, 2, None),
+            (source_review.DECISION_REJECT, 3, ["weak_moment"]),
+        ):
             self.patched.clear()
             cid = source_review.make_source_custom_id(decision, FP)
-            self.assertEqual(self.post_interaction(cid, {"user": {"username": "second reviewer"}}),
+            self.assertEqual(self.post_interaction(cid, {"user": {"username": "second reviewer"}},
+                                                   component_type=ctype, values=values),
                              (200, {"type": 6}))
             self.assertTrue(self.patched.wait(3))
         self.assertEqual(len(self.reviews), 1)
@@ -154,6 +163,42 @@ class SourceReviewWireTests(unittest.TestCase):
         self.assertIn("00:00.125", json.dumps(self.outbound[-1]))
         self.assertIn("00:08.625", json.dumps(self.outbound[-1]))
         self.assertEqual(self.store.library, [])
+
+    def test_reject_button_renders_reason_select_then_reason_persists_with_no_job(self):
+        self.release_lookup.set()
+        reject = source_review.make_source_custom_id(source_review.DECISION_REJECT, FP)
+
+        # Step 1: the Reject button renders the structured reason select on the
+        # card (type 7) and persists nothing — no review, no phantom job.
+        status, reply = self.post_interaction(reject)
+        self.assertEqual(reply["type"], 7)
+        select = reply["data"]["components"][0]["components"][0]
+        self.assertEqual(select["type"], 3)
+        self.assertEqual(select["custom_id"], reject)
+        self.assertEqual(len(select["options"]), 3)
+        self.assertEqual(self.reviews, {})
+        self.assertEqual(self.store.jobs, {})
+
+        # Step 2: the chosen reason reaches the worker; the decision persists
+        # with rejection_category, renders the reason on the card, and creates
+        # NO acquisition job (reject never queues work).
+        self.assertFalse(self.lookup_started.is_set())
+        self.assertEqual(self.post_interaction(reject, values=["off_theme"], component_type=3),
+                         (200, {"type": 6}))
+        self.assertTrue(self.patched.wait(3))
+        self.assertEqual(self.reviews[FP]["decision"], source_review.DECISION_REJECT)
+        self.assertEqual(self.reviews[FP]["rejection_category"], "off_theme")
+        self.assertEqual(self.store.jobs, {})
+        self.assertIn(source_review.SOURCE_REJECT_REASONS["off_theme"],
+                      json.dumps(self.outbound[-1]))
+
+    def test_reject_select_with_unknown_reason_is_refused_without_persistence(self):
+        self.release_lookup.set()
+        reject = source_review.make_source_custom_id(source_review.DECISION_REJECT, FP)
+        status, reply = self.post_interaction(reject, values=["bogus"], component_type=3)
+        self.assertEqual(reply, {"type": 4, "data": {"content": "Unknown reject reason.", "flags": 64}})
+        self.assertEqual(self.reviews, {})
+        self.assertEqual(self.store.jobs, {})
 
     def test_legacy_eleven_character_source_id_is_private_rejection_not_worker_ack(self):
         status, reply = self.post_interaction("sa_ZaIDxlEuKpc")

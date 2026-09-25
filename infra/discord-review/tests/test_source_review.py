@@ -16,10 +16,12 @@ from source_review import (  # noqa: E402
     DECISION_HOLD,
     DECISION_REJECT,
     DECISION_CODES,
+    SOURCE_REJECT_REASONS,
     make_source_custom_id,
     parse_source_custom_id,
     format_source_embed,
     format_source_buttons,
+    reject_reason_update_payload,
     source_decision_payload,
     decided_embed,
     class_color,
@@ -389,6 +391,56 @@ class TestAuthoritativeCandidateQueue(unittest.TestCase):
             cand = sr.fetch_candidate_by_fingerprint("http://sb", "k", "h" * 64)
         self.assertEqual(cand["boundary_plan"]["recommended_clip_start"], 2.0)
         self.assertEqual(cand["boundary_plan"]["recommended_clip_end"], 14.0)
+
+
+class TestRejectReasonFlow(unittest.TestCase):
+    """Reject is a two-step decision: button renders the reason select on the
+    card (type 7), the submission carries the chosen reason to the worker,
+    the reason persists as rejection_category and renders on the card."""
+
+    def test_reason_select_is_card_update_with_three_options(self):
+        rows = [{"type": 1, "components": [
+            {"type": 2, "style": 5, "label": "Open Source", "url": "https://x"}]}]
+        p = reject_reason_update_payload("a" * 64, rows)
+        self.assertEqual(p["type"], 7)  # card UPDATE, not ephemeral
+        sel = p["data"]["components"][0]["components"][0]
+        self.assertEqual(sel["type"], 3)
+        self.assertEqual(parse_source_custom_id(sel["custom_id"])["decision"],
+                         DECISION_REJECT)
+        self.assertEqual({o["value"] for o in sel["options"]},
+                         set(SOURCE_REJECT_REASONS))
+        self.assertEqual(len(sel["options"]), 3)
+        # Existing buttons stay clickable below the select.
+        self.assertEqual(p["data"]["components"][1], rows[0])
+
+    def test_reason_select_without_existing_rows(self):
+        p = reject_reason_update_payload("a" * 64, None)
+        self.assertEqual(p["type"], 7)
+        self.assertEqual(len(p["data"]["components"]), 1)
+
+    def test_reject_payload_carries_reason_category(self):
+        p = source_decision_payload(_candidate(), DECISION_REJECT, "bryan#1",
+                                    category="off_theme")
+        self.assertEqual(p["decision"], DECISION_REJECT)
+        self.assertEqual(p["rejection_category"], "off_theme")
+
+    def test_approve_payload_never_carries_category(self):
+        p = source_decision_payload(_candidate(), DECISION_APPROVE, "bryan#1",
+                                    category="off_theme")
+        self.assertIsNone(p["rejection_category"])
+
+    def test_decided_embed_shows_reason_for_reject(self):
+        e = decided_embed(DECISION_REJECT, "bryan#1", created=True, category="off_theme")
+        reason = [f for f in e["fields"] if f["name"] == "Reason"]
+        self.assertEqual(reason[0]["value"], SOURCE_REJECT_REASONS["off_theme"])
+
+    def test_decided_embed_no_reason_field_for_approve(self):
+        e = decided_embed(DECISION_APPROVE, "bryan#1", created=True, category="weak_moment")
+        self.assertFalse([f for f in e["fields"] if f["name"] == "Reason"])
+
+    def test_decided_embed_reject_without_category_omits_reason(self):
+        e = decided_embed(DECISION_REJECT, "bryan#1", created=True, category=None)
+        self.assertFalse([f for f in e["fields"] if f["name"] == "Reason"])
 
 
 if __name__ == "__main__":
