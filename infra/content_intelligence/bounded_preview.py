@@ -104,9 +104,14 @@ def fetch_bounded_preview(url: str, *, end: float = 3.0, start: float = 0.0,
     # no bytes to analyze. Callers MUST call cleanup() once analysis finishes.
     retain_tmp = False
     try:
+        # Reddit advertises HLS audio groups whose first segment can be invalid
+        # even while its native HTTPS DASH audio/video renditions are playable.
+        # Prefer those existing direct renditions; still transfer only the range.
+        media_format = ("worstvideo[protocol=https]+worstaudio[protocol=https]/worstvideo+worstaudio/worst"
+                        if provider == "reddit" else "worstvideo+worstaudio/worst")
         cmd = [
             "yt-dlp", "--no-playlist", "--no-update",
-            "-f", "worstvideo+worstaudio/worst",
+            "-f", media_format,
             "--download-sections", f"*{start}-{end}",
             "--force-keyframes-at-cuts",
             *_auth_args(),

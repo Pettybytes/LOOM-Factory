@@ -56,6 +56,19 @@ def _decide_from(strength_ends):
 
 
 class EscalationTests(unittest.TestCase):
+    def test_reddit_prefers_playable_direct_renditions_without_unbounding_transfer(self):
+        from types import SimpleNamespace
+        commands = []
+        def runner(cmd, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=1, stderr='fixture no transfer')
+        fetch_bounded_preview('https://www.reddit.com/r/funny/comments/example/',
+                              start=18, end=40, runner=runner)
+        cmd = commands[0]
+        self.assertTrue(cmd[cmd.index('-f') + 1].startswith(
+            'worstvideo[protocol=https]+worstaudio[protocol=https]/'))
+        self.assertEqual(cmd[cmd.index('--download-sections') + 1], '*18.0-30.0')
+
     def _record(self):
         r = _Record(cid="esc1")
         r.canonical_url = "https://www.youtube.com/watch?v=esc1"
