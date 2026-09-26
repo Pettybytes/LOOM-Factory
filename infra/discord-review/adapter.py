@@ -103,10 +103,15 @@ CLIP_REVIEW_CHANNEL_NAME = _env("LOOM_CLIP_REVIEW_CHANNEL", "clip-review")
 # Manual Intelligence Intake V1.2 — ingress channel is distinct from #source-review:
 # supplied media is dropped here, review candidates still appear in #source-review.
 MANUAL_INTAKE_CHANNEL_NAME = _env("LOOM_MANUAL_INTAKE_CHANNEL", "manual-intake")
+# Bound by ID (preferred): the display name is decorative and may carry an emoji.
+MANUAL_INTAKE_CHANNEL_ID = _env("LOOM_MANUAL_INTAKE_CHANNEL_ID", "")
 MANUAL_MEDIA_COMMAND = "intake-media"           # MESSAGE context-menu command
 MANUAL_MEDIA_TENANT_DEFAULT = _env("LOOM_MANUAL_INTAKE_TENANT", "dreemzy")
 MANUAL_MEDIA_FOLDER_ID = _env("LOOM_GHL_INTAKE_FOLDER_ID", "")
-SOURCE_REVIEW_CHANNEL_ID = _env("LOOM_SOURCE_REVIEW_CHANNEL_ID", "1550207989569421444")
+# Post-Content-Intelligence manual candidates are CONTENT/CANDIDATE review, not
+# source-acquisition review: they must never land in #source-review. Reuse the
+# existing clip-review destination (or an explicit override id).
+MANUAL_REVIEW_CHANNEL_ID = _env("LOOM_MANUAL_REVIEW_CHANNEL_ID", "")
 MANUAL_MEDIA_MAX_BYTES = int(_env("LOOM_MANUAL_MEDIA_MAX_BYTES", str(100 * 1024 * 1024)))
 PROXY_MAX_BYTES     = 23 * 1024 * 1024  # Discord upload ceiling (Boosts raise it; stay safe)
 EDITOR_BASE_URL     = _env("LOOM_EDITOR_BASE_URL", "http://localhost:5173")  # dev scaffold (legacy); critical path = external HTTPS /edit
@@ -1351,12 +1356,18 @@ def resolve_manual_intake_channel(create: bool = True) -> str:
     """
     if _manual_channel_cache["id"] and (time.time() - _manual_channel_cache["ts"]) < 600:
         return _manual_channel_cache["id"]
+    if MANUAL_INTAKE_CHANNEL_ID:
+        # Operator-bound channel id: never depends on the display name.
+        _manual_channel_cache.update(id=MANUAL_INTAKE_CHANNEL_ID, ts=time.time())
+        return MANUAL_INTAKE_CHANNEL_ID
     status, guilds = http_json("GET", f"{DISCORD_API}/users/@me/guilds", DISCORD_BOT_TOKEN)
     for g in guilds or []:
         gid = g.get("id")
         s2, channels = http_json("GET", f"{DISCORD_API}/guilds/{gid}/channels", DISCORD_BOT_TOKEN)
         for ch in channels or []:
-            if ch.get("name") == MANUAL_INTAKE_CHANNEL_NAME and ch.get("type") == 0:
+            cname = ch.get("name") or ""
+            if ch.get("type") == 0 and (cname == MANUAL_INTAKE_CHANNEL_NAME
+                                        or cname.startswith(MANUAL_INTAKE_CHANNEL_NAME)):
                 _manual_channel_cache.update(id=ch["id"], ts=time.time())
                 return ch["id"]
         if create:
@@ -1372,6 +1383,19 @@ def resolve_manual_intake_channel(create: bool = True) -> str:
                 print(f"[manual-intake] created #{MANUAL_INTAKE_CHANNEL_NAME} {created['id']}", flush=True)
                 return created["id"]
     raise RuntimeError(f"Channel #{MANUAL_INTAKE_CHANNEL_NAME} not found and could not be created")
+
+
+def manual_review_channel_id() -> str:
+    """Destination for post-Content-Intelligence MANUAL candidates.
+
+    Manually supplied media has already been discovered AND acquired by the
+    operator, so it is content/candidate review — never source-acquisition
+    review. Reuses the existing clip-review destination rather than inventing
+    a channel; an explicit id override wins when configured.
+    """
+    if MANUAL_REVIEW_CHANNEL_ID:
+        return MANUAL_REVIEW_CHANNEL_ID
+    return resolve_clip_review_channel()
 
 
 # ---------------------------------------------------------------------------
@@ -2454,12 +2478,14 @@ class Handler(BaseHTTPRequestHandler):
                     SUPABASE_URL, SUPABASE_KEY, payload["duplicate_fingerprint"])
                 if cand:
                     plan = result.get("boundary_plan") or {}
-                    self._post_source_card(SOURCE_REVIEW_CHANNEL_ID, cand)
+                    # Content/candidate review, NOT source-acquisition review.
+                    review_channel = manual_review_channel_id()
+                    self._post_source_card(review_channel, cand)
                     lines.append(f"✅ Content Intelligence: window "
                                  f"{plan.get('recommended_clip_start')}–"
                                  f"{plan.get('recommended_clip_end')}s "
                                  f"({result.get('boundary_provenance')}) → review card in "
-                                 f"<#{SOURCE_REVIEW_CHANNEL_ID}>")
+                                 f"<#{review_channel}>")
                 else:
                     lines.append("⚠️ CI produced a candidate but its durable row was not found")
             else:
