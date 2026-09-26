@@ -154,6 +154,19 @@ def assess_market_demand(record: Any, *, now: _dt.datetime | None = None,
         "velocity_latest_observation": velocity.latest_obs or None,
         "velocity_unavailable_reason": velocity.reason or None,
     })
+    # EVIDENCE COVERAGE (additive; the score, route and thresholds above are
+    # unchanged). A market score is only a MEASUREMENT when a real demand volume was
+    # observed. Without one, `score` is an absence of evidence, not a measurement of
+    # zero performance — consumers must be able to tell those apart.
+    _fields = {"views": ev.views is not None, "likes": ev.likes is not None,
+               "comments": ev.comments is not None, "shares": ev.shares is not None,
+               "saves": ev.saves is not None}
+    evidence.update({
+        "evidence_fields": _fields,
+        "unavailable_metrics": sorted(k for k, present in _fields.items() if not present),
+        "evidence_coverage": round(sum(1 for p in _fields.values() if p) / len(_fields), 4),
+        "evidence_available": volume is not None,
+    })
     if is_reddit:
         evidence.update(lifetime_average_score_per_hour=lifetime_score,
                         lifetime_average_comments_per_hour=lifetime_comments)

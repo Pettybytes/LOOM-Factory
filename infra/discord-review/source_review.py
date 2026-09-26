@@ -250,13 +250,28 @@ def format_mining_embed(c, base):
     add("Identity", f"Tenant: {c.get('tenant_id')} · {c.get('platform')}\nCreator: {c.get('creator_channel_identity')}\nTitle: {c.get('title')}\nIntent: {me.get('intent')}")
     funnel = context.get("funnel") or {}
     add("Funnel", " · ".join(f"{k.replace('_', ' ')}: {v}" for k,v in funnel.items()) or "See recorded run evidence")
+    # Market is only a MEASUREMENT when real demand evidence was observed. With no
+    # evidence the score is an absence, not a zero result — rendering "0/100"
+    # would state poor performance the data never showed.
+    coverage = market.get("evidence_coverage")
+    fields_seen = market.get("evidence_fields") or {}
+    if market.get("evidence_available") is False:
+        market_line = ("Market **unavailable** — no market evidence observed "
+                       "(not a zero score)")
+    else:
+        market_line = f"Market **{c.get('market_opportunity_score')} / 100**"
+    if isinstance(coverage, (int, float)) and fields_seen:
+        market_line += (f" · Coverage: "
+                        f"{sum(1 for v in fields_seen.values() if v)}/{len(fields_seen)}")
+    if market.get("provenance"):
+        market_line += f" · Provenance: {market.get('provenance')}"
     add("Market evidence", "\n".join([
         f"Views/plays {val('views')} · Likes {val('likes')} · Comments {val('comments')}",
         f"Native demand {val('demand_volume')} ({val('demand_metric')})",
         f"Shares {val('shares')} · Saves {val('saves')} · Age {val('age_hours')} h",
         f"Lifetime avg VPH {val('lifetime_average_vph')} · Observed velocity/h {val('observed_velocity_per_hour')}",
         f"Engagement {val('engagement')} · Outlier {val('outlier_multiple')} · Route {val('route')}",
-        f"Market **{c.get('market_opportunity_score')} / 100**"]))
+        market_line]))
     assessment = c.get("media_assessment") or {}
     _reasons = [r.get("message") for r in (assessment.get("reasons") or [])
                 if isinstance(r, dict) and r.get("message")]
@@ -486,6 +501,36 @@ def format_manual_not_recommended_embed(c, base: dict[str, Any]) -> dict[str, An
     fields.append({"name": "Outcome", "value": outcome[:256], "inline": True})
     if reason:
         fields.append({"name": "Reason", "value": f"`{reason}`"[:256], "inline": False})
+
+    # Available source engagement evidence, from the durable candidate evidence or
+    # the ingress-captured source metadata. One missing field must NOT hide the
+    # others, and an unmeasured field stays Unavailable rather than becoming 0.
+    evidence = (c.get("moment_evidence") or {}).get("market_evidence") or {}
+    lineage = (c.get("moment_evidence") or {}).get("lineage") or {}
+    captured = lineage.get("source_metadata") or {}
+    captured_metrics = captured.get("metrics") or {}
+
+    def _ev(key: str) -> str:
+        value = evidence.get(key)
+        if value is None:
+            value = captured_metrics.get(key)
+        return "Unavailable" if value is None else str(value)
+
+    if evidence or captured_metrics:
+        published = captured.get("publication_timestamp") or ""
+        published_line = "Published Unavailable"
+        if published:
+            try:
+                import datetime as _dt
+                _p = _dt.datetime.fromisoformat(str(published).replace("Z", "+00:00"))
+                _age = (_dt.datetime.now(_dt.timezone.utc) - _p).total_seconds() / 3600.0
+                published_line = f"Published {_p.strftime('%Y-%m-%d')} · Age {_age:.1f} h"
+            except (ValueError, AttributeError):
+                published_line = f"Published {str(published)[:10]}"
+        fields.append({"name": "Source engagement", "value": "\n".join([
+            f"Views/plays {_ev('views')} · Likes {_ev('likes')} · Comments {_ev('comments')}",
+            f"Shares {_ev('shares')} · Saves {_ev('saves')}",
+            published_line])[:512], "inline": False})
 
     # Honest availability, read from the row itself. `has_real` is true only when a
     # score was genuinely measured, so a coerced 0 cannot masquerade as a value.

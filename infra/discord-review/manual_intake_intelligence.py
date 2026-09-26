@@ -94,14 +94,22 @@ def manual_brief(tenant_id: str, *, profile_id: str = MANUAL_PROFILE_ID,
 
 
 def build_record(submission: dict[str, Any], probe: dict[str, Any],
-                 *, brief: Any, media_url: str) -> Any:
-    """A DiscoveryRecord for supplied media, carrying the durable media pointer."""
+                 *, brief: Any, media_url: str,
+                 source_metadata: dict[str, Any] | None = None) -> Any:
+    """A DiscoveryRecord for supplied media, carrying the durable media pointer.
+
+    ``source_metadata`` is the engagement evidence captured at ingress through the
+    existing free extractor path. Only genuinely measured values are merged; a
+    platform that does not expose a field leaves it ABSENT, which the market layer
+    reads as UNKNOWN. Nothing is fabricated and no default zero is invented.
+    """
     from discovery.discovery_record import DiscoveryRecord
     import hashlib
 
     url = submission["source_url"]
     platform = submission.get("platform") or ""
     fingerprint = submission["duplicate_fingerprint"]
+    captured = source_metadata or {}
     metrics = {
         "content_type": "clip",
         "media_type": "video",
@@ -113,13 +121,18 @@ def build_record(submission: dict[str, Any], probe: dict[str, Any],
         "supplied_media_url": media_url,
         "media_sha256": probe.get("sha256"),
     }
+    for key, value in (captured.get("metrics") or {}).items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            continue
+        metrics[key] = int(value)
     return DiscoveryRecord(
         tenant_id=submission["tenant_id"], profile_id=brief.profile_id,
         source_brief_version=brief.version, platform=platform,
         canonical_url=url, platform_content_id=submission.get("platform_content_id") or "",
         creator_channel_identity=submission.get("submitter") or "manual",
         creator_channel_url="", title=(submission.get("reviewer_note") or url)[:200],
-        publication_timestamp=None, metric_observation_timestamp=None,
+        publication_timestamp=(captured.get("publication_timestamp") or None),
+        metric_observation_timestamp=None,
         observed_metrics=metrics, metric_history=[],
         discovery_query="", discovery_reason="operator-supplied media via Manual Intake",
         provenance_rights_evidence="operator-supplied media; source-review only; no acquisition",
@@ -139,11 +152,19 @@ def _provider():
                           max_output_tokens=3500)
 
 
+def _submission_source_metadata(submission: dict[str, Any]) -> dict[str, Any]:
+    """Engagement evidence captured at ingress on the durable submission row."""
+    reference = submission.get("media_reference") or {}
+    captured = reference.get("source_metadata") if isinstance(reference, dict) else None
+    return captured if isinstance(captured, dict) else {}
+
+
 def run_manual_intelligence(*, submission: dict[str, Any], media_path: str,
                             probe: dict[str, Any], media_url: str,
                             brief: Any | None = None, provider: Any = None,
                             store: Any = None, human_window: tuple[float | None, float | None] = (None, None),
-                            cost_ceiling_usd: float = 0.05) -> dict[str, Any]:
+                            cost_ceiling_usd: float = 0.05,
+                            source_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     """Invoke the EXISTING Content Intelligence runtime on supplied media.
 
     Returns a summary with the candidate id/status and boundary provenance, or
@@ -159,11 +180,16 @@ def run_manual_intelligence(*, submission: dict[str, Any], media_path: str,
         from content_intelligence.store_supabase import ContentStoreSupabase
         store = ContentStoreSupabase()
 
-    record = build_record(submission, probe, brief=brief, media_url=media_url)
-    # Supplied media has no platform publication timestamp, and an empty string
-    # is not a valid timestamptz — NULL is the honest representation. The metric
-    # observation timestamp is genuinely "now" (we probed the media now).
-    record.publication_timestamp = None
+    source_metadata = source_metadata or _submission_source_metadata(submission)
+    record = build_record(submission, probe, brief=brief, media_url=media_url,
+                          source_metadata=source_metadata)
+    # The captured source metadata carries the REAL platform publication timestamp
+    # whenever the extractor proved one. Only when it is genuinely absent does the
+    # timestamp stay NULL — and an empty string is not a valid timestamptz, so NULL
+    # remains the honest representation. The metric observation timestamp is
+    # genuinely "now" (we probed the media now).
+    if not record.publication_timestamp:
+        record.publication_timestamp = None
     if not record.metric_observation_timestamp:
         record.metric_observation_timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -218,7 +244,8 @@ def run_manual_intelligence(*, submission: dict[str, Any], media_path: str,
     return enrich_manual_candidate(
         submission=submission, probe=probe, media_url=media_url, human_window=human_window,
         boundary_plan=plan, boundary_provenance=boundary_provenance, candidate=cand,
-        store=store, summary=(result.summary() if hasattr(result, "summary") else {}))
+        store=store, source_metadata=source_metadata,
+        summary=(result.summary() if hasattr(result, "summary") else {}))
 
 
 def enrich_manual_candidate(*, submission: dict[str, Any], probe: dict[str, Any],
@@ -227,6 +254,7 @@ def enrich_manual_candidate(*, submission: dict[str, Any], probe: dict[str, Any]
                             boundary_plan: dict[str, Any] | None = None,
                             boundary_provenance: str | None = None,
                             candidate: Any = None, store: Any = None,
+                            source_metadata: dict[str, Any] | None = None,
                             summary: dict[str, Any] | None = None) -> dict[str, Any]:
     """Apply boundary provenance + lineage to the DURABLE candidate row.
 
@@ -262,6 +290,13 @@ def enrich_manual_candidate(*, submission: dict[str, Any], probe: dict[str, Any]
         "media_already_acquired": True,
         "boundary_provenance": boundary_provenance,
     }
+    captured = source_metadata or _submission_source_metadata(submission)
+    if captured:
+        # Durable lineage: the raw source evidence travels WITH the candidate and
+        # Bryan's later decision is keyed to the same row, so the future sourcing
+        # engine can relate source characteristics to what he actually approved —
+        # including the honest list of what the platform did not expose.
+        lineage["source_metadata"] = captured
     stage = "persist_enrichment"
     try:
         # The pipeline assigns its own candidate fingerprint (per materialized

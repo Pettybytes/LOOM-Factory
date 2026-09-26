@@ -2480,6 +2480,18 @@ class Handler(BaseHTTPRequestHandler):
             # Retry safety: if these exact bytes were already ingested for this
             # source+tenant, reuse the durable copy instead of uploading twice.
             _cv = manual_intake.validate_and_canonicalize(parsed["url"])
+            # Capture source engagement evidence ONCE, through the existing proven
+            # free extractor path (metadata-only probe; no download, no cookies, no
+            # paid provider). Enrichment only: a field the platform does not expose
+            # through that path stays absent (unknown), never zero, and nothing here
+            # can gate, filter or reject the operator's submission.
+            stage = "platform_metadata"
+            source_metadata = manual_media_intake.fetch_source_metadata(
+                _cv["canonical_url"], _cv.get("platform", ""))
+            print(f"[manual-intake] source metadata available={source_metadata.get('available')} "
+                  f"unavailable={source_metadata.get('unavailable')} "
+                  f"provenance={source_metadata.get('provenance')}", flush=True)
+            stage = "durable_store_ghl"
             reused = manual_media_intake.find_existing_media(
                 SUPABASE_URL, SUPABASE_KEY, _cv["platform"], _cv["canonical_url"],
                 tenant, probe["sha256"])
@@ -2497,7 +2509,8 @@ class Handler(BaseHTTPRequestHandler):
                 content_format=parsed.get("content_format") or "hold_unassigned",
                 submitter=submitter, media_reference={**durable, "filename": safe_name},
                 probe=probe, human_window=(parsed.get("start_s"), parsed.get("end_s")),
-                reviewer_note=(parsed.get("note") or "")[:500], active_tenants=active)
+                reviewer_note=(parsed.get("note") or "")[:500], active_tenants=active,
+                source_metadata=source_metadata)
             row, created = manual_media_intake.persist_media_submission(
                 SUPABASE_URL, SUPABASE_KEY, payload)
             persisted = True
@@ -2507,7 +2520,8 @@ class Handler(BaseHTTPRequestHandler):
             result = manual_intake_intelligence.run_manual_intelligence(
                 submission=submission, media_path=local_path, probe=probe,
                 media_url=durable_url,
-                human_window=(parsed.get("start_s"), parsed.get("end_s")))
+                human_window=(parsed.get("start_s"), parsed.get("end_s")),
+                source_metadata=source_metadata)
             lines = [f"📥 **Ingested** · {payload['platform']} · tenant `{tenant or 'unassigned'}` "
                      f"· submission {'created' if created else 'already existed'}",
                      f"source {payload['source_url']}",

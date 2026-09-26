@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import tempfile
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -194,6 +195,104 @@ def resolve_source_url(url: str) -> dict[str, Any]:
     return manual_intake.validate_and_canonicalize(url)
 
 
+# Canonical metric -> (extractor field, key written into observed_metrics). The
+# written key is the name `content_intelligence.platform_metrics` actually reads for
+# that platform, so the existing market policy consumes the capture unchanged.
+_YTDLP_SOURCES: dict[str, tuple[str, str]] = {
+    "views": ("view_count", "views"),
+    "likes": ("like_count", "likes"),
+    "comments": ("comment_count", "comments"),
+    "shares": ("repost_count", "shares"),
+    "saves": ("save_count", "saves"),
+}
+
+# Reddit expresses reach as a NATIVE score, never views, and its market policy reads
+# `score` / `num_comments`. Emitting the generic keys there would silently drop the
+# same numbers, and inventing views would fabricate evidence.
+_PLATFORM_KEY_OVERRIDES: dict[str, dict[str, tuple[str, str] | None]] = {
+    "reddit": {"views": None, "shares": None, "saves": None,
+               "likes": ("like_count", "score"),
+               "comments": ("comment_count", "num_comments")},
+}
+
+ENGAGEMENT_KEYS = ("views", "likes", "comments", "shares", "saves")
+
+
+def fetch_source_metadata(url: str, platform: str = "") -> dict[str, Any]:
+    """Source engagement metadata via the EXISTING free extractor path.
+
+    Reuses the acquisition lane's already-proven bounded metadata probe
+    (``ytdlp_adapter.build_probe_command``: metadata only, ``--skip-download``, no
+    cookies, no auth, no download, no paid provider). Returns canonical metrics plus
+    the provider's own raw fields for provenance.
+
+    NEVER raises and NEVER fabricates: a field the platform does not expose through
+    this path is simply absent, which every downstream consumer reads as UNKNOWN —
+    never as zero performance. Enrichment only; nothing here can reject an asset.
+    """
+    unavailable_via_path = "UNAVAILABLE VIA CURRENT PATH"
+    empty = {"metrics": {}, "raw": {}, "publication_timestamp": None,
+             "available": [], "unavailable": [], "provenance": unavailable_via_path}
+    try:
+        ya = _acq("ytdlp_adapter")
+        meta = json.loads(ya.run_ytdlp_command(
+            ya.build_probe_command(url), timeout=120.0) or "{}")
+    except Exception:  # noqa: BLE001 — enrichment must never block intake
+        return empty
+    if not isinstance(meta, dict):
+        return empty
+    if meta.get("_type") in ("playlist", "multi_video"):
+        entries = [e for e in (meta.get("entries") or []) if isinstance(e, dict)]
+        if len(entries) == 1:
+            meta = entries[0]
+    if not meta.get("id"):
+        return empty
+
+    sources: dict[str, tuple[str, str] | None] = dict(_YTDLP_SOURCES)
+    sources.update(_PLATFORM_KEY_OVERRIDES.get((platform or "").lower(), {}))
+
+    metrics: dict[str, int] = {}
+    measured: list[str] = []
+    unsupported: list[str] = []
+    for canonical in ENGAGEMENT_KEYS:
+        source = sources.get(canonical)
+        if source is None:
+            unsupported.append(canonical)
+            continue
+        source_key, output_key = source
+        value = meta.get(source_key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            continue
+        metrics[output_key] = int(value)
+        measured.append(canonical)
+
+    published = None
+    ts = meta.get("timestamp")
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0:
+        published = datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+    else:
+        upload_date = str(meta.get("upload_date") or "")
+        if len(upload_date) == 8 and upload_date.isdigit():
+            published = (f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
+                         "T00:00:00+00:00")
+
+    raw = {k: meta.get(k) for k in
+           ("view_count", "like_count", "comment_count", "repost_count", "save_count",
+            "score", "num_comments", "play_count", "timestamp", "upload_date")
+           if meta.get(k) is not None}
+    return {
+        "metrics": metrics,
+        "raw": raw,
+        "publication_timestamp": published,
+        "creator": str(meta.get("uploader") or meta.get("channel") or ""),
+        "available": sorted(measured),
+        "unavailable": sorted(k for k in ENGAGEMENT_KEYS
+                              if sources.get(k) is not None and k not in measured),
+        "unsupported": sorted(unsupported),
+        "provenance": "local:yt-dlp metadata probe",
+    }
+
+
 def acquire_url_media(url: str, *, out_dir: str,
                      max_bytes: int = MAX_URL_BYTES) -> tuple[str, dict[str, Any]]:
     """Mode B: source URL -> EXISTING resolver -> EXISTING local downloader -> file.
@@ -289,25 +388,33 @@ def build_media_submission(*, url: str, destination: str, content_format: str,
                            submitter: str, media_reference: dict[str, Any],
                            probe: dict[str, Any], human_window: tuple[float | None, float | None],
                            reviewer_note: str = "",
-                           active_tenants: set[str] | None = None) -> dict[str, Any]:
+                           active_tenants: set[str] | None = None,
+                           source_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build the durable submission payload, reusing the V1 contract verbatim.
 
     ``origin='manual_media'`` records that the operator supplied the bytes;
     ``boundary_provenance`` records who chose the window (the human, when given).
+    ``source_metadata`` (when captured) is embedded in ``media_reference`` so the
+    source engagement evidence is durable at the SUBMISSION level — it therefore
+    survives even when Content Intelligence later filters the asset before any
+    candidate row exists. JSONB, so no migration is required.
     """
     payload = manual_intake.build_submission(
         url=url, destination=destination, content_format=content_format,
         submitter=submitter, time_start_s=human_window[0], time_end_s=human_window[1],
         reviewer_note=reviewer_note, active_tenants=active_tenants)
     start_s, end_s = human_window
+    reference = {**media_reference,
+                 "duration_seconds": probe.get("duration_seconds"),
+                 "width": probe.get("width"), "height": probe.get("height"),
+                 "sha256": probe.get("sha256"),
+                 "size_bytes": probe.get("size_bytes"),
+                 "has_audio": probe.get("has_audio")}
+    if source_metadata:
+        reference["source_metadata"] = source_metadata
     payload.update({
         "origin": "manual_media",
-        "media_reference": {**media_reference,
-                            "duration_seconds": probe.get("duration_seconds"),
-                            "width": probe.get("width"), "height": probe.get("height"),
-                            "sha256": probe.get("sha256"),
-                            "size_bytes": probe.get("size_bytes"),
-                            "has_audio": probe.get("has_audio")},
+        "media_reference": reference,
         "boundary_provenance": ("manual_intake" if start_s is not None or end_s is not None
                                 else None),
     })
