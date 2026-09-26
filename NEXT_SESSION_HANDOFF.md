@@ -1,134 +1,139 @@
 # LOOM — NEXT SESSION HANDOFF
 
-**Authoritative closeout: September 25, 2026, America/Detroit.** Supersedes the September 22 mining handoff. No further discovery, scraping, media analysis, provider inference, or feature work is authorized by this closeout. Start the next engineering task only on Bryan's direction.
+**Authoritative closeout: September 25, 2026, America/Detroit.** Supersedes the
+September 25 morning closeout (`535cb72`). Session closed on Bryan's directive:
+no further mining, inspections, repairs, acceptance clicks, or implementation.
+No approvals were impersonated and no acquisition/download was executed.
 
-## Final repository state
+## 1. Current git state
 
 - Repository: `/Users/user/Desktop/LOOM-Factory`, branch `master`.
-- Final production-code HEAD: `047c17e103f35f73c977b8c273f7eb8e0044f14a`, fetched and equal to `origin/master` before this documentation-only closeout.
-- **Final closeout HEAD is the commit containing this handoff**: resolve with `git rev-parse HEAD`; confirm it equals `git rev-parse origin/master`. A document cannot contain the hash of its own commit; the exact pushed closeout hash is recorded in the final chat and workspace checkpoint.
-- Production changes are committed and pushed. Only this handoff changes during closeout; no tests rerun, no production code edited.
-- Worktree must be clean except `?? infra/supabase/038_loom_editor_session_tokens.sql`. Preserve it untracked, unstaged, unmodified, uncommitted. SHA1: `3da12826ef96dd05ce089b490ee490e66baf01c0`. Never blanket-stage.
+- **HEAD == `origin/master` == `01adc6f678ca38db92215b984a93f81957005ebb`** (verified 2026-09-26T00:10Z).
+- Working tree clean except `?? infra/supabase/038_loom_editor_session_tokens.sql` — preserved untracked, unstaged, unmodified. SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0` (re-verified at closeout).
 
-### Commits created today
-
-| Commit | Change |
+| Commit / tag | Meaning |
 |---|---|
-| `e8d15d6` | Durable source decisions, protected worker, retryable/idempotent pending handoff, card windows |
-| `bd1a5aa` | Tenant-isolated qualification, demand scoring correction, actual-media moments, advisory human review |
-| `3a4772d` | Playable Reddit native HTTPS streams instead of broken HLS audio |
-| `e52acb1` | First three live review-card receipts and runtime report |
-| `047c17e` | Size-bounded cached inspection proxies and YouTube/TikTok/Kick receipts |
-| this commit | Consolidated six-platform closeout and next-model recommendation |
+| `535cb7228094563f3d1bfe7825c7b5c4724ca72d` | Astra six-platform successful baseline (beach-lane closeout) |
+| `6028fa3b080af39e4617cc217f541ef5cc0a2da1` | Reject-reason implementation (structured reject select + persistence) |
+| `b68ef1afc5a8c89e01c6f2afaf1ad46176da2152` | Revert of `6028fa3` (Bryan's rollback directive) |
+| tag `segment5-reject-reasons` → `6028fa3` | Preservation tag for the reverted feature — **do not alter or delete** |
+| `01adc6f678ca38db92215b984a93f81957005ebb` | New-lane run receipts (`SEGMENT5_NEW_LANES_20260925.md`) |
 
-## Successful product boundary — do not overclaim
+## 2. Current runtime state
 
-`platform discovery → actual-media inspection → useful moment window → preview/link/control card in Discord`
+- Adapter running under `supervise.sh` (pid 55111, listening `127.0.0.1:8090`,
+  health `status: ok` at closeout). Supervisor loop alive.
+- `LOOM_ACQUISITION_LIVE=0` confirmed in process env; health reports
+  `acquisition.live_runner: disabled`. **No acquisition/download executed at any point.**
+- Migration 040 applied — `loom_source_candidates`, `loom_source_reviews`,
+  `loom_acquisition_jobs` all live (verified HTTP 200 during this session).
+- `rejection_category` / `reviewer_instructions` columns **pre-existed via
+  migration 024** — the reverted reject-reason work used them but never changed
+  schema; no database rollback was needed or performed.
+- Zero DB rows were written by the reverted work (timestamp-verified:
+  0 rows created after 23:00Z on 2026-09-25 in all three tables).
 
-**Six of six platforms delivered at this boundary.** These are useful source options for human judgment, not six strict Grade-A/FIRE acceptances, final edited clips, or an unattended production scheduler. Execution included bounded public/native discovery, existing authenticated access, targeted fallback paths, and operator-run acceptance scripts. Reusable connectors/code are present; continuous autonomous six-platform operation is not independently proven by these receipts.
+## 3. Verified codeline
 
-Bryan narrowed the scope to native shorts/clips and the simple query **funny beach moments**. Twitch targets verified **India Love / indialovewestbrooks**. Kick now targets user-specified verified **deenthegreat**; the earlier unusable India Love Kick lane is superseded, not silently treated as successful. Accessible adult age-restricted content is allowed. Advisory review does not fabricate scores or bypass media/theme/event/completeness constraints.
+Astra's three repairs remain present at reverted HEAD `b68ef1a` (code-inspected this session):
+1. **Approve worker exception boundary** — reviewer parsing inside the worker
+   try-block; failures surface via staged traceback logging and card patch, never a silent HTTP 200.
+2. **Actual-media tenant/niche enforcement** — tenant-configured
+   `mining_requirements` gates (intent / required_concepts / creator_identities /
+   adults_only), no hardcoded lane logic.
+3. **Authoritative clip-window rendering** — cards render from persisted
+   `recommended_clip_start/end`, not start anchors.
 
-## Six-platform sourcing scoreboard
+Baseline suites re-ran on the reverted HEAD at **exact baseline counts** (do not rerun):
+Content **469** / Discovery **148** / Discord **255** / Acquisition **578** — all OK.
 
-Discord guild `1546266463663423518`, source-review channel `1550207989569421444`.
-Each message below was posted and read back with preview, canonical source link, exact window, and Approve/Reject/Hold controls. These are saved runtime proofs, not fresh platform checks during closeout.
+## 4. New-lane discovery run (advisory human-review mode, no code changes)
 
-| Platform / event | Discord message ID | Resolved window | Market / Content / Selection / Confidence | Status |
-|---|---|---|---|---|
-| Twitch — India Love smell reaction | [1553148840482316383](https://discord.com/channels/1546266463663423518/1550207989569421444/1553148840482316383) | 0–42s | 79 / 75 / 100 / 100 | Delivered, advisory |
-| Instagram — Michelle Lewin pig encounter | [1553149522069299362](https://discord.com/channels/1546266463663423518/1550207989569421444/1553149522069299362) | 0–13.26s | 0 / 82 / 18 / 52 | Delivered, advisory |
-| Reddit — German mother beach sketch | [1553150857460191414](https://discord.com/channels/1546266463663423518/1550207989569421444/1553150857460191414) | 0–6s | 68 / 85 / 90 / 20 | Delivered, advisory |
-| YouTube Short — grandma versus wave | [1553157702379773958](https://discord.com/channels/1546266463663423518/1550207989569421444/1553157702379773958) | 0–11.54s | 70 / 88 / 100 / 100 | Delivered, advisory |
-| TikTok — ESPN beach-hole prank/fall | [1553157715289841776](https://discord.com/channels/1546266463663423518/1550207989569421444/1553157715289841776) | 0–7.99s | 100 / 90 / 100 / 85 | Delivered, FIRE pass |
-| Kick — DeenTheGreat drive-through spill | [1553157757098655778](https://discord.com/channels/1546266463663423518/1550207989569421444/1553157757098655778) | 0–12s | 56 / 80 / 91 / 100 | Delivered, advisory |
+Tenant `dreemzy` / profile `segment5-newlanes-20260925`. Lanes: gym baddie
+fitness moments (YouTube/TikTok/Instagram/Reddit), TPain funny moments (Twitch),
+Blac Chyna funny moments (Kick). Creator identities verified natively:
+Twitch `tpain` id 117083340 (partner); Kick `blacchyna` id 121279976 (verified=true).
+All six cards read back live with Approve/Reject/Hold + Open Source controls.
+All six have durable candidate rows (`completeness_verdict=PASS` + `boundary_plan`).
 
-Canonical sources:
-- Twitch: https://twitch.tv/indialovewestbrooks/clip/CrackyNimbleCougarPanicVis-66qpQkXDIVcxvZl6
-- Instagram: https://www.instagram.com/p/BtwWkKKhF58/
-- Reddit: https://www.reddit.com/r/justgalsbeingchicks/comments/1k7ibff/
-- YouTube: https://www.youtube.com/shorts/b2n8VY5ZRqs
-- TikTok: https://www.tiktok.com/@espn/video/7515185025495633182
-- Kick: https://kick.com/deenthegreat/clips/clip_01M30MBE5PSHRXT4TZPV53C96C
+| Platform | Title | Creator | Source | Candidate ID | Card | Window | Market/Content/Selection/Conf | Preview |
+|---|---|---|---|---|---|---|---|---|
+| kick | "bgt" | blacchyna | https://kick.com/blacchyna/clips/clip_01M23FNSWAZ654Q6FMPQKZE4SG | `clip_01M23FNSWAZ654Q6FMPQKZE4SG` | [1553193671950598175](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193671950598175) | 0–59s | 41/88/84/100 | no embed still |
+| twitch | "shut it!" | tpain | https://twitch.tv/tpain/clip/HeadstrongLachrymoseStarKeyboardCat-w2Nr7rjNUMEcYAzO | `HeadstrongLachrymoseStarKeyboardCat-w2Nr7rjNUMEcYAzO` | [1553193680012058638](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193680012058638) | 0–23s | 29/62/65/92 | embed image |
+| instagram | "and i lala love itttt" | sommerray | https://www.instagram.com/reel/DbtmbQdxIrU/ | `DbtmbQdxIrU` | [1553193683854164012](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193683854164012) | 0–5s | 99/65/100/78 | no embed still |
+| youtube | "Fousey rizzes up Gym Baddie" | G7 Kick | https://www.youtube.com/shorts/jtVwshyzEh4 | `jtVwshyzEh4` | [1553193689483051099](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193689483051099) | 0–15s | 44/60/75/100 | embed image |
+| reddit | "Aura farming in front of gym baddie" | No-Run7148 | https://reddit.com/r/CalisthenicsCulture/comments/1pn0xoy/aura_farming_in_front_of_gym_baddie | `1pn0xoy` | [1553193693458997334](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193693458997334) | 0–12s | 0/65/14/20 | no embed still |
+| tiktok | "gym baddies 🍑" | kace.cooper | https://www.tiktok.com/@kace.cooper/video/7686198505819360545 | `7686198505819360545` | [1553193699104661515](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193699104661515) | 0–58s | 58/38/69/85 | no embed still |
 
-The link was verified via native/public playback for Reddit despite a plain HTTP client returning 403. Instagram required an existing authorized browser session; no exported cookies. Other latest-round canonical links returned HTTP 200 and playable media was inspected. Thumbnail/still evidence corresponds to each actual candidate. No approval was present on the six cards at their recorded readback; no new approval query or click was performed during closeout.
+Fingerprints (durable rows verified): kick `061952af…4b`, twitch `2a82b715…89`,
+instagram `f6848318…1a`, youtube `3f76bf2c…dc`, reddit `6c915f78…0e`,
+tiktok `02b65eef…34` (full values in `/tmp/loom-newlanes-20260925/human-cards.json`).
 
-## Major root causes repaired
+**Honest quality assessment:** Kick and Twitch were useful because
+creator-specific clip pages sharply constrained discovery. YouTube was moderate.
+Instagram, TikTok and Reddit results were weak despite successful technical
+processing. This exposes a **discovery/query-quality gap**, not a
+media-processing or Discord-card failure: broad subject queries such as
+"gym baddie shorts" do not consistently describe a reaction-worthy event.
+Production discovery needs event-based query expansion, creator watchlists,
+bounded multi-candidate ranking, and permission to return an empty lane
+instead of posting the least-bad result. No FIRE passes claimed; all scores
+advisory. Honest rejections included: Twitch gameplay clips
+`adult_status_unproven` ×3 (no people visible — safety gate working as
+designed), Reddit EgyGym post intent_mismatch + adult_status_unproven,
+TikTok `no_directly_observed_event` ×2, Instagram reel adult_status_unproven.
 
-1. The original silent Approve had an 11-character content ID where the router required a 64-character fingerprint. HTTP 200 was an invalid-button response, not successful worker ACK. Fixed identity consistency, first-winner persistence, duplicate behavior, retryable handoff, and card updates.
-2. Reviewer parsing outside the worker error boundary could fail invisibly. Protected the entire decision path, with stage-specific failure reporting and retained retry controls.
-3. Theme fit used generic words without lane intent. Added tenant-configured media/theme/creator requirements and isolation coverage; no hardcoded beach/dog/golf/creator logic.
-4. Cards read empty anchors instead of resolved boundaries. Exact zero-based persisted start/end now render and survive handoff.
-5. Native source-as-moment incorrectly implied the entire asset or opening fragment. Added measured contiguous inspection coverage, independently located windows, first-complete forward boundaries, timed payoff validation, and ranking/dedup propagation. Rejected a misleading news introduction/payoff window rather than shipping it.
-6. Evidence/thumbnail/category fields and actual playable duration were lost or mismatched. Propagated evidence without inventing confidence; do not pad missing footage or confuse provider duration with inspected coverage.
-7. Market mixed title/content with observed demand and suppressed established viral inventory using current velocity. Corrected the demonstrated defects while preserving strict threshold 75. Explicit tenant-scoped human-review mode makes numerical gates advisory and skips redundant metadata-model calls.
-8. Reddit advertised broken HLS audio. Native HTTPS renditions restored bounded inspection without expanding the requested range.
-9. Kick high-resolution inspection exceeded inline model payload limits. Cached chunks are locally normalized to size-bounded 640px whole-frame inspection proxies, preserving timing/audio; reused six cached downloads. This is not final editing.
+Lane-config notes (tenant terms only, no code changes): creator-pinned lanes
+(Twitch/Kick) and Instagram use `required_concepts: []` — theme enforced by
+media-first inspection against lane intent. TikTok gym lane uses real lane
+vocabulary tokens because word-boundary matching does not split compound
+hashtags. YouTube: only `jtVwshyzEh4` verified as a portrait native Short
+(yt-dlp; desktop HTML client redirects to /watch with HTTP 200 — same
+evidence standard as the Reddit card).
 
-## Tests already verified — no closeout rerun
-
-Read directly from saved runner logs, each with `OK`:
-- Content intelligence: **469**, latest full run for `047c17e`.
-- Discovery: **148**.
-- Discord review: **255**.
-- Acquisition: **578**.
-- Latest applicable full-suite results: **1,450 tests total**. They are separate recorded runs, not a newly executed monolithic suite.
-- Proxy regression subset: **17** (overlaps the full content suite; do not add twice).
-- Prior compile, whitespace, and credential-pattern checks passed; closeout runs documentation diff/secret checks only.
-
-## Approval / acquisition: independently proven versus deferred
-
-The separate golf diagnostic card `1551847589278781541` produced a durable harness review and one queued acquisition job `353d82f0-859e-44ac-bda9-c0d12d1c2d0a`, window **0–8s**. Duplicate replay created no extra job. This is diagnostic plumbing proof, not Bryan approving a qualifying card and not a paid acquisition proof. Do not autoapprove the six real options.
-
-**Closeout live check:** `LOOM_ACQUISITION_LIVE=0` in the environment file, and `http://127.0.0.1:8090/health` reports `acquisition.live_runner = disabled`. Adapter remains running for human controls; no discovery, media/analysis, or provider work processes remain active. No production billing switch enabled. Do not infer that an enabled gate1/gate2 route means paid execution is enabled.
-
-Deferred: genuine human approval-to-pending-job proof on one of these six cards; acquisition execution; scoring calibration; rankings compilation; long-form product acceptance; editing, captions/reframing, publishing/scheduling. Preserve prior independently accepted Editor Gate/Segment 4 work in older state documents without expanding this session's claim.
-
-**Exact recommended next engineering step (not executed now):** after Bryan actually chooses Approve on one real source card, inspect that interaction and durable rows; verify exactly one first-winner review and one pending job with identical tenant, candidate lineage and resolved bounds, plus the in-place card update. Keep acquisition off. Reuse the existing signed-interaction/duplicate regression coverage and cached evidence; fix only a demonstrated failure. Do not start another discovery pass.
-
-## Scoring limitations / remaining items
-
-- Scores remain advisory and uncalibrated across platforms. High Confidence/Selection is not a statistical guarantee of humor, virality, timing accuracy, or completeness.
-- Instagram Market 0 reflects missing view evidence, **not zero views**; 748,053 likes and 71,667 comments were observed. Missing metrics currently penalize otherwise useful clips.
-- Reddit native score is not plays/views, and low confidence can reflect evidence coverage/metric gaps. Do not invent engagement values to meet a threshold.
-- Whole-source/full-native inspection and boundary validation fixes do not establish that every automatic future window is good. Bryan's final judgment remains necessary.
-- Five cards do not satisfy every strict FIRE threshold; TikTok does. No six-platform Grade-A claim.
-- Only intentionally uncommitted repository item: preserved migration 038. No remaining uncommitted production fix or closeout feature task.
-- Historical failed model-response billing remains unknown; one reservation requires reconciliation from existing receipts later, not another inference call.
-
-## Costs — runtime versus Astra development
+## 5. Costs
 
 | Category | Amount | Evidence |
 |---|---|---|
-| First-pass Apify | $0.065 | Reconciled actual |
-| Latest shorts Apify | $0.0565 | Actual after delayed billing true-up |
-| **Total known platform charges** | **$0.1215** | Actual |
-| First-pass successful Gemini calls | $0.058758 | Usage-based estimate, not provider invoice |
-| Latest shorts successful Gemini calls | $0.011319 | Usage-based estimate |
-| **Combined known charges + analysis estimates** | **$0.191577** | Excludes failed-call unknowns and agent usage |
-| Astra/OpenAI development | Unknown exact total | Bryan reported $54 consumed earlier and later ~$34 remaining; neither is a current balance |
+| Apify actual (ledger-reconciled) | **$0.0783** | TikTok $0.0565 + Instagram $0.0218 |
+| Gemini usage-based estimate | **$0.0430** | 16 cached-metered media inspections, 0 metadata calls |
+| **LOOM discovery/media total** | **≈$0.12** | Actual + estimate; excludes agent inference |
+| OpenRouter GLM development spend | Balance started **$49.98**; last independently observed **$39.93** → at least **$10.05** consumed. Session meter at closeout: $0.84 this session, $13.12 month-to-date. | Development/session overhead, **not** normal LOOM sourcing cost |
 
-No paid discovery/analysis calls during closeout. OpenClaw session status exposes usage but no remaining monetary balance. Do not subtract runtime cents from the reported OpenAI balance or claim a verified balance.
+No new provider, subscription, or publication spend. Ledger reservations remain
+standing until billing is verified, per spend-ledger discipline.
 
-## Next-model recommendation — provisional, not a benchmark result
+## 6. Pending live acceptance — NOT yet performed
 
-**Recommend DeepSeek V4 Pro as the normal lead**, subject to successful completion of the next bounded repository task. Exact configured ID: `deepseek/deepseek-v4-pro`; suggested OpenClaw thinking **high** for multi-file root-cause work. This is a cost-adjusted deployment judgment based on an already-configured reasoning provider and existing tool integration, not proof it outperforms the other candidates. No trial calls made.
+**Bryan has not clicked anything**: durable-row check at 2026-09-26T00:10Z
+found **zero reviews** on all six new fingerprints.
 
-- Routine tests, operational work and bounded fixes: `deepseek/deepseek-flash`, thinking **low**, or **off** for mechanical work. It is not automatically cheaper for every token mix: local configuration lists Pro $0.435 input/$0.87 output versus Flash $0.30/$1.20 per million tokens; prices are local metadata, not freshly verified billing. Keep replies/context small.
-- Independent review only when warranted: `openai/gpt-5.6-terra`, thinking **high**, scoped to diff + test evidence rather than the entire chat. Local OpenAI catalog lists this exact ID; no fresh provider/account-access trial. Sol is also cataloged but not the normal cost-saving choice.
-- Grok 4.7: no exact matching configured/catalog evidence found in the bounded local check. Actual tool behavior, price, availability, long-horizon completion and reasoning controls remain unverified; do not invent an ID or make it lead.
-- Qwen 3.8 Max: local catalog lists `opencode-go/qwen3.8-max` (1M context; locally listed $2/$6 per million), but not an active configured route. No repository-specific terminal/test/constraint-following proof; not a proven cheaper lead here.
-- Qwen 3.8 Flash: exact route/version not verified locally. Do not confuse it with configured **Gemini** 3.8 Flash; no recommendation or invented ID.
-- Open-weight option: local Ollama catalog includes `ollama/deepseek-v4-pro` and `ollama/deepseek-v4-flash`. Catalog presence is not proof of installed weights, sufficient RAM, acceptable speed or working long-context/tool execution. No self-hosting migration recommended now.
-- Across all candidates, long-horizon coding, multi-file debugging, tool/terminal reliability, constraint adherence, test repair and truthful completion lack a controlled LOOM comparison. Large advertised context is not proven recall. Flash is assigned bounded work to limit this risk; independent review and explicit test/runtime receipts control false completion. Speed differences were not measured.
-- The current active session is **OpenAI Codex / Astra**. Non-OpenAI models need the corresponding supported OpenClaw agent tool-loop route, not just a foreign model ID inserted into the Codex backend. Reasoning levels above are harness suggestions; provider-specific mapping must be checked on the next authorized configuration task. Configuration was **not changed**.
-- Current saved default is Flash with Pro fallback, while this session overrides it with Astra. Starting a fresh engineering session from this handoff avoids paying to replay the bloated transcript.
-- **Pay for Astra again only** after a reproducible multi-file failure remains unresolved after two bounded cheaper-model attempts, or an independent review exposes a high-impact architecture/data-integrity issue those attempts cannot resolve. Send the minimal repro, diff, failing logs and precise question; obtain a bounded spend authorization. Not for routine tests, browsing, status, discovery or closeout.
+Pending clicks (in #source-review):
+- **Approve** → Kick "bgt" card (`1553193671950598175`)
+- **Reject** → Reddit "Aura farming" card (`1553193693458997334`)
 
-## Durable evidence and continuity
+Still unverified after those clicks:
+- Approve creates exactly one review row and one pending acquisition job with correct tenant, lineage and bounds.
+- Reject creates one review row and **no** acquisition job.
+- Duplicate clicks return the stored winner without additional rows.
+- No download occurs while acquisition remains disabled.
 
-Committed reports: `SEGMENT5_ACCEPTANCE_20260925.md`, `SEGMENT5_SHORTS_20260925.md` (older lane exclusions in the first report are superseded by the second).
-Private durable receipt/test-log copies: `~/.openclaw/session-archives/loom-20260925-closeout/` (directory 0700/files 0600, not committed).
-Original cached media, private runtime scripts and receipts remain under `/tmp/loom-segment5-20260925/` and `/tmp/loom-shorts-20260925/`; these are temporary and are not production source. Do not commit or publish raw dumps/internal media URLs. Eight essential card/test receipts were copied durably so tmp cleanup does not destroy closeout proof.
+Current reverted **Reject is one-click**. Rejection-reason capture and
+reject-channel routing are **not** part of the active code; the tested
+reject-reason work is preserved under tag `segment5-reject-reasons` for later
+reconsideration.
 
-**STOPPED. No new searches, analysis, media transfer, model trials, acquisitions or feature work to follow this closeout.**
+## 7. Next session
+
+- Resume with **DeepSeek Flash** (thinking low/off) for inexpensive read-only
+  verification after Bryan clicks.
+- Use existing candidate IDs, fingerprints and message IDs — **do not repeat discovery**.
+- First task is **only** the Approve/Reject durable-row verification above.
+- After that: close Segment 5, or define the bounded discovery-quality
+  improvement (event-based query expansion, creator watchlists, empty-lane
+  permission) as a separate scoped task.
+- Do not use GLM or Astra unless a reproducible defect survives a cheaper-model attempt.
+
+Runtime artifacts: `/tmp/loom-newlanes-20260925/` (human-cards.json, verified.json,
+per-platform inspections, receipts). Repo receipts:
+`SEGMENT5_NEW_LANES_20260925.md` @ `01adc6f`.
