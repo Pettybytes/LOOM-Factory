@@ -7,7 +7,7 @@
 # START HERE NEXT SESSION
 
 **Snapshot: 2026-09-26 (Manual Intake closeout).** Branch `master` · HEAD
-`925a8343062e382b540ef20795fa2e2d8805bef9` == `origin/master` · worktree clean except
+`c7eaedd0acf74f991d510d0ad54cb85f073c6c53` == `origin/master` · worktree clean except
 `?? infra/supabase/038_loom_editor_session_tokens.sql` (preserved, SHA1
 `3da12826ef96dd05ce089b490ee490e66baf01c0`).
 
@@ -48,6 +48,50 @@ veto, ambiguous-age rejection, or age-based suppression. Regression guard:
 
 **After Manual Intake is finalized:** the missing **timeline-editor capability** — requires
 Bryan's explicit authorization. Then the launch spine / Segment 6.
+
+---
+
+## INCREMENT — 2026-09-26 (later) — MANUAL INTAKE ENGAGEMENT METADATA CAPTURED
+
+Commit **`c7eaedd`** (HEAD == `origin/master`, worktree clean except the preserved 038).
+Fuller detail in `NEXT_SESSION_HANDOFF.md` §10. This does not reopen accepted Manual Intake
+architecture; it fixes the card's market/engagement evidence underneath it.
+
+Operator-supplied sources reached `#clip-review` with Views/Likes/Comments/age = `Unavailable`
+and `Market 0/100` — even though that evidence was free and obtainable through the extractor path
+LOOM already runs.
+
+**Root cause.** Manual Intake never captured platform metadata at all. `build_record()` built
+`observed_metrics` from the local `ffprobe` alone, and `run_manual_intelligence()` hard-set
+`record.publication_timestamp = None`. With no engagement counters and no publication time,
+`market_evidence` was empty for every manual asset — and the card rendered that **absence** as a
+measured `0/100`. Unknown was being displayed as zero.
+
+**Fix — no new provider, no migration, no new gate, no new dependency.**
+* `manual_media_intake.fetch_source_metadata()` reuses the EXISTING bounded metadata probe
+  (`ytdlp_adapter.build_probe_command`: metadata only, `--skip-download`, no cookies, no auth, no
+  paid provider) and maps provider fields onto the keys the existing market policy reads, per
+  platform. Reddit keeps its native `score`/`num_comments`, never invented views. Never raises,
+  never fabricates; an unexposed field stays absent.
+* Evidence is durable **twice**: submission row `media_reference.source_metadata` and candidate
+  `moment_evidence.lineage.source_metadata` (both JSONB) — so it survives a CI decline before
+  persistence; the Kick `filtered_media` asset had only `lineage` and no `market_evidence`.
+* `market_evidence` now carries `evidence_available` / `evidence_coverage` / `unavailable_metrics`,
+  so **unknown ≠ zero**. The card prints `Market unavailable — no market evidence observed (not a
+  zero score)` with coverage, shows available engagement instead of hiding the section when a
+  field is missing, and still renders an observed `0` as `0`.
+* Human arbitration unchanged: no hard filter, no FIRE input, no acquisition change.
+
+**Measured on the real assets (existing path, free):** TikTok **771,600 views / 13,400 likes /
+173 comments / 2,632 reposts / 5,513 saves**; Instagram partial (18,914 likes, 1,149 comments —
+views need auth); Reddit native score 128 / 16 comments; Kick 2,429 views. Twitch has the existing
+Helix `/helix/clips` app-token path (not live-probed here).
+
+### Tests
+`discord-review` **333 OK** (309 + 24 new in `tests/test_manual_engagement_metadata.py`) ·
+`content_intelligence` **477 OK**. Adapter restarted post-commit and verified serving `c7eaedd`:
+PID 71579, `/health` ok, new symbols present in the loaded bytecode.
+**Segment 5 remains OPEN.** No Manual Intake acceptance re-run was performed.
 
 ---
 

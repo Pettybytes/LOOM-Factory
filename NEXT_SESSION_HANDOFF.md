@@ -12,7 +12,8 @@ and carries the long-form history.
 | Item | Value |
 |---|---|
 | Branch | `master` |
-| Final pushed commit | **`925a8343062e382b540ef20795fa2e2d8805bef9`** |
+| Final pushed commit | **`c7eaedd0acf74f991d510d0ad54cb85f073c6c53`** (engagement-metadata increment, §10) |
+| Previous code commit | `925a8343062e382b540ef20795fa2e2d8805bef9` |
 | `origin/master` | identical to HEAD — `HEAD == origin/master` proven |
 | Ahead / behind | `0 / 0` |
 | Expected worktree | clean **except** one intentionally preserved untracked file |
@@ -168,8 +169,55 @@ WHAT IS ACTUALLY EXCLUDED.** Do not redesign automated discovery now; preserve t
 
 ## 9. Regression state
 
-`infra/discord-review` — **309 OK** · `infra/content_intelligence` — **477 OK**
-(both re-run at closeout on commit `925a834`).
+`infra/discord-review` — **333 OK** · `infra/content_intelligence` — **477 OK**
+(discord-review = 309 baseline + 24 new engagement-metadata tests; content_intelligence re-run
+at the §10 increment on commit `c7eaedd`).
 
 These are **regression protection only** — they are not a reason to reopen accepted architecture,
 and they are not a substitute for the live operator acceptance recorded in §3.
+
+---
+
+## 10. INCREMENT — Manual Intake engagement metadata captured (2026-09-26, later)
+
+Commit **`c7eaedd`**, pushed. This does **not** reopen anything in §5; it fixes a defect that
+sat underneath the accepted lifecycle (the card's market/engagement fields), not the lifecycle.
+
+**Defect.** Operator-supplied sources reached `#clip-review` with Views/Likes/Comments/age =
+`Unavailable` and `Market 0/100`, even though the evidence was free and obtainable through the
+extractor path LOOM already runs.
+
+**Root cause.** Manual Intake never captured platform metadata at all: `build_record()` built
+`observed_metrics` from the local `ffprobe` alone, and `run_manual_intelligence()` hard-set
+`record.publication_timestamp = None`. With no views/likes/comments and no publication time,
+`market_evidence` was empty for every manual asset — and the card rendered that **absence** as a
+measured `0/100`. Unknown was being displayed as zero.
+
+**Fix (no new provider, no migration, no new gate, no new dependency).**
+* `manual_media_intake.fetch_source_metadata()` reuses the EXISTING bounded metadata probe
+  (`ytdlp_adapter.build_probe_command`: metadata only, `--skip-download`, no cookies, no auth, no
+  paid provider) and maps provider fields onto the keys the existing market policy reads, per
+  platform. Reddit keeps its native `score`/`num_comments` and is never given invented views.
+  Never raises, never fabricates; a field the platform does not expose stays absent.
+* Evidence is durable **twice**: the submission row's `media_reference.source_metadata` and the
+  candidate's `moment_evidence.lineage.source_metadata`. Both JSONB, so it survives a CI decline
+  before persistence — the Kick `filtered_media` asset had only `lineage` and no `market_evidence`.
+* `market_evidence` now carries `evidence_available` / `evidence_coverage` /
+  `unavailable_metrics`, so **unknown is distinguishable from a measured zero**. The card prints
+  `Market unavailable — no market evidence observed (not a zero score)` with coverage, shows the
+  available engagement rather than hiding the section when one field is missing, and still renders
+  an observed `0` as `0`.
+* Human arbitration unchanged: no hard filter, no FIRE input, no acquisition behaviour.
+  **LOOM informs. Bryan decides.**
+
+**What was obtainable for free, measured on the real assets** (existing path): TikTok
+**771,600 views / 13,400 likes / 173 comments / 2,632 reposts / 5,513 saves**; Instagram partial
+(18,914 likes, 1,149 comments — views need auth); Reddit native score 128 / 16 comments; Kick
+2,429 views. Twitch has the existing Helix `/helix/clips` app-token path (not live-probed here).
+
+**Tests.** `discord-review` **333 OK** (309 + 24 new in
+`tests/test_manual_engagement_metadata.py`) · `content_intelligence` **477 OK**. No gate was
+weakened and no accepted semantics from §3–§4 changed.
+
+**Live.** Adapter restarted after the commit and verified serving `c7eaedd`: PID 71579,
+`/health` → `ok`, new symbols confirmed present in the loaded bytecode.
