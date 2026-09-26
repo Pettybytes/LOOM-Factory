@@ -219,7 +219,10 @@ Proven this session: see §3.
 
 1. **Manual candidate pre-persistence filtering** (§6) — the canonical seam to fix.
 2. **URL-only Manual Intake missing** for the Kick/Twitch/Reddit operator workflow (§7).
-3. **Kick `/clips/` content-id extraction** returns empty → candidate cannot be linked (§6.2).
+3. **~~Kick `/clips/` content-id extraction returns empty~~ — FIXED 2026-09-26 in `369f398`.**
+   Intake now delegates to `kick_url.parse` (one identity scheme with acquisition). Regression-covered.
+   **Note:** the Kick acceptance asset still has **0 candidate rows** — it needs a real CI run on the
+   durable media before its row can exist. See `CURRENT_STATE.md` → INCREMENT 2026-09-26.
 4. **GHL folder targeting** not honoured by the upload endpoint (§11) — bounded, non-blocking.
 
 ## 16. NEXT EXECUTION BLOCK

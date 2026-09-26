@@ -46,6 +46,62 @@ Bryan's explicit authorization. Then the launch spine / Segment 6.
 
 ---
 
+## INCREMENT — 2026-09-26 (continuation) — MANUAL INTAKE DEFECTS DIAGNOSED + FIXED
+
+Commit **`369f398`** (HEAD == `origin/master`, worktree clean except the preserved 038).
+
+The two remaining Manual Intake issues were **not the same failure**. Both are now fixed and proven.
+
+**A. Kick identity (root cause of the Kick "durable row absent").** `manual_intake._extract_content_id`
+matched the SINGULAR `/clip/` only, so the real acceptance URL
+`kick.com/<channel>/clips/<clip_id>` produced an **empty** `platform_content_id`
+(confirmed live in `loom_manual_submissions`). `enrich_manual_candidate` resolves the durable
+candidate **by that id**, so an empty id can never match — producing the misleading
+*"the candidate was filtered before persistence"* (adapter `ci_ok=False`). It was never a
+filtering problem: a candidate row already existed for a different Kick clip
+(`clip_01M30MBE5PSHRXT4TZPV53C96C`). Fix: delegate Kick to the acquisition contract
+(`kick_url.parse`), mirroring the existing YouTube delegation — ONE identity scheme for intake and
+acquisition. Proven: plural clip → `clip_01M33XASMP29XTQ1QK0EV7TXDC`; VOD → uuid; channel page
+still fails closed (`CHANNEL_PAGE`).
+
+**B. Manual-origin durability (separate, real).** `pipeline.run()` persisted only
+`status == "scored"` (all 46 rows in `loom_source_candidates` are `scored`), so a manual candidate
+Content Intelligence declines left **no durable row at all**. Manual origin now persists regardless of
+status, marked by the existing `profile_id` (`manual-intake`). No score inflation, no manufactured
+moment, no CI-threshold change; automated-discovery filtering untouched.
+
+**Corrected mistake from an interrupted run.** An earlier automated attempt had added
+`processing_eligibility` / `connector_name` to the `upsert_candidate` payload. Those columns
+**do not exist** in `loom_source_candidates` (PostgREST `42703`) and would have broken EVERY
+candidate upsert. Reverted.
+
+**⚠️ Production data mutation performed by that interrupted run (recorded, verified).** The Kick
+submission row `613843c0-6af2-4f1a-9f1b-82b319372582` had its `platform_content_id` backfilled from
+`''` → `clip_01M33XASMP29XTQ1QK0EV7TXDC` via a hand-written PATCH script. Its `duplicate_fingerprint`
+(`c21aff113f5d…`) is the correct sha256 for the canonical URL and was **unchanged**. No other rows
+were altered (46 candidates, 0 for that content id). The scripts are quarantined outside the repo
+(`/tmp/loom-child-scratch-20260926/`) and were NOT committed.
+
+**Tests:** `content_intelligence` **477 OK** · `discord-review` **304 OK** (302 baseline + 2 new
+Kick identity regressions: plural identity equals the acquisition contract's, and `content_id` is
+never empty).
+
+**Still open (unchanged in nature):**
+1. **Runtime re-acceptance for the Kick asset** — it still has **0 candidate rows**; the durable row
+   can only appear after a real CI run on the durable media (the submission's id is already correct).
+2. **URL-only Manual Intake (Mode B)** — still missing; compose existing resolvers, do not write new
+   downloaders. Kick clip ≠ Kick ranged-VOD.
+3. **Durable `Approve Clip` proof** — needs a real operator click.
+4. **Open product question (needs Bryan):** persistent-but-declined manual candidates are now durable
+   and queryable, but the Source Review queue is **FIRE-only**; decide the manual review surface
+   (durable-but-silent vs. surfaced).
+
+**Locked, unchanged:** editor acceptance; age-gate removal; automated-discovery qualification;
+preserved migration `038` (SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0`); Segment 4 / acquisition;
+GHL durable upload; Cloudflare + deferred-ACK acceptance.
+
+---
+
 > ## SUPERSEDED — "SEGMENT 5 IN PROGRESS" banner (2026-09-22)
 >
 > The resume pointer below is out of date (`c5ec62f`, 2026-09-22). The authoritative resume point
