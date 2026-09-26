@@ -228,7 +228,9 @@ def _extract_content_id(platform: str, parts: urllib.parse.SplitResult) -> str:
         m = re.search(r"/(?:p|reels?|tv)/([A-Za-z0-9_-]+)", path)
         return m.group(1) if m else ""
     if platform == "twitch":
-        m = re.search(r"/(?:clips|videos)/([A-Za-z0-9_-]+)", path)
+        # Twitch canonical clip URLs use the singular /clip/<slug> form;
+        # /clips/<id> and /videos/<id> remain accepted for compatibility.
+        m = re.search(r"/(?:clip|clips|videos)/([A-Za-z0-9_-]+)", path)
         return m.group(1) if m else ""
     if platform == "kick":
         m = re.search(r"/(?:clip|video)/([A-Za-z0-9_-]+)", path)

@@ -83,9 +83,10 @@ def main() -> int:
     print("[2] YouTube submission -> accepted:")
     payload = manual_intake.build_submission(
         url="https://www.youtube.com/watch?v=qgLaCZyKv_8&si=xyz&utm_source=proof",
-        tenant_id="dreemzy", profile_id=PROOF_PROFILE,
+        destination="dreemzy",
         content_format="commentary_story", submitter="bryan#proof",
         time_start_s=10.5, time_end_s=22.5, reviewer_note="proof",
+        active_tenants={"dreemzy"},
     )
     check("canonicalized + content id", payload["platform_content_id"] == "qgLaCZyKv_8",
           payload["source_url"])
@@ -100,8 +101,9 @@ def main() -> int:
     print("[4] TikTok -> pending platform support:")
     tt = manual_intake.build_submission(
         url="https://www.tiktok.com/@user/video/7123456789012345678",
-        tenant_id="dreemzy", profile_id=PROOF_PROFILE,
+        destination="dreemzy",
         content_format="reaction_single", submitter="bryan#proof",
+        active_tenants={"dreemzy"},
     )
     check("status pending platform support",
           tt["status"] == manual_intake.STATUS_PENDING_PLATFORM, tt["status"])
@@ -119,8 +121,15 @@ def main() -> int:
         except manual_intake.SubmissionError as e:
             check(f"reject {code}", e.code == code, e.code)
 
-    print("[6] proof profile non-production + boundary guards:")
-    check("profile non-production", "proof" in PROOF_PROFILE, PROOF_PROFILE)
+    print("[6] non-production boundary guards:")
+    # profile_id is derived server-side now, so the meaningful boundary is that a
+    # non-production DESTINATION can never be assigned as a tenant.
+    try:
+        manual_intake.validate_destination("manual-intake-proof", {"dreemzy", "manual-intake-proof"})
+        check("non-production tenant rejected", False, "not rejected")
+    except manual_intake.SubmissionError as e:
+        check("non-production tenant rejected", e.code == "INVALID_DESTINATION", e.code)
+    check('submitter marked proof', "proof" in payload["submitter"], payload["submitter"])
     forbidden = ("openshorts", "ghl", "distribution", "social", "elevenlabs", "retell")
     imported = [m for m in sys.modules if any(f in m.lower() for f in forbidden)]
     check("no forbidden modules imported", not imported, ",".join(imported) if imported else "none")

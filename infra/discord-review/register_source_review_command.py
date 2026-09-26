@@ -61,7 +61,14 @@ ASSIGN_SOURCE_COMMAND = {
     ],
 }
 
-COMMANDS = [COMMAND, SUBMIT_SOURCE_COMMAND, ASSIGN_SOURCE_COMMAND]
+# Manual Intelligence Intake V1.2 — MESSAGE context-menu command. Type 3 commands take
+# no description/options: the target message carries the media + URL.
+MANUAL_MEDIA_COMMAND = {
+    "name": "intake-media",
+    "type": 3,
+}
+
+COMMANDS = [COMMAND, SUBMIT_SOURCE_COMMAND, ASSIGN_SOURCE_COMMAND, MANUAL_MEDIA_COMMAND]
 
 
 def _load_env() -> dict[str, str]:

@@ -58,6 +58,8 @@ from urllib.error import HTTPError, URLError
 
 import source_review  # noqa: E402  (same-dir module; Source Review Inbox)
 import manual_intake  # noqa: E402  (same-dir module; Manual Source Intake)
+import manual_media_intake  # noqa: E402  (same-dir module; V1.2 supplied-media ingress)
+import manual_intake_intelligence  # noqa: E402  (same-dir module; Content Intelligence on supplied media)
 import tenant_routing  # noqa: E402  (same-dir module; tenant assignment/reassignment)
 import intake_card  # noqa: E402  (same-dir module; card-based intake wizard)
 import acquisition_ops  # noqa: E402
@@ -98,6 +100,14 @@ STORAGE_NOT_APPLICABLE = "not_applicable"
 LISTEN_HOST         = _env("LOOM_DISCORD_LISTEN_HOST", "127.0.0.1")
 LISTEN_PORT         = int(_env("LOOM_DISCORD_LISTEN_PORT", "8090"))
 CLIP_REVIEW_CHANNEL_NAME = _env("LOOM_CLIP_REVIEW_CHANNEL", "clip-review")
+# Manual Intelligence Intake V1.2 — ingress channel is distinct from #source-review:
+# supplied media is dropped here, review candidates still appear in #source-review.
+MANUAL_INTAKE_CHANNEL_NAME = _env("LOOM_MANUAL_INTAKE_CHANNEL", "manual-intake")
+MANUAL_MEDIA_COMMAND = "intake-media"           # MESSAGE context-menu command
+MANUAL_MEDIA_TENANT_DEFAULT = _env("LOOM_MANUAL_INTAKE_TENANT", "dreemzy")
+MANUAL_MEDIA_FOLDER_ID = _env("LOOM_GHL_INTAKE_FOLDER_ID", "")
+SOURCE_REVIEW_CHANNEL_ID = _env("LOOM_SOURCE_REVIEW_CHANNEL_ID", "1550207989569421444")
+MANUAL_MEDIA_MAX_BYTES = int(_env("LOOM_MANUAL_MEDIA_MAX_BYTES", str(100 * 1024 * 1024)))
 PROXY_MAX_BYTES     = 23 * 1024 * 1024  # Discord upload ceiling (Boosts raise it; stay safe)
 EDITOR_BASE_URL     = _env("LOOM_EDITOR_BASE_URL", "http://localhost:5173")  # dev scaffold (legacy); critical path = external HTTPS /edit
 EDITOR_PUBLIC_URL   = _env("LOOM_EDITOR_PUBLIC_URL", "")  # external HTTPS editor origin for the Discord Edit deep-link (NOT localhost, NOT the Activity)
@@ -1331,6 +1341,39 @@ def resolve_clip_review_channel() -> str:
     raise RuntimeError(f"Channel #{CLIP_REVIEW_CHANNEL_NAME} not found")
 
 
+_manual_channel_cache = {"id": None, "ts": 0.0}
+
+def resolve_manual_intake_channel(create: bool = True) -> str:
+    """Resolve #manual-intake by name; create it when missing.
+
+    The ingress channel for operator-supplied media. Created on first use rather
+    than hardcoded, so a fresh guild works without a manual id copy.
+    """
+    if _manual_channel_cache["id"] and (time.time() - _manual_channel_cache["ts"]) < 600:
+        return _manual_channel_cache["id"]
+    status, guilds = http_json("GET", f"{DISCORD_API}/users/@me/guilds", DISCORD_BOT_TOKEN)
+    for g in guilds or []:
+        gid = g.get("id")
+        s2, channels = http_json("GET", f"{DISCORD_API}/guilds/{gid}/channels", DISCORD_BOT_TOKEN)
+        for ch in channels or []:
+            if ch.get("name") == MANUAL_INTAKE_CHANNEL_NAME and ch.get("type") == 0:
+                _manual_channel_cache.update(id=ch["id"], ts=time.time())
+                return ch["id"]
+        if create:
+            st, created = http_json("POST", f"{DISCORD_API}/guilds/{gid}/channels",
+                                    DISCORD_BOT_TOKEN,
+                                    {"name": MANUAL_INTAKE_CHANNEL_NAME, "type": 0,
+                                     "topic": ("Manual intelligence intake: post the media file with the "
+                                               "original URL (`url: https://…`), optional `start=`/`end=`, "
+                                               "optional `tenant=`, then Apps → intake-media. Candidates "
+                                               "appear in #source-review.").strip()})
+            if isinstance(created, dict) and created.get("id"):
+                _manual_channel_cache.update(id=created["id"], ts=time.time())
+                print(f"[manual-intake] created #{MANUAL_INTAKE_CHANNEL_NAME} {created['id']}", flush=True)
+                return created["id"]
+    raise RuntimeError(f"Channel #{MANUAL_INTAKE_CHANNEL_NAME} not found and could not be created")
+
+
 # ---------------------------------------------------------------------------
 # Compact card presentation helpers (Framer-inspired, conditional)
 # ---------------------------------------------------------------------------
@@ -2296,7 +2339,158 @@ class Handler(BaseHTTPRequestHandler):
         if name == tenant_routing.ASSIGN_COMMAND_NAME:
             self._handle_assign_source_command(interaction)
             return
+        if name == MANUAL_MEDIA_COMMAND or data.get("type") == 3:
+            self._handle_manual_media_intake(interaction)
+            return
         self._send_json(200, {"type": 4, "data": {"content": "Unknown command.", "flags": 64}})
+
+    def _handle_manual_media_intake(self, interaction):
+        """MESSAGE context-menu ingress for operator-supplied media.
+
+        The operator posts the media file in #manual-intake with the original URL
+        (plus optional start=/end=/tenant=), then invokes Apps -> intake-media.
+        Nothing here touches the network before the ACK.
+        """
+        data = interaction.get("data", {}) or {}
+        target_id = str(data.get("target_id") or "")
+        resolved = ((data.get("resolved") or {}).get("messages") or {})
+        message = resolved.get(target_id) or {}
+        content = message.get("content") or ""
+        attachments = message.get("attachments") or []
+        channel_id = str(message.get("channel_id")
+                         or (interaction.get("channel") or {}).get("id") or "")
+        try:
+            expected = resolve_manual_intake_channel()
+        except Exception as e:  # noqa: BLE001
+            self._send_json(200, {"type": 4, "data": {
+                "content": f"❌ Manual intake channel unavailable ({type(e).__name__}).",
+                "flags": 64}})
+            return
+        if channel_id and channel_id != expected:
+            self._send_json(200, {"type": 4, "data": {
+                "content": (f"❌ Run this on a post in <#{expected}> — that is where "
+                            f"supplied media is ingested."), "flags": 64}})
+            return
+        parsed = manual_media_intake.parse_intake_message(content)
+        attachment = manual_media_intake.scan_for_video(attachments)
+        problems = []
+        if not parsed.get("url"):
+            problems.append("no source URL in the message (add `url: https://…`)")
+        if not attachment:
+            problems.append("no media file attached to the message")
+        if problems:
+            self._send_json(200, {"type": 4, "data": {
+                "content": "❌ Cannot ingest: " + "; ".join(problems) + ".", "flags": 64}})
+            return
+        # ACK inside Discord's 3-second deadline; durable work runs on the worker.
+        self._send_json(200, {"type": 6})
+        threading.Thread(target=self._manual_media_worker,
+                         args=(interaction, dict(parsed), dict(attachment)),
+                         daemon=True).start()
+
+    def _manual_media_worker(self, interaction, parsed, attachment):
+        """Post-ACK work for supplied media. Never raises; ACK is not success.
+
+        Durable-first ordering: probe -> GHL durable copy -> submission row ->
+        Content Intelligence -> review card. Failures name the exact stage and
+        what durable state survived. Local working media is deleted only after a
+        durable copy exists and analysis has finished, so no permanent duplicate
+        source library is kept on this machine.
+        """
+        application_id = str(interaction.get("application_id") or "")
+        interaction_token = str(interaction.get("token") or "")
+        submitter = self._reviewer_name(interaction)
+        stage = "resolve_tenant"
+        temp_dir = ""
+        durable_url = ""
+        persisted = False
+        try:
+            active = tenant_routing.list_active_tenants(SUPABASE_URL, SUPABASE_KEY)
+            tenant = manual_intake.validate_destination(
+                parsed.get("tenant") or MANUAL_MEDIA_TENANT_DEFAULT, active)
+            stage = "fetch_attachment"
+            temp_dir = tempfile.mkdtemp(prefix="loom-manual-intake-")
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_",
+                               attachment.get("filename") or "supplied.mp4")[:120]
+            local_path = os.path.join(temp_dir, safe_name)
+            manual_media_intake.download_attachment(attachment["url"], local_path)
+            size = os.path.getsize(local_path)
+            if size <= 0:
+                raise RuntimeError("attachment downloaded as 0 bytes")
+            if size > MANUAL_MEDIA_MAX_BYTES:
+                raise RuntimeError(f"attachment {size} bytes exceeds cap {MANUAL_MEDIA_MAX_BYTES}")
+            stage = "probe_media"
+            probe = manual_media_intake.probe_media(local_path)
+            if not probe.get("has_video"):
+                raise RuntimeError("supplied file has no video stream")
+            stage = "durable_store_ghl"
+            durable = manual_media_intake.store_durable_media(
+                local_path, safe_name, folder_id=MANUAL_MEDIA_FOLDER_ID or None)
+            durable_url = durable["url"]
+            stage = "persist_submission"
+            payload = manual_media_intake.build_media_submission(
+                url=parsed["url"], destination=tenant,
+                content_format=parsed.get("content_format") or "hold_unassigned",
+                submitter=submitter, media_reference={**durable, "filename": safe_name},
+                probe=probe, human_window=(parsed.get("start_s"), parsed.get("end_s")),
+                reviewer_note=(parsed.get("note") or "")[:500], active_tenants=active)
+            row, created = manual_media_intake.persist_media_submission(
+                SUPABASE_URL, SUPABASE_KEY, payload)
+            persisted = True
+            submission = {**(row if isinstance(row, dict) else payload),
+                          "duplicate_fingerprint": payload["duplicate_fingerprint"]}
+            stage = "content_intelligence"
+            result = manual_intake_intelligence.run_manual_intelligence(
+                submission=submission, media_path=local_path, probe=probe,
+                media_url=durable_url,
+                human_window=(parsed.get("start_s"), parsed.get("end_s")))
+            lines = [f"📥 **Ingested** · {payload['platform']} · tenant `{tenant or 'unassigned'}` "
+                     f"· submission {'created' if created else 'already existed'}",
+                     f"source {payload['source_url']}",
+                     f"durable media {durable_url}"]
+            if result.get("ok"):
+                stage = "review_card"
+                cand = source_review.fetch_candidate_by_fingerprint(
+                    SUPABASE_URL, SUPABASE_KEY, payload["duplicate_fingerprint"])
+                if cand:
+                    plan = result.get("boundary_plan") or {}
+                    self._post_source_card(SOURCE_REVIEW_CHANNEL_ID, cand)
+                    lines.append(f"✅ Content Intelligence: window "
+                                 f"{plan.get('recommended_clip_start')}–"
+                                 f"{plan.get('recommended_clip_end')}s "
+                                 f"({result.get('boundary_provenance')}) → review card in "
+                                 f"<#{SOURCE_REVIEW_CHANNEL_ID}>")
+                else:
+                    lines.append("⚠️ CI produced a candidate but its durable row was not found")
+            else:
+                lines.append(f"⚠️ Content Intelligence did not complete at "
+                             f"`{result.get('stage')}`: {result.get('error')}")
+            self._patch_original(application_id, interaction_token, content="\n".join(lines))
+            print(f"[manual-intake] done fingerprint={payload['duplicate_fingerprint'][:12]} "
+                  f"ci_ok={bool(result.get('ok'))}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            frames = ";".join(f"{Path(f.filename).name}:{f.lineno}:{f.name}"
+                              for f in traceback.extract_tb(e.__traceback__))
+            print(f"[manual-intake] failed stage={stage} error={type(e).__name__} "
+                  f"frames={frames}", flush=True)
+            note = [f"❌ Manual intake failed at **{stage}** ({type(e).__name__})."]
+            if durable_url:
+                note.append(f"durable media kept: {durable_url}")
+            if persisted:
+                note.append("submission row persisted — no need to re-upload")
+            if temp_dir and not durable_url:
+                note.append(f"local media retained at {temp_dir} (no durable copy yet)")
+            note.append("Nothing was silently dropped: re-running the command is safe.")
+            try:
+                self._patch_original(application_id, interaction_token,
+                                     content="\n".join(note))
+            except Exception as patch_error:  # noqa: BLE001
+                print(f"[manual-intake] card_update_failed error={type(patch_error).__name__}",
+                      flush=True)
+        finally:
+            # Delete local working material only once the durable copy exists.
+            if temp_dir and durable_url:
+                manual_media_intake.cleanup(temp_dir)
 
     def _handle_autocomplete(self, interaction):
         data = interaction.get("data", {})
@@ -2612,6 +2806,12 @@ class Handler(BaseHTTPRequestHandler):
         """Plan + persist the single PENDING acquisition job for an approved
         source. Gate 1 only: never authorizes spending. Returns a one-line
         status for the card, or None when the handoff is unavailable."""
+        # Supplied-media candidates already have durable media stored at intake:
+        # never plan a paid acquisition job for bytes we already hold.
+        if (((candidate.get("moment_evidence") or {}).get("lineage") or {})
+                .get("media_already_acquired")):
+            return ("📥 Media already stored at intake — no acquisition needed "
+                    "(nothing to download).")
         import approved_lane as _lane
         store = _acquisition_store()
         plan = candidate.get("boundary_plan") or {}
