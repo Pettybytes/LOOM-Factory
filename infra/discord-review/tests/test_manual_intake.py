@@ -53,11 +53,45 @@ class TestValidation(unittest.TestCase):
             ("https://www.tiktok.com/@user/video/7123456789012345678", "tiktok"),
             ("https://www.instagram.com/reel/ABC123/", "instagram"),
             ("https://clips.twitch.tv/FunnyClip123", "twitch"),
-            ("https://kick.com/clip/abc123", "kick"),
+            ("https://kick.com/channel/clips/clip_01M33XASMP29XTQ1QK0EV7TXDC", "kick"),
         ]:
             v = validate_and_canonicalize(url)
             self.assertEqual(v["platform"], plat)
             self.assertEqual(v["status"], STATUS_PENDING_PLATFORM)
+
+    def test_kick_clip_plural_identity(self):
+        """Regression: Kick clip URLs are PLURAL (/clips/<clip_id>).
+
+        The intake lane previously matched singular `/clip/` only, so the real
+        transcript path yielded an EMPTY platform_content_id. Because the durable
+        candidate is looked up BY that id, an empty id can never match — which
+        surfaced as the misleading "durable row is absent — the candidate was
+        filtered before persistence". Intake must share ONE identity with the
+        acquisition contract (kick_url.parse), never a second scheme.
+        """
+        url = "https://kick.com/deenthegreat/clips/clip_01M33XASMP29XTQ1QK0EV7TXDC"
+        v = validate_and_canonicalize(url)
+        self.assertEqual(v["platform"], "kick")
+        self.assertEqual(v["canonical_url"], url)
+        self.assertEqual(v["content_id"], "clip_01M33XASMP29XTQ1QK0EV7TXDC")
+        # The invariant that was actually violated: identity is never empty.
+        self.assertTrue(v["content_id"], "kick content_id must never be empty")
+
+        # The same identity the acquisition lane derives.
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "acquisition"))
+        import kick_url as _kick
+        acq = _kick.parse(url)
+        self.assertEqual(v["content_id"], acq["content_id"])
+        self.assertEqual(v["canonical_url"], acq["canonical_url"])
+
+    def test_kick_vod_identity(self):
+        v = validate_and_canonicalize(
+            "https://kick.com/somechan/videos/01a02be6-62d0-76a1-b338-0a9c3f3b8175")
+        self.assertEqual(v["platform"], "kick")
+        self.assertEqual(v["content_id"], "01a02be6-62d0-76a1-b338-0a9c3f3b8175")
 
 
 class TestRejections(unittest.TestCase):

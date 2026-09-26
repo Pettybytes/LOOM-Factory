@@ -67,6 +67,8 @@ class Pass1CandidateResult:
     platform_content_id: str
     title: str
     market_score: int
+    processing_eligibility: str = ""
+    connector_name: str = ""
     # Identity carried for the authoritative persisted record.
     tenant_id: str = ""
     profile_id: str = ""
@@ -469,7 +471,9 @@ class Pass1Pipeline:
         # Persist the AUTHORITATIVE joined candidate AFTER FIRE + ranking so the
         # Source Review queue reads the final state (not pre-FIRE selection rows).
         for c in result.candidates:
-            if c.status == "scored" and getattr(c, "duplicate_fingerprint", ""):
+            if getattr(c, "duplicate_fingerprint", "") and (
+                c.status == "scored" or getattr(c, "processing_eligibility", "") == "manual_intake"
+            ):
                 try:
                     if hasattr(store, "upsert_candidate"):
                         store.upsert_candidate(c)
@@ -1029,6 +1033,10 @@ class Pass1Pipeline:
             platform_content_id=rec.platform_content_id,
             title=rec.title, market_score=0,
         )
+        if hasattr(rec, "processing_eligibility"):
+            c.processing_eligibility = rec.processing_eligibility
+        if hasattr(rec, "connector_name"):
+            c.connector_name = rec.connector_name
         if (rec.tenant_id != self.brief.tenant_id or
                 getattr(rec, "profile_id", "") != self.brief.profile_id):
             c.status = "filtered_tenant"

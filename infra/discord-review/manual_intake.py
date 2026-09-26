@@ -291,6 +291,20 @@ def validate_and_canonicalize(url: str) -> dict[str, str]:
         except _yt.YouTubeUrlError as e:
             raise SubmissionError(e.code, e.message) from e
         canonical, content_id = parsed["canonical_url"], parsed["video_id"]
+    elif platform == "kick":
+        try:
+            import kick_url as _kick
+        except ImportError:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "acquisition"))
+            import kick_url as _kick
+        try:
+            parsed = _kick.parse(url)
+        except _kick.KickUrlError as e:
+            raise SubmissionError(e.code, e.message) from e
+        canonical, content_id = parsed["canonical_url"], parsed["content_id"]
     else:
         canonical = canonicalize_url(url)
         content_id = _extract_content_id(platform, parts)

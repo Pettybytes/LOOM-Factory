@@ -180,6 +180,10 @@ class ContentStoreSupabase:
             "signal_status": c.signal_status or "",
             "status": c.status or "",
             "rejection_reason": c.rejection_reason or "",
+            # NOTE: manual origin is already durable via `profile_id` ("manual-intake")
+            # plus moment_evidence.lineage.origin. Do NOT add processing_eligibility /
+            # connector_name here: those columns do not exist in loom_source_candidates
+            # (PostgREST 42703) and adding them breaks EVERY candidate upsert.
         }
         self._request("POST",
                       "loom_source_candidates?on_conflict=duplicate_fingerprint",
