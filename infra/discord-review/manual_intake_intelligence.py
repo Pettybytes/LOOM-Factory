@@ -268,11 +268,15 @@ def enrich_manual_candidate(*, submission: dict[str, Any], probe: dict[str, Any]
         # moment), so resolve the durable row by the authoritative source id the
         # submission carries instead of assuming a shared key scheme.
         content_id = submission.get("platform_content_id") or ""
+        tenant_id = submission.get("tenant_id", "")
+        # NEWEST first: with more than one row for one submission the previous
+        # unordered lookup picked an arbitrary "first" row, so a re-analysis could
+        # bind to a stale duplicate. Deterministic instead.
         rows = store._request(
             "GET", "loom_source_candidates?platform_content_id=eq."
             + urllib.parse.quote(content_id) + "&tenant_id=eq."
-            + urllib.parse.quote(submission.get("tenant_id", "")) + "&select=*")
-        row = (rows or [None])[0]
+            + urllib.parse.quote(tenant_id) + "&order=created_at.desc&select=*") or []
+        row = rows[0] if rows else None
         if not row:
             return {"ok": False, "stage": stage,
                     "error": ("Content Intelligence produced a candidate but the durable "
@@ -280,11 +284,37 @@ def enrich_manual_candidate(*, submission: dict[str, Any], probe: dict[str, Any]
                     "candidate_diagnostics": _diag(candidate),
                     "summary": summary or {}}
         candidate_fp = row.get("duplicate_fingerprint") or ""
+        # ONE manual submission -> ONE ACTIVE review object (and therefore one
+        # Discord card). A re-analysis may legitimately re-evaluate the submitted
+        # asset, but it must not leave several ACTIVE review objects behind just
+        # because the model returned slightly different boundaries. Older rows are
+        # SUPERSEDED — evidence retained, never deleted. Manual path only: the
+        # automated-discovery lane is untouched.
+        superseded: list[str] = []
+        for older in rows[1:]:
+            fp_old = older.get("duplicate_fingerprint") or ""
+            if not fp_old or fp_old == candidate_fp:
+                continue
+            try:
+                store._request(
+                    "PATCH",
+                    "loom_source_candidates?duplicate_fingerprint=eq."
+                    + urllib.parse.quote(fp_old),
+                    {"duplicate_state": "SUPERSEDED_MANUAL_REINGEST"})
+                superseded.append(fp_old)
+            except Exception:  # noqa: BLE001 — supersession must not fail the intake
+                pass
         # The durable row is authoritative for the candidate key; an in-memory
         # candidate is optional (enrichment may be re-run without re-analysis).
         lineage["candidate_fingerprint"] = candidate_fp or lineage.get("candidate_fingerprint", "")
+        if superseded:
+            lineage["superseded_fingerprints"] = superseded
         evidence = dict(row.get("moment_evidence") or {})
-        evidence["lineage"] = {**(evidence.get("lineage") or {}), **lineage}
+        prev_lineage = evidence.get("lineage") or {}
+        # Reuse the EXISTING Discord card for this submission when one exists, so a
+        # re-analysis updates that card instead of posting a second one.
+        card_message_id = str(prev_lineage.get("card_message_id") or "")
+        evidence["lineage"] = {**prev_lineage, **lineage}
         patch: dict[str, Any] = {"moment_evidence": evidence}
         if boundary_provenance == "manual_intake":
             patch["boundary_plan"] = plan
@@ -306,6 +336,8 @@ def enrich_manual_candidate(*, submission: dict[str, Any], probe: dict[str, Any]
         "candidate_id": (candidate.platform_content_id if candidate is not None
                          else submission.get("platform_content_id", "")),
         "fingerprint": candidate_fp,
+        "card_message_id": card_message_id,
+        "superseded_fingerprints": superseded,
         "boundary_plan": plan,
         "boundary_provenance": boundary_provenance,
         "media_already_acquired": True,

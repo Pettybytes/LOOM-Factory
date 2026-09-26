@@ -226,6 +226,13 @@ def format_source_embed(candidate: dict[str, Any], *, fixture: bool = False) -> 
     evidence = candidate.get("moment_evidence") or {}
     if evidence.get("intent"):
         embed = format_mining_embed(candidate, embed)
+    elif (candidate.get("profile_id") == "manual-intake"
+          or evidence.get("lineage", {}).get("origin") == "manual_media_intake"):
+        # Manual Intake: the operator deliberately supplied this asset for human
+        # review. CI declining it (or being unable to score it) must render as the
+        # TRUTH, never as "HOLD UNASSIGNED / 0 / 0 / 0" — those zeros are coerced
+        # defaults, not measurements. Unknown stays unknown; the human still decides.
+        embed = format_manual_not_recommended_embed(candidate, embed)
     return embed
 
 
@@ -426,6 +433,114 @@ def _candidates_table_available(url: str, key: str) -> bool:
         return False
 
 
+def minimal_decision_embed(decision_embed: dict[str, Any],
+                           candidate: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A safe, never-raising card that still SHOWS a persisted decision.
+
+    Safety net for the case that matters: the decision is already durable and the
+    rich render fails. The operator must never click a successful button and see
+    nothing happen, so this reads only plain scalars from the candidate and falls
+    back to a fixed shape if anything at all is unexpected.
+    """
+    candidate = candidate or {}
+    embed: dict[str, Any] = {
+        "title": decision_embed.get("title") or "Decision recorded",
+        "color": decision_embed.get("color", 0x95A5A6),
+        "fields": list(decision_embed.get("fields") or []),
+    }
+    try:
+        bits = []
+        if candidate.get("platform"):
+            bits.append(str(candidate["platform"]))
+        if candidate.get("platform_content_id"):
+            bits.append(str(candidate["platform_content_id"]))
+        if candidate.get("tenant_id"):
+            bits.append(str(candidate["tenant_id"]))
+        desc = (candidate.get("canonical_url") or candidate.get("title") or "")
+        if desc:
+            embed["description"] = str(desc)[:256]
+        if bits:
+            embed.setdefault("fields", []).append(
+                {"name": "Source", "value": " · ".join(bits)[:256], "inline": False})
+    except Exception:  # noqa: BLE001 — a fallback card must not itself fail
+        pass
+    return embed
+
+
+def format_manual_not_recommended_embed(c, base: dict[str, Any]) -> dict[str, Any]:
+    """Manual Intake card when Content Intelligence did not recommend the asset.
+
+    Renders the true state and keeps the operator override. An unmeasured score is
+    reported as UNAVAILABLE — never as 0. No score is manufactured and no CI
+    threshold is weakened; the human decision is what remains.
+    """
+    reason = str(c.get("rejection_reason") or "").strip()
+    status = str(c.get("status") or "").strip()
+    outcome = "CI: NOT RECOMMENDED" if reason else "CI: ANALYSIS UNAVAILABLE"
+
+    fields: list[dict[str, Any]] = []
+    platform, creator = c.get("platform") or "", c.get("creator_channel_identity") or ""
+    src = " · ".join(x for x in (platform, creator) if x)
+    if src:
+        fields.append({"name": "Source", "value": src[:256], "inline": True})
+    fields.append({"name": "Outcome", "value": outcome[:256], "inline": True})
+    if reason:
+        fields.append({"name": "Reason", "value": f"`{reason}`"[:256], "inline": False})
+
+    # Honest availability, read from the row itself. `has_real` is true only when a
+    # score was genuinely measured, so a coerced 0 cannot masquerade as a value.
+    def _score(field: str) -> str:
+        v = c.get(field)
+        return str(v) if isinstance(v, (int, float)) and v else "unavailable"
+    fields.append({"name": "Analysis", "value": "\n".join([
+        f"Market: {_score('market_opportunity_score')}",
+        f"Content: {_score('content_worthiness_score')}",
+        f"Selection: {_score('source_selection_score')}"])[:512], "inline": False})
+    fields.append({"name": "Status", "value": (f"`{status}`" if status else "no scoring state")[:128],
+                   "inline": True})
+    fields.append({"name": "Human decision required", "value": (
+        "LOOM informs. You decide.\n"
+        "Approve Clip / Reject / Hold — the asset stays reviewable either way.")[:512],
+        "inline": False})
+
+    out = dict(base)
+    out["title"] = f"📥 MANUAL INTAKE · {outcome}"
+    out["fields"] = fields
+    return out
+
+
+def remember_card_message(url: str, key: str, fingerprint: str, message_id: str) -> bool:
+    """Record the Discord review card id on the candidate row.
+
+    Enables ONE manual submission -> ONE active card: a later re-analysis edits
+    that same card instead of posting a second one. Stored inside the existing
+    `moment_evidence.lineage` JSONB (no new column, no DDL). Never raises — a
+    failed bookkeeping write must not fail an intake that already succeeded.
+    """
+    if not (fingerprint and message_id):
+        return False
+    try:
+        rows = _get(url, key, "loom_source_candidates?duplicate_fingerprint=eq."
+                    + urllib.parse.quote(fingerprint) + "&select=moment_evidence&limit=1")
+        if not isinstance(rows, list) or not rows:
+            return False
+        me = dict(rows[0].get("moment_evidence") or {})
+        lineage = dict(me.get("lineage") or {})
+        lineage["card_message_id"] = str(message_id)
+        me["lineage"] = lineage
+        body = json.dumps({"moment_evidence": me}).encode()
+        req = urllib.request.Request(
+            f"{url}/rest/v1/loom_source_candidates?duplicate_fingerprint=eq."
+            + urllib.parse.quote(fingerprint),
+            data=body, method="PATCH",
+            headers={"apikey": key, "Authorization": f"Bearer {key}",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=20):
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _candidate_from_row(s: dict[str, Any]) -> dict[str, Any]:
     """Map one authoritative candidate row onto the queue's card contract."""
     return {
@@ -447,6 +562,10 @@ def _candidate_from_row(s: dict[str, Any]) -> dict[str, Any]:
         "fire_reasons": s.get("fire_reasons") or [],
         "completeness_verdict": s.get("completeness_verdict", ""),
         "duplicate_state": s.get("duplicate_state", ""),
+        # Carried so the card can state the TRUTH for a CI-declined manual asset
+        # instead of rendering coerced zeros as if they were measurements.
+        "status": s.get("status", ""),
+        "rejection_reason": s.get("rejection_reason", ""),
         "source_relative_rank": s.get("source_relative_rank"),
         "source_candidate_count": s.get("source_candidate_count", 0),
         "moment_evidence": s.get("moment_evidence") or {},

@@ -2625,11 +2625,26 @@ class Handler(BaseHTTPRequestHandler):
                 source_url=candidate.get("canonical_url") or "",
                 manual_media=manual_media),
         }
+        existing_card = str(lineage.get("card_message_id") or "")
         try:
+            # ONE manual submission -> ONE active card: a re-analysis of the same
+            # submission EDITS its existing card instead of minting a second one.
+            if existing_card:
+                code, posted = http_json(
+                    "PATCH", f"{DISCORD_API}/channels/{channel_id}/messages/{existing_card}",
+                    DISCORD_BOT_TOKEN, body=payload, timeout=15)
+                if code in (200, 201) and posted.get("id"):
+                    return posted
+                print(f"[source-review] card update fell back to post (code={code})", flush=True)
             code, posted = http_json("POST", f"{DISCORD_API}/channels/{channel_id}/messages",
                                     DISCORD_BOT_TOKEN, body=payload, timeout=15)
             if code not in (200, 201) or not posted.get("id"):
                 raise RuntimeError("source card post did not return a Discord message ID")
+            if manual_media:
+                # Bookkeeping only: never let it fail a card that already posted.
+                source_review.remember_card_message(
+                    SUPABASE_URL, SUPABASE_KEY,
+                    candidate.get("duplicate_fingerprint", ""), str(posted["id"]))
             return posted
         except Exception as e:
             print(f"[source-review] card post failed: {type(e).__name__}", flush=True)
@@ -2850,9 +2865,21 @@ class Handler(BaseHTTPRequestHandler):
             shown = stored if not created and stored else decision
             winner = row.get("reviewer") or reviewer
             decision_embed = source_review.decided_embed(shown, winner, created)
-            embed = source_review.format_source_embed(candidate)
-            embed["fields"] = [*(embed.get("fields") or []), *(decision_embed.get("fields") or [])]
-            embed["color"] = decision_embed.get("color", embed.get("color"))
+            # RICH render is BEST-EFFORT ONLY. The decision is already durable at
+            # this point, so a rendering fault must never make a successful click
+            # look like "nothing happened" (a stale renderer crashed here after
+            # persisting, leaving the card unchanged). Fall back to a minimal card
+            # that still shows the persisted decision.
+            try:
+                embed = source_review.format_source_embed(candidate)
+                embed["fields"] = [*(embed.get("fields") or []),
+                                   *(decision_embed.get("fields") or [])]
+                embed["color"] = decision_embed.get("color", embed.get("color"))
+            except Exception as render_error:  # noqa: BLE001
+                print(f"[source-review] rich render failed fingerprint={fp} "
+                      f"error={type(render_error).__name__} — minimal decision card",
+                      flush=True)
+                embed = source_review.minimal_decision_embed(decision_embed, candidate)
             content = None
             # A stored approval whose dispatch was interrupted still owes its
             # idempotent pending job. Never dispatch a losing attempted decision.
