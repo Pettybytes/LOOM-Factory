@@ -1,161 +1,260 @@
 # LOOM — NEXT SESSION HANDOFF
 
-**Authoritative closeout: September 25, 2026, America/Detroit.** Supersedes the
-September 25 morning closeout (`535cb72`). Session closed on Bryan's directive:
-no further mining, inspections, repairs, acceptance clicks, or implementation.
-No approvals were impersonated and no acquisition/download was executed.
+**Authoritative closeout: 2026-09-26, America/Detroit (session ended ~16:58 EDT).**
+Supersedes the 2026-09-25 handoff. Documentation/continuity only — **no feature work was
+performed in this closeout, and none should be assumed pending.**
 
-## CANONICAL PRODUCT RULE — age is not a gate
+## 0. START HERE — the next block is **MANUAL INTAKE FINALIZATION**
 
-The `adults_only` / machine age-inference gate was **never a product requirement** and was
-removed on 2026-09-26. It must not exist as a qualification, eligibility, routing, discovery,
-source-mining, Manual Intake, candidate, approval, scoring, ranking, persistence,
-review-eligibility, acquisition or production gate — and it must **not** be replaced by age
-attestation of any kind.
+Two connected issues remain. This is the only authorized next block.
 
-- **Source mining:** discover → analyze → score/rank on authorized content/market criteria →
-  present the candidate → Bryan chooses Approve / Hold / Reject.
-- **Manual Intake:** Bryan supplies media → LOOM analyzes → LOOM informs → Bryan decides.
-- Analyzer age metadata has **no authorized consumer** and is no longer requested. Legacy
-  `adults_only` keys in stored brief payloads are **NON-AUTHORITATIVE / NON-GATING**.
-- Regression protection: `infra/content_intelligence/tests/test_age_gate_removed.py` fails if
-  any decision file consumes age again (discovery, mining, manual intake, qualification,
-  review eligibility).
-- Do not reintroduce this requirement without explicit owner authorization.
+### A. Manual candidate pre-persistence filtering (canonical seam, not per-platform patches)
 
-## 1. Current git state
+Real Manual Intake assets reached Content Intelligence and produced candidates, but some
+candidates did not survive to durable persistence. Exact application messages shown to the
+operator:
 
-- Repository: `/Users/user/Desktop/LOOM-Factory`, branch `master`.
-- **HEAD == `origin/master` == `01adc6f678ca38db92215b984a93f81957005ebb`** (verified 2026-09-26T00:10Z).
-- Working tree clean except `?? infra/supabase/038_loom_editor_session_tokens.sql` — preserved untracked, unstaged, unmodified. SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0` (re-verified at closeout).
+- `CI produced a candidate but its durable row was not found`
+- `Content Intelligence produced a candidate but the durable row is absent — the candidate was filtered before persistence`
 
-| Commit / tag | Meaning |
+Seen on more than one real platform/asset. Treat as **ONE canonical manual-origin
+persistence seam**, not separate Instagram/Kick fixes.
+
+**Required semantic correction**
+
+| Lane | Behaviour |
 |---|---|
-| `535cb7228094563f3d1bfe7825c7b5c4724ca72d` | Astra six-platform successful baseline (beach-lane closeout) |
-| `6028fa3b080af39e4617cc217f541ef5cc0a2da1` | Reject-reason implementation (structured reject select + persistence) |
-| `b68ef1afc5a8c89e01c6f2afaf1ad46176da2152` | Revert of `6028fa3` (Bryan's rollback directive) |
-| tag `segment5-reject-reasons` → `6028fa3` | Preservation tag for the reverted feature — **do not alter or delete** |
-| `01adc6f678ca38db92215b984a93f81957005ebb` | New-lane run receipts (`SEGMENT5_NEW_LANES_20260925.md`) |
+| Automated discovery | May keep filtering weak/non-qualifying candidates with its existing authorized logic. **Do not change.** |
+| Manual Intake | Bryan deliberately supplied the source/media, so the intelligence result must stay **durable and reviewable** even when CI concludes: not recommended · no qualifying moment · low score · incomplete · intent mismatch. |
 
-## 2. Current runtime state
+Manual origin changes **persistence/review semantics only**. It MUST NOT increase a score,
+manufacture a qualifying moment, weaken Content Intelligence, or make poor content look good.
 
-- Adapter running under `supervise.sh` (pid 55111, listening `127.0.0.1:8090`,
-  health `status: ok` at closeout). Supervisor loop alive.
-- `LOOM_ACQUISITION_LIVE=0` confirmed in process env; health reports
-  `acquisition.live_runner: disabled`. **No acquisition/download executed at any point.**
-- Migration 040 applied — `loom_source_candidates`, `loom_source_reviews`,
-  `loom_acquisition_jobs` all live (verified HTTP 200 during this session).
-- `rejection_category` / `reviewer_instructions` columns **pre-existed via
-  migration 024** — the reverted reject-reason work used them but never changed
-  schema; no database rollback was needed or performed.
-- Zero DB rows were written by the reverted work (timestamp-verified:
-  0 rows created after 23:00Z on 2026-09-25 in all three tables).
+**Canonical rule: LOOM informs. Bryan decides.**
 
-## 3. Verified codeline
+### B. URL-only Manual Intake (second ingress mode)
 
-Astra's three repairs remain present at reverted HEAD `b68ef1a` (code-inspected this session):
-1. **Approve worker exception boundary** — reviewer parsing inside the worker
-   try-block; failures surface via staged traceback logging and card patch, never a silent HTTP 200.
-2. **Actual-media tenant/niche enforcement** — tenant-configured
-   `mining_requirements` gates (intent / required_concepts / creator_identities),
-   no hardcoded lane logic. **Age is not a gate** (removed 2026-09-26).
-3. **Authoritative clip-window rendering** — cards render from persisted
-   `recommended_clip_start/end`, not start anchors.
+Cobalt works well for the TikTok/Instagram supplied-media workflow but does not reliably serve
+Bryan's **Kick / Twitch / Reddit** workflow. Manual Intake therefore needs TWO modes:
 
-Baseline suites re-ran on the reverted HEAD at **exact baseline counts** (do not rerun):
-Content **469** / Discovery **148** / Discord **255** / Acquisition **578** — all OK.
+| Mode | Flow |
+|---|---|
+| **A — Supplied media** (substantially exists) | file + source URL → durable media → CI → durable manual candidate → human review |
+| **B — Source URL / LOOM resolution** (missing) | source URL → identify platform → **reuse EXISTING resolver/acquisition** → retrieve media → durable media → **SAME** CI → durable manual candidate → human review |
 
-## 4. New-lane discovery run (advisory human-review mode, no code changes)
+Both converge at `durable media available`, then `durable media → CI → candidate → review`.
+**Do not** build separate downstream pipelines, and **do not** write new downloaders before
+mapping what already exists (§7).
 
-Tenant `dreemzy` / profile `segment5-newlanes-20260925`. Lanes: gym baddie
-fitness moments (YouTube/TikTok/Instagram/Reddit), TPain funny moments (Twitch),
-Blac Chyna funny moments (Kick). Creator identities verified natively:
-Twitch `tpain` id 117083340 (partner); Kick `blacchyna` id 121279976 (verified=true).
-All six cards read back live with Approve/Reject/Hold + Open Source controls.
-All six have durable candidate rows (`completeness_verdict=PASS` + `boundary_plan`).
+---
 
-| Platform | Title | Creator | Source | Candidate ID | Card | Window | Market/Content/Selection/Conf | Preview |
-|---|---|---|---|---|---|---|---|---|
-| kick | "bgt" | blacchyna | https://kick.com/blacchyna/clips/clip_01M23FNSWAZ654Q6FMPQKZE4SG | `clip_01M23FNSWAZ654Q6FMPQKZE4SG` | [1553193671950598175](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193671950598175) | 0–59s | 41/88/84/100 | no embed still |
-| twitch | "shut it!" | tpain | https://twitch.tv/tpain/clip/HeadstrongLachrymoseStarKeyboardCat-w2Nr7rjNUMEcYAzO | `HeadstrongLachrymoseStarKeyboardCat-w2Nr7rjNUMEcYAzO` | [1553193680012058638](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193680012058638) | 0–23s | 29/62/65/92 | embed image |
-| instagram | "and i lala love itttt" | sommerray | https://www.instagram.com/reel/DbtmbQdxIrU/ | `DbtmbQdxIrU` | [1553193683854164012](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193683854164012) | 0–5s | 99/65/100/78 | no embed still |
-| youtube | "Fousey rizzes up Gym Baddie" | G7 Kick | https://www.youtube.com/shorts/jtVwshyzEh4 | `jtVwshyzEh4` | [1553193689483051099](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193689483051099) | 0–15s | 44/60/75/100 | embed image |
-| reddit | "Aura farming in front of gym baddie" | No-Run7148 | https://reddit.com/r/CalisthenicsCulture/comments/1pn0xoy/aura_farming_in_front_of_gym_baddie | `1pn0xoy` | [1553193693458997334](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193693458997334) | 0–12s | 0/65/14/20 | no embed still |
-| tiktok | "gym baddies 🍑" | kace.cooper | https://www.tiktok.com/@kace.cooper/video/7686198505819360545 | `7686198505819360545` | [1553193699104661515](https://discord.com/channels/1546266463663423518/1550207989569421444/1553193699104661515) | 0–58s | 58/38/69/85 | no embed still |
+## 1. Repository / runtime state (verified, not assumed)
 
-Fingerprints (durable rows verified): kick `061952af…4b`, twitch `2a82b715…89`,
-instagram `f6848318…1a`, youtube `3f76bf2c…dc`, reddit `6c915f78…0e`,
-tiktok `02b65eef…34` (full values in `/tmp/loom-newlanes-20260925/human-cards.json`).
+| Item | Value |
+|---|---|
+| Branch | `master` |
+| HEAD | `0a99e4f4913118821d1e7aa4386cbd57141d0dc9` |
+| `origin/master` | identical to HEAD |
+| Worktree | clean except `?? infra/supabase/038_loom_editor_session_tokens.sql` |
+| Preserved 038 | untracked, unmodified, SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0` — **do not touch** |
+| Adapter | pid 98801, `127.0.0.1:8090`, health `ok`, managed by `infra/discord-review/supervise.sh` (`run.sh` sources the `.env` whitelist) |
+| Acquisition | `LOOM_ACQUISITION_LIVE=0`; health reports `live_runner: disabled`. **No paid acquisition ran this session.** |
+| Live channel bindings | `LOOM_MANUAL_INTAKE_CHANNEL_ID=1553487809422295061` (#manual-intake-📸) · `LOOM_MANUAL_REVIEW_CHANNEL_ID=1546266875225440397` (#clip-review) — verified present in the running service's env |
 
-**Honest quality assessment:** Kick and Twitch were useful because
-creator-specific clip pages sharply constrained discovery. YouTube was moderate.
-Instagram, TikTok and Reddit results were weak despite successful technical
-processing. This exposes a **discovery/query-quality gap**, not a
-media-processing or Discord-card failure: broad subject queries such as
-"gym baddie shorts" do not consistently describe a reaction-worthy event.
-Production discovery needs event-based query expansion, creator watchlists,
-bounded multi-candidate ranking, and permission to return an empty lane
-instead of posting the least-bad result. No FIRE passes claimed; all scores
-advisory. Honest rejections included: Twitch gameplay clips
-`adult_status_unproven` ×3 (no people visible — safety gate working as
-designed), Reddit EgyGym post intent_mismatch + adult_status_unproven,
-TikTok `no_directly_observed_event` ×2, Instagram reel adult_status_unproven.
+## 2. Commit history (verified with stats)
 
-> **Historical note:** those `adult_status_unproven` rejections came from the age gate
-> that was later removed as an unauthorized requirement (see the canonical rule at the
-> top of this file). New runs produce no age reason at all.
+| Commit | What it established |
+|---|---|
+| `f519512` | 2026-09-25 closeout (rollback + six-platform new-lane run) — prior baseline |
+| `8aca68b` | **Manual Intelligence Intake V1.2**: supplied-media ingress, GHL durable store, submission rows with `origin=manual_media`, CI invocation on supplied media, migration 041, prove-script repair, 9 files / +1188 |
+| `5b9ec8c` | Routing correction: ingress bound by channel **ID**; manual candidates → `#clip-review`, never `#source-review` (+ regression guard) |
+| `74add60` | Discord **ACK/defer** fix (type 5 for app commands, no network pre-ACK), `run.sh` env whitelist, service-runtime import bootstrap, retry-safe media reuse |
+| `ec226a3` | Card renders the analyzer's real outcome (not "Unavailable"); `media_assessment` mapped through; manual approvals labelled **Approve Clip**; manual-lane intent corrected |
+| `0a99e4f` | **Age gate removed entirely** (current baseline) |
 
-Lane-config notes (tenant terms only, no code changes): creator-pinned lanes
-(Twitch/Kick) and Instagram use `required_concepts: []` — theme enforced by
-media-first inspection against lane intent. TikTok gym lane uses real lane
-vocabulary tokens because word-boundary matching does not split compound
-hashtags. YouTube: only `jtVwshyzEh4` verified as a portrait native Short
-(yt-dlp; desktop HTML client redirects to /watch with HTTP 200 — same
-evidence standard as the Reddit card).
+## 3. What is RUNTIME PROVEN (with evidence)
 
-## 5. Costs
+- Discord **`#manual-intake` exists** and ingress is **bound by channel ID**.
+- **Supplied-media ingress works**; **no network work occurs before the ACK**; app-command
+  **ACK/defer defect fixed** (type 5); service-runtime **import bootstrap** and
+  **env/channel-binding** defects fixed.
+- **GHL/filesafe durable media upload AND retrieval** work (real byte-identical retrieval).
+- **Submission persistence** works: `origin=manual_media` with durable `media_reference`.
+- **Content Intelligence consumes supplied media** (local ffmpeg inspection:
+  `inspection_attempts.method=local_supplied_media`).
+- **Operator boundaries remain authoritative when supplied**; machine analysis runs when they
+  are absent (`boundary_provenance` = `manual_intake` | `machine`).
+- **Supplied media bypasses unnecessary acquisition** — approve handoff returns
+  *"Media already stored at intake — no acquisition needed"* and plans **zero** jobs.
+- **Retry/dedup:** identical bytes reuse the existing durable copy (`durable media reused
+  (same bytes)` in the log).
+- **Analyzer findings survive to inspection**, and the **review-card rendering defect is fixed**
+  (states the real outcome + model reasons instead of "Unavailable").
+- **Age/adult gate completely removed**; no replacement attestation added.
 
-| Category | Amount | Evidence |
-|---|---|---|
-| Apify actual (ledger-reconciled) | **$0.0783** | TikTok $0.0565 + Instagram $0.0218 |
-| Gemini usage-based estimate | **$0.0430** | 16 cached-metered media inspections, 0 metadata calls |
-| **LOOM discovery/media total** | **≈$0.12** | Actual + estimate; excludes agent inference |
-| OpenRouter GLM development spend | Balance started **$49.98**; last independently observed **$39.93** → at least **$10.05** consumed. Session meter at closeout: $0.84 this session, $13.12 month-to-date. | Development/session overhead, **not** normal LOOM sourcing cost |
+## 4. Product decisions (FINAL unless Bryan changes them)
 
-No new provider, subscription, or publication spend. Ledger reservations remain
-standing until billing is verified, per spend-ledger discipline.
+- **No LOOM age/adult qualification gate** for source mining or Manual Intake. Do **not**
+  reintroduce `adults_only`, adult attestation, `Confirm 18+`, machine age veto, ambiguous-age
+  rejection, or age-based suppression. Analyzer age inference is **no longer requested**.
+  Regression guard: `infra/content_intelligence/tests/test_age_gate_removed.py`.
+- **Manual vs automated semantics** (§9) — manual candidates stay reviewable.
+- **Operator UX** (§10) — the operator supplies only: media (or URL), optional tenant, optional
+  start/end. LOOM infers topic/hook/payoff/moment type/angle.
+- Authorized criteria remain: `intent_match`, `required_concepts`, `creator_identities`,
+  `nudity`/`explicit_sex`, directly-observed event, timed payoff, market/selection logic.
 
-## 6. Pending live acceptance — NOT yet performed
+## 5. Real durable acceptance assets (reuse — do NOT ask Bryan to re-upload)
 
-**Bryan has not clicked anything**: durable-row check at 2026-09-26T00:10Z
-found **zero reviews** on all six new fingerprints.
+| Asset | Submission id | Durable media (filesafe) | sha256 | Dims/dur | Bytes | Fingerprint | Candidate today |
+|---|---|---|---|---|---|---|---|
+| **TikTok** `@midflightclips/video/7667225763720023327` | `d6caf284-746c-420d-ad6a-23e22ffb7c46` | `…/media/587de683-3687-4f00-bca9-128cfdf9df00.mp4` (file_id `6ab820a03dbd5f2bbbefc6b7`) | `8ef6886f801f30a2…` | 720×1280 / 12.03 s | 2,042,229 | `0829b8d1e458b8f1…` | **PERSISTED** (status `scored`, content 0, completeness FAIL, `inspected_intent_mismatch,no_directly_observed_event`, no boundary) · jobs **0** |
+| **Instagram** `instagram.com/reels/DdvnP_rqcQ0` | `41008b38-acdd-4c6b-949f-200433742826` | `…/media/d6f62ce6-e666-4461-aee7-e0ad679f77ce.mp4` (file_id `6ab82a95974a9da6eee45686`) | `5d8ed3c5895f629f…` | 720×1280 / 30.09 s | 9,249,951 | `8b5686959b981817…` | **PERSISTED** under a **different** fingerprint `13c3bca765b2ab2d…` (status `scored`, **content 68**, completeness **PASS**, boundary present, `MARKET_GATE_FAILED,LOW_CONTENT,LOW_SELECTION,LOW_CONFIDENCE`) · jobs **0** |
+| **Kick** `kick.com/deenthegreat/clips/clip_01M33XASMP29XTQ1QK0EV7TXDC` | `613843c0-6af2-4f1a-9f1b-82b319372582` | `…/media/7a59b60c-0db0-4b5b-9d41-fbef947a8763.mp4` (file_id `6ab82eef1f3be2be1bd532c0`) | `e3844b9996b898de…` | 1920×1080 / 33.01 s | 19,419,451 | `c21aff113f5d7978…` | **NO candidate row.** Log: `done fingerprint=c21aff113f5d ci_ok=False` |
 
-Pending clicks (in #source-review):
-- **Approve** → Kick "bgt" card (`1553193671950598175`)
-- **Reject** → Reddit "Aura farming" card (`1553193693458997334`)
+All three are submitter `passportpetty`, `origin=manual_media`, platform `accepted_pending_platform_support`.
+Also on record (proof runs): Twitch `2768903e…` (boundary `manual_intake`, window 1–4 s) and
+TikTok `d34a6022…`.
 
-Still unverified after those clicks:
-- Approve creates exactly one review row and one pending acquisition job with correct tenant, lineage and bounds.
-- Reject creates one review row and **no** acquisition job.
-- Duplicate clicks return the stored winner without additional rows.
-- No download occurs while acquisition remains disabled.
+## 6. The persistence defect, stated precisely
 
-Current reverted **Reject is one-click**. Rejection-reason capture and
-reject-channel routing are **not** part of the active code; the tested
-reject-reason work is preserved under tag `segment5-reject-reasons` for later
-reconsideration.
+It is **not** "Content Intelligence didn't run" — CI ran (evidence: Instagram candidate has
+content 68 + a boundary; TikTok/Instagram both have `media_assessment`). The seam is:
 
-## 7. Next session
+```
+CI candidate produced → qualification/filter → candidate does not survive persistence
+→ Manual Intake consumer looks for the durable candidate → durable row absent
+```
 
-- Resume with **DeepSeek Flash** (thinking low/off) for inexpensive read-only
-  verification after Bryan clicks.
-- Use existing candidate IDs, fingerprints and message IDs — **do not repeat discovery**.
-- First task is **only** the Approve/Reject durable-row verification above.
-- After that: close Segment 5, or define the bounded discovery-quality
-  improvement (event-based query expansion, creator watchlists, empty-lane
-  permission) as a separate scoped task.
-- Do not use GLM or Astra unless a reproducible defect survives a cheaper-model attempt.
+Two distinct causes are already identified and must not be conflated:
 
-Runtime artifacts: `/tmp/loom-newlanes-20260925/` (human-cards.json, verified.json,
-per-platform inspections, receipts). Repo receipts:
-`SEGMENT5_NEW_LANES_20260925.md` @ `01adc6f`.
+1. **Persistence gate** — `infra/content_intelligence/pipeline.py:472`: a candidate is written
+   **only when `status == "scored"`**; a store failure rewrites it to `status="error"` with
+   `error="persist_candidate: <Exc>"`. Any manual candidate that is filtered before that point
+   produces no durable row at all.
+2. **Identity/lookup mismatch (fixed in `ec226a3`, but note the residual)** — the pipeline
+   assigns its **own** candidate fingerprint per materialized moment, so the submission
+   fingerprint is not the candidate key; lookups now resolve by `platform_content_id`.
+   **Residual defect:** `manual_intake._extract_content_id` for **kick** matches only
+   `/clip/` (singular), so Bryan's `/clips/<id>` URL produced an **empty**
+   `platform_content_id` — which alone can produce "durable row absent" even when a row exists.
+
+**Required discipline (use it):** `EXISTS ≠ CONNECTED ≠ EXECUTED ≠ PERSISTED ≠ CONSUMED`, plus
+`written ≠ consumed` · `returned ≠ persisted` · `persisted ≠ rendered` · `rendered ≠ actionable`
+· `actionable ≠ durable`.
+
+**Trace this exact chain:** manual ingress → submission → durable media → CI → analyzer result →
+normalization → qualification → filtering → persistence decision → DB write → candidate lookup →
+Discord render.
+
+## 7. URL-only intake: map what exists first (do NOT write new downloaders)
+
+The container must **derive the platform from the URL** (no per-platform Discord command
+explosion) and reuse existing LOOM resolution/acquisition. Prior work *claims* capability
+around: YouTube exact URL · Reddit · Twitch clips · Twitch bounded VOD windows · Kick clips ·
+TikTok provider route · Instagram provider route. **Treat that list as CLAIMED, NOT VERIFIED —
+inspect current repo/runtime truth before relying on it.**
+
+Known trap: **Kick clip acquisition ≠ Kick ranged-VOD acquisition.** Do not conflate them.
+
+Desired operator model: TikTok/Instagram → prefer Cobalt → supplied media (avoids provider
+cost); Reddit/Twitch/Kick → supply the URL and let LOOM resolve; YouTube → either mode.
+
+## 8. Cost discipline
+
+Supplied media must not trigger unnecessary paid acquisition. Prefer an existing local/free
+authorized resolver; never silently use a paid provider when a free authorized route exists;
+preserve provider/cost provenance. **Do not** add CapCut or any new downloader subscription for
+this requirement. The goal is not "zero rows" — it is: no redundant acquisition decision, no
+duplicate media, no unnecessary provider spend, no accidental automated pipeline behaviour.
+
+## 9. Manual vs automated semantics (must survive)
+
+- **Automated discovery:** LOOM finds volume and may filter weak candidates with authorized
+  qualification/ranking before Bryan sees them. **Do not break this.**
+- **Manual Intake:** Bryan intentionally gives LOOM the content. LOOM analyses honestly but must
+  not make the item vanish merely because CI doesn't recommend it. Desired state:
+  **`UNDERSTOOD + NOT RECOMMENDED`** — Bryan still decides.
+- Manual persistence must not contaminate automated discovery semantics.
+
+## 10. Discord operator experience (desired end state)
+
+The operator must **not** be required to supply topic, why-selected, hook, payoff, moment type,
+reaction angle, or category — Content Intelligence infers them. Optional inputs: tenant,
+start timestamp, end timestamp. No timestamps → LOOM attempts machine boundary detection.
+Timestamps supplied → operator boundaries preserved with manual provenance while machine
+analysis remains evidence. Manual Intake must stay **fast**.
+
+## 11. GHL / durable media — honest state
+
+Durable **upload and retrieval are proven**. Folder targeting is **not**: the `POST /medias/folder`
+call created `Intake Reviews` under `LOOM`, but the upload endpoint did not reliably place media
+inside it, so media lands **unfiled yet durable and retrievable**. Record this as a **bounded
+UX/storage issue**; it is **not** a Manual Intake blocker. Do not claim folder targeting works
+unless it is runtime proven.
+
+## 12. Editor state — do not lose this
+
+`CURRENT_STATE.md` carries a standing lock: *"Editor acceptance is complete and locked. Do not
+re-audit, re-test, or add Editor feature work."* **That lock is preserved, not removed.**
+Distinction: the *previous* editor acceptance remains locked; Bryan intends to authorize a
+**new/missing timeline-editor capability** *after* Manual Intake is finalized. Do not resurrect
+Discord Activity editor architecture, old component-limit discussions, or abandoned approaches;
+the editor already moved to an external LOOM editor link. The future work is the missing
+**timeline** editing functionality. **Do not start or reopen it without explicit authorization.**
+
+## 13. Launch discipline (September 30 boundary)
+
+Order: **finalize Manual Intake → timeline editor capability → already-authorized launch
+spine / Segment 6 work.** Do not insert speculative infrastructure between these items, and do
+not let this handoff drift into an unlimited build.
+
+## 14. Locked / proven summary
+
+Locked: Editor Gate + Segment 4 + cross-platform acquisition (do not re-audit); automated
+discovery qualification behaviour; the preserved migration 038; age-gate removal.
+Proven this session: see §3.
+
+## 15. Known open defects (all genuinely unresolved)
+
+1. **Manual candidate pre-persistence filtering** (§6) — the canonical seam to fix.
+2. **URL-only Manual Intake missing** for the Kick/Twitch/Reddit operator workflow (§7).
+3. **Kick `/clips/` content-id extraction** returns empty → candidate cannot be linked (§6.2).
+4. **GHL folder targeting** not honoured by the upload endpoint (§11) — bounded, non-blocking.
+
+## 16. NEXT EXECUTION BLOCK
+
+Do **not** begin by coding. In order:
+
+1. read `CURRENT_STATE.md` → 2. read this handoff → 3. verify HEAD/worktree →
+4. inspect the targeted Manual Intake persistence path → 5. confirm the real Instagram/Kick
+durable assets are still available (§5) → 6. trace the pre-persistence filter →
+7. fix the canonical manual-origin persistence seam → 8. regression-prove automated discovery is
+unchanged → 9. map existing platform resolvers → 10. implement URL-only intake by **composing**
+them → 11. runtime-prove representative Reddit/Twitch/Kick URL intake → 12. verify TikTok/
+Instagram supplied-media behaviour is intact → 13. prove at least one real **`Approve Clip`**
+decision becomes durable → 14. close Manual Intake only when evidence supports it.
+
+**Summary: Fix canonical Manual Intake persistence seam → compose existing resolvers into
+URL-only Manual Intake → runtime acceptance → close Manual Intake.**
+
+Bryan will supply the detailed implementation prompt next session. **Do not invent additional
+scope before receiving it.**
+
+## 17. DO-NOT-REDO list
+
+Do not: rebuild Manual Intake from scratch · re-audit the age gate · add adult attestation ·
+reintroduce age inference · redo the Discord ACK/defer work · resurrect Cloudflare tunnel work ·
+assume the latest Discord failure is Tailscale/ingress related without evidence · rebuild GHL
+durable media upload · write new platform downloaders before checking existing resolvers · force
+TikTok/Instagram through paid acquisition when supplied media exists · reopen automated discovery
+architecture unnecessarily · weaken CI thresholds to make acceptance pass · make manual
+candidates look artificially good · resurrect Discord Activity editor work · touch
+`038_loom_editor_session_tokens.sql` · start the timeline editor before Bryan authorizes it.
+
+## 18. Test / evidence state
+
+`infra/content_intelligence` suite **477 OK** · `infra/discord-review` suite **302 OK** ·
+age-gate regression **6 OK**. Runtime artifacts from this session:
+`/tmp/loom-v12/` (`v12-proof-report.json`, `reenrich-report.json`, `ghl-contract-report.json`).
+Repo proof: `MANUAL_INTAKE_ACCEPTANCE_20260926.md`, `SEGMENT5_NEW_LANES_20260925.md` (historical).

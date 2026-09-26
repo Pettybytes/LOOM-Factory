@@ -4,16 +4,57 @@
 
 ---
 
-> ## ⚠️ SEGMENT 5 IN PROGRESS — 2026-09-22
+# START HERE NEXT SESSION
+
+**Snapshot: 2026-09-26 (closeout).** Branch `master` · HEAD
+`0a99e4f4913118821d1e7aa4386cbd57141d0dc9` == `origin/master` · worktree clean except
+`?? infra/supabase/038_loom_editor_session_tokens.sql` (preserved, SHA1
+`3da12826ef96dd05ce089b490ee490e66baf01c0`).
+
+**Read `NEXT_SESSION_HANDOFF.md` in full — it is the authoritative resume point.** This section
+is the short form.
+
+## NEXT IMPLEMENTATION BLOCK — Manual Intake Finalization
+
+Two connected issues remain.
+
+**A. Manual candidate pre-persistence filtering — ONE canonical seam, not per-platform patches.**
+Real Manual Intake assets reached Content Intelligence and produced candidates, but some did not
+survive to durable persistence. Operator-visible messages:
+*"CI produced a candidate but its durable row was not found"* and *"Content Intelligence produced
+a candidate but the durable row is absent — the candidate was filtered before persistence"*.
+Automated discovery keeps its existing authorized filtering (do not change it). Manual Intake must
+keep the intelligence result **durable and reviewable** even when CI concludes not-recommended /
+no qualifying moment / low score / incomplete / intent mismatch — without inflating scores,
+manufacturing a moment, or weakening Content Intelligence.
+**LOOM informs. Bryan decides.**
+
+**B. URL-only Manual Intake (missing).** Two ingress modes: **(A)** supplied media + source URL
+(exists) and **(B)** source URL only → identify platform → reuse the EXISTING resolver/acquisition
+→ retrieve media → durable media → **SAME** CI → durable manual candidate → human review. Both
+converge at `durable media available`. Do not create separate downstream pipelines, and do not
+write new downloaders before mapping existing resolvers. **Kick clip acquisition ≠ Kick
+ranged-VOD acquisition.**
+
+**Product rule — FINAL:** there is **no LOOM age/adult qualification gate** for source mining or
+Manual Intake. Do not reintroduce `adults_only`, adult attestation, `Confirm 18+`, machine age
+veto, ambiguous-age rejection, or age-based suppression. Regression guard:
+`infra/content_intelligence/tests/test_age_gate_removed.py`.
+
+**After Manual Intake is finalized:** the missing **timeline-editor capability** — requires
+Bryan's explicit authorization. Then the launch spine / Segment 6.
+
+---
+
+> ## SUPERSEDED — "SEGMENT 5 IN PROGRESS" banner (2026-09-22)
 >
-> **Read `NEXT_SESSION_HANDOFF.md` FIRST.** It is the authoritative resume point for the
-> Segment 5 moment-mining work in progress (repo `master` == `origin/master` == `c5ec62f`,
-> tree clean, only `infra/supabase/038_loom_editor_session_tokens.sql` untracked by design).
-> It carries the nine-commit fix chain, the measured runtime gaps, the exact next action,
-> Bryan's standing direction, the credential/security posture, and the gotchas.
+> The resume pointer below is out of date (`c5ec62f`, 2026-09-22). The authoritative resume point
+> is now `NEXT_SESSION_HANDOFF.md` (2026-09-26, HEAD `0a99e4f`). Retained for history only.
 >
-> Everything in THIS file about the **Editor Gate, Segment 4, and cross-platform
-> acquisition remains accepted and locked — do not re-audit or revert it.**
+> **Still in force:** everything in THIS file about the **Editor Gate, Segment 4, and
+> cross-platform acquisition remains accepted and locked — do not re-audit or revert it.** The
+> editor lock stands: previous editor acceptance stays locked, and a NEW timeline-editor
+> capability is **not** authorized yet.
 
 ---
 
