@@ -250,15 +250,41 @@ def format_mining_embed(c, base):
         f"Lifetime avg VPH {val('lifetime_average_vph')} · Observed velocity/h {val('observed_velocity_per_hour')}",
         f"Engagement {val('engagement')} · Outlier {val('outlier_multiple')} · Route {val('route')}",
         f"Market **{c.get('market_opportunity_score')} / 100**"]))
-    add("Moment", f"{me.get('what_happens', 'Unavailable')}\nType: {(c.get('moment_type') or {}).get('moment_type', 'unknown')}")
+    assessment = c.get("media_assessment") or {}
+    _reasons = [r.get("message") for r in (assessment.get("reasons") or [])
+                if isinstance(r, dict) and r.get("message")]
+    qualification = me.get("qualification") or {}
+    _concepts = [x.get("observation") for x in (qualification.get("concept_evidence") or [])
+                 if isinstance(x, dict) and x.get("observation")]
+    _analyzed = bool(assessment or qualification)
+    _had_moment = bool(me.get("what_happens") or me.get("inspected_moments")
+                       or assessment.get("moments"))
+    # The analyzer ran and found no qualifying moment. Say exactly that, with its
+    # own reason, instead of rendering real analysis as missing data.
+    add("Moment", (me.get("what_happens") if me.get("what_happens")
+                    else ("No qualifying moment identified" if _analyzed else None))
+        + f"\nType: {(c.get('moment_type') or {}).get('moment_type', 'unknown')}")
     if all(isinstance(p.get(k), (int,float)) for k in ('recommended_clip_start','recommended_clip_end')):
         s,e=p['recommended_clip_start'],p['recommended_clip_end']
         event = p.get('event_timestamp')
         event_label = _fmt_seconds(event) if isinstance(event, (int, float)) else "Unavailable"
         add("Resolved window", f"Event {event_label}\nStart {_fmt_seconds(s)} · End {_fmt_seconds(e)} · Duration {e-s:g}s")
-    add("Why selected", me.get("why_selected"))
-    add("First 0–3 second hook", me.get("hook_0_3s"))
-    add("Payoff / resolution", me.get("payoff"))
+    add("Why selected", me.get("why_selected") or ("; ".join(_reasons) if _reasons else None))
+    add("First 0–3 second hook", me.get("hook_0_3s") or (
+        "Not established — no qualifying moment" if (_analyzed and not _had_moment) else None))
+    add("Payoff / resolution", me.get("payoff") or (
+        "Not established — no qualifying moment" if (_analyzed and not _had_moment) else None))
+    if _analyzed and not _had_moment and (_reasons or _concepts):
+        _lines = []
+        if _concepts:
+            _lines.append("Observed: " + "; ".join(_concepts[:3]))
+        _lines.extend(f"• {r}" for r in _reasons[:3])
+        _scores = assessment.get("scores") or {}
+        _keys = ("hook", "relatability", "story_progression", "narrative_completeness")
+        _shown = [f"{k} {_scores[k]}" for k in _keys if k in _scores]
+        if _shown:
+            _lines.append("Dimensions: " + " · ".join(_shown))
+        add("Analyzer findings", "\n".join(_lines))
     add("Reaction / commentary angle", me.get("reaction_angle"))
     add("Completeness & boundary evidence", f"{c.get('completeness_verdict')}\nStart: {p.get('start_reason')}\nEnd: {p.get('end_reason')}")
     add("Quality", f"Content {c.get('content_worthiness_score')} · Selection {c.get('source_selection_score')} · Confidence {c.get('source_selection_confidence')} · FIRE {'PASS' if c.get('fire_passed') else 'FAIL'}")
@@ -287,10 +313,16 @@ def format_mining_embed(c, base):
 
 
 def format_source_buttons(fingerprint: str, *, disabled: bool = False,
-                          source_url: str = "") -> list[dict[str, Any]]:
-    """Buttons in order: Approve (green), Reject (red), Hold (gray), Open Source (link)."""
+                          source_url: str = "", manual_media: bool = False) -> list[dict[str, Any]]:
+    """Buttons in order: Approve (green), Reject (red), Hold (gray), Open Source (link).
+
+    ``manual_media`` candidates are CLIP approvals (their media is already stored),
+    so the action is named for what it does. The action itself is unchanged and
+    still creates zero acquisition jobs for supplied media.
+    """
+    approve_label = "Approve Clip" if manual_media else DECISION_LABELS[DECISION_APPROVE]
     buttons = [
-        {"type": 2, "style": 3, "label": DECISION_LABELS[DECISION_APPROVE],
+        {"type": 2, "style": 3, "label": approve_label,
          "custom_id": make_source_custom_id(DECISION_APPROVE, fingerprint), "disabled": disabled},
         {"type": 2, "style": 4, "label": DECISION_LABELS[DECISION_REJECT],
          "custom_id": make_source_custom_id(DECISION_REJECT, fingerprint), "disabled": disabled},
@@ -415,6 +447,7 @@ def _candidate_from_row(s: dict[str, Any]) -> dict[str, Any]:
         "source_candidate_count": s.get("source_candidate_count", 0),
         "moment_evidence": s.get("moment_evidence") or {},
         "moment_type": s.get("moment_type") or {},
+        "media_assessment": s.get("media_assessment") or {},
         "boundary_plan": s.get("boundary_plan") or {},
         "suggested_timestamps": (s.get("boundary_plan") or {}).get("start_anchors") or [],
         "top_reasons": [],

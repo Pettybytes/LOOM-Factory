@@ -2591,11 +2591,14 @@ class Handler(BaseHTTPRequestHandler):
             self._post_source_card(channel_id, c)
 
     def _post_source_card(self, channel_id, candidate):
+        lineage = ((candidate.get("moment_evidence") or {}).get("lineage") or {})
+        manual_media = lineage.get("origin") == "manual_media_intake"
         payload = {
             "embeds": [source_review.format_source_embed(candidate)],
             "components": source_review.format_source_buttons(
                 candidate["duplicate_fingerprint"],
-                source_url=candidate.get("canonical_url") or ""),
+                source_url=candidate.get("canonical_url") or "",
+                manual_media=manual_media),
         }
         try:
             code, posted = http_json("POST", f"{DISCORD_API}/channels/{channel_id}/messages",

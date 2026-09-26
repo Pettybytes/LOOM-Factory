@@ -50,7 +50,7 @@ def _diag(candidate: Any) -> dict[str, Any]:
 
 
 def manual_brief(tenant_id: str, *, profile_id: str = MANUAL_PROFILE_ID,
-                 intent: str = "operator-supplied source for review") -> Any:
+                 intent: str = "operator-supplied content for human review") -> Any:
     """A tenant-scoped brief for operator-supplied media.
 
     Theme concepts are intentionally empty: the human already chose the source,
