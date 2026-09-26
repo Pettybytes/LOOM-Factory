@@ -171,5 +171,79 @@ class TestSubmissionPayload(unittest.TestCase):
                 human_window=(None, None), active_tenants=self.ACTIVE)
 
 
+class TestModeBUrlIntake(unittest.TestCase):
+    """Mode B (URL-only): EXISTING resolver + EXISTING bounded local downloader.
+
+    Offline and deterministic: the downloader is stubbed, so this pins the
+    WIRING (which command builder is used, which identity results) without
+    touching the network or any paid provider.
+    """
+
+    FIXTURES = [
+        ("https://www.reddit.com/r/bootyrecoils/comments/1b6k4c7/booty_recoil/#lightbox",
+         "reddit", "1b6k4c7",
+         "https://www.reddit.com/r/bootyrecoils/comments/1b6k4c7/booty_recoil"),
+        ("https://kick.com/deenthegreat/clips/clip_01M2XHV0P0HDBFFCXKQ1XK1581",
+         "kick", "clip_01M2XHV0P0HDBFFCXKQ1XK1581",
+         "https://kick.com/deenthegreat/clips/clip_01M2XHV0P0HDBFFCXKQ1XK1581"),
+        ("https://www.twitch.tv/jestervirtual/clip/SpinelessInquisitiveRadishDoggo-dmzxfkqgVRyyQO7h",
+         "twitch", "SpinelessInquisitiveRadishDoggo-dmzxfkqgVRyyQO7h",
+         "https://www.twitch.tv/jestervirtual/clip/SpinelessInquisitiveRadishDoggo-dmzxfkqgVRyyQO7h"),
+    ]
+
+    def test_fixtures_resolve_with_non_empty_identity(self):
+        for url, plat, cid, canonical in self.FIXTURES:
+            with self.subTest(url=url):
+                r = mmi.resolve_source_url(url)
+                self.assertEqual(r["platform"], plat)
+                self.assertEqual(r["content_id"], cid)
+                self.assertEqual(r["canonical_url"], canonical)
+                self.assertTrue(r["content_id"], "content_id must never be empty")
+
+    def test_reddit_fragment_never_reaches_identity(self):
+        self.assertNotIn("#", mmi.resolve_source_url(self.FIXTURES[0][0])["canonical_url"])
+
+    def test_kick_identity_matches_acquisition_contract(self):
+        import kick_url
+        url = self.FIXTURES[1][0]
+        self.assertEqual(mmi.resolve_source_url(url)["content_id"],
+                         kick_url.parse(url)["content_id"])
+
+    def test_unsupported_host_refused(self):
+        with self.assertRaises(manual_intake.SubmissionError):
+            mmi.resolve_source_url("https://example.com/watch?v=abc")
+
+    def test_acquire_reuses_the_existing_bounded_local_command(self):
+        import ytdlp_adapter as ya
+        from unittest import mock
+        captured = {}
+
+        def fake_build(url, *, out_template, max_bytes=0, **kw):
+            cmd = ["yt-dlp", "--no-playlist", "--playlist-items", "1", "--", url]
+            captured.update(url=url, template=out_template,
+                            max_bytes=max_bytes, cmd=cmd)
+            return cmd
+
+        def fake_run(cmd, **kw):
+            out = os.path.join(os.path.dirname(captured["template"]), "media.mp4")
+            with open(out, "wb") as fh:
+                fh.write(b"\0" * 64)
+            return out
+
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(ya, "build_download_command", fake_build), \
+                 mock.patch.object(ya, "run_ytdlp_command", fake_run):
+                path, resolved = mmi.acquire_url_media(self.FIXTURES[1][0], out_dir=d)
+            self.assertGreater(os.path.getsize(path), 0)
+            self.assertEqual(resolved["platform"], "kick")
+
+        # The command CAME FROM the acquisition lane's builder: bounded, single
+        # item, no cookie/auth flags — i.e. no second downloader was introduced.
+        self.assertIn("--no-playlist", captured["cmd"])
+        self.assertIn("--playlist-items", captured["cmd"])
+        self.assertEqual(captured["max_bytes"], mmi.MAX_URL_BYTES)
+        self.assertEqual(captured["url"], self.FIXTURES[1][3])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

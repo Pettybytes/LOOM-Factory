@@ -1037,6 +1037,18 @@ class Pass1Pipeline:
             c.processing_eligibility = rec.processing_eligibility
         if hasattr(rec, "connector_name"):
             c.connector_name = rec.connector_name
+        # Identity travels WITH the candidate from its first line. These fields were
+        # previously assigned only on the SCORED path, so a candidate that exited
+        # early (filtered_media / filtered_market / filtered_tenant) persisted a row
+        # whose tenant_id/profile_id/platform/canonical_url were EMPTY — durable yet
+        # unreachable by the manual content-id lookup, which filters on tenant_id.
+        # That is exactly how a real manual candidate surfaced as "durable row absent".
+        c.tenant_id = getattr(rec, "tenant_id", "") or ""
+        c.profile_id = getattr(rec, "profile_id", "") or ""
+        c.platform = getattr(rec, "platform", "") or ""
+        c.canonical_url = getattr(rec, "canonical_url", "") or ""
+        c.creator_channel_identity = getattr(rec, "creator_channel_identity", "") or ""
+        c.publication_timestamp = getattr(rec, "publication_timestamp", None)
         if (rec.tenant_id != self.brief.tenant_id or
                 getattr(rec, "profile_id", "") != self.brief.profile_id):
             c.status = "filtered_tenant"

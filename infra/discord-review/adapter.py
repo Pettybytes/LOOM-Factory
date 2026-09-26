@@ -2388,8 +2388,12 @@ class Handler(BaseHTTPRequestHandler):
         problems = []
         if not parsed.get("url"):
             problems.append("no source URL in the message (add `url: https://…`)")
-        if not attachment:
-            problems.append("no media file attached to the message")
+        # Two ingress modes, ONE downstream path:
+        #   Mode A — supplied media + source URL (operator already has the bytes)
+        #   Mode B — source URL only: LOOM resolves the platform and downloads with
+        #            the EXISTING local/free acquisition path ($0).
+        # Both converge at `durable media available`. Nothing here does network
+        # work: mode B resolves/downloads in the worker, after the ACK.
         if problems:
             # Local-only check: no network work happens before any response.
             self._send_json(200, {"type": 4, "data": {
@@ -2401,7 +2405,7 @@ class Handler(BaseHTTPRequestHandler):
         # Nothing after this point may run before this response is returned.
         self._send_json(200, {"type": 5, "data": {"flags": 64}})
         threading.Thread(target=self._manual_media_worker,
-                         args=(interaction, dict(parsed), dict(attachment)),
+                         args=(interaction, dict(parsed), dict(attachment or {})),
                          daemon=True).start()
 
     def _manual_media_worker(self, interaction, parsed, attachment):
@@ -2443,12 +2447,26 @@ class Handler(BaseHTTPRequestHandler):
             active = tenant_routing.list_active_tenants(SUPABASE_URL, SUPABASE_KEY)
             tenant = manual_intake.validate_destination(
                 parsed.get("tenant") or MANUAL_MEDIA_TENANT_DEFAULT, active)
-            stage = "fetch_attachment"
+            stage = "acquire_media"
             temp_dir = tempfile.mkdtemp(prefix="loom-manual-intake-")
-            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_",
-                               attachment.get("filename") or "supplied.mp4")[:120]
-            local_path = os.path.join(temp_dir, safe_name)
-            manual_media_intake.download_attachment(attachment["url"], local_path)
+            if attachment:
+                safe_name = re.sub(r"[^A-Za-z0-9._-]", "_",
+                                   attachment.get("filename") or "supplied.mp4")[:120]
+                local_path = os.path.join(temp_dir, safe_name)
+                manual_media_intake.download_attachment(attachment["url"], local_path)
+            else:
+                # Mode B — URL only. EXISTING resolver + EXISTING bounded local
+                # downloader ($0). Deliberately creates NO library row and NO
+                # acquisition job: the durable copy is GHL's.
+                local_path, _resolved = manual_media_intake.acquire_url_media(
+                    parsed["url"], out_dir=temp_dir)
+                # Name the durable copy from the RESOLVED identity so the GHL
+                # filename is stable and human-meaningful. (Mode B has no
+                # attachment filename; leaving this unset is what raised
+                # UnboundLocalError at the durable-store seam.)
+                _ext = os.path.splitext(local_path)[1] or ".mp4"
+                safe_name = re.sub(r"[^A-Za-z0-9._-]", "_",
+                                   f"{_resolved['platform']}__{_resolved['content_id']}{_ext}")[:120]
             size = os.path.getsize(local_path)
             if size <= 0:
                 raise RuntimeError("attachment downloaded as 0 bytes")
@@ -2496,8 +2514,15 @@ class Handler(BaseHTTPRequestHandler):
                      f"durable media {durable_url}"]
             if result.get("ok"):
                 stage = "review_card"
+                # Resolve the durable candidate by the AUTHORITATIVE key Content
+                # Intelligence itself proved (the pipeline assigns its own
+                # candidate fingerprint per materialized moment, so the
+                # submission fingerprint is NOT the candidate key — looking up by
+                # it is how a real candidate surfaced as "durable row not found").
+                _cand_fp = (result.get("fingerprint")
+                            or payload["duplicate_fingerprint"])
                 cand = source_review.fetch_candidate_by_fingerprint(
-                    SUPABASE_URL, SUPABASE_KEY, payload["duplicate_fingerprint"])
+                    SUPABASE_URL, SUPABASE_KEY, _cand_fp)
                 if cand:
                     plan = result.get("boundary_plan") or {}
                     # Content/candidate review, NOT source-acquisition review.

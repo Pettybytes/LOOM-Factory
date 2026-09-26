@@ -155,6 +155,73 @@ def download_attachment(url: str, dest: str, timeout: int = 300) -> str:
     return dest
 
 
+# ---------------------------------------------------------------------------
+# Mode B — URL-ONLY intake.
+#
+# Reuses what already exists instead of adding a second downloader:
+#   * identity/detection  -> the EXISTING intake contract (manual_intake
+#                            .validate_and_canonicalize), which itself already
+#                            delegates YouTube and Kick to their acquisition
+#                            contracts, so intake and acquisition share ONE id.
+#   * transport           -> the acquisition lane's EXISTING bounded, hygiene
+#                            -checked local yt-dlp command builders ($0).
+#
+# It deliberately does NOT create a reaction-library row or an acquisition job:
+# Manual Intake keeps no permanent source library on this machine — GHL holds the
+# durable copy and the submission row holds the durable pointer. Both modes
+# therefore converge at exactly one place: `durable media available`.
+MAX_URL_BYTES = 100 * 1024 * 1024
+
+
+def _acq(name: str):
+    """Import a module from the acquisition package (both layouts the service uses)."""
+    try:
+        return __import__(f"acquisition.{name}", fromlist=[name])
+    except ImportError:
+        import sys as _s
+        acq_dir = str(_INFRA / "acquisition")
+        if acq_dir not in _s.path:
+            _s.path.insert(0, acq_dir)
+        return __import__(name)
+
+
+def resolve_source_url(url: str) -> dict[str, Any]:
+    """Mode B resolver: identify the platform and normalize identity.
+
+    Raises manual_intake.SubmissionError with a classified code on any refusal
+    (unsupported host, credentials, malformed id, non-media path).
+    """
+    return manual_intake.validate_and_canonicalize(url)
+
+
+def acquire_url_media(url: str, *, out_dir: str,
+                     max_bytes: int = MAX_URL_BYTES) -> tuple[str, dict[str, Any]]:
+    """Mode B: source URL -> EXISTING resolver -> EXISTING local downloader -> file.
+
+    Returns (local_path, resolved). The caller owns the temp dir. Raises on
+    failure with the underlying classified reason; it never fabricates media.
+    """
+    ya = _acq("ytdlp_adapter")
+    resolved = resolve_source_url(url)
+    os.makedirs(out_dir, exist_ok=True)
+    template = os.path.join(out_dir, "%(id)s.%(ext)s")
+    cmd = ya.build_download_command(resolved["canonical_url"],
+                                    out_template=template, max_bytes=max_bytes)
+    stdout = ya.run_ytdlp_command(cmd, timeout=600.0)
+    path = ""
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if line and os.path.exists(line):
+            path = line
+    if not path:
+        cands = sorted((os.path.join(out_dir, f) for f in os.listdir(out_dir)),
+                       key=os.path.getmtime, reverse=True)
+        path = next((c for c in cands if os.path.getsize(c) > 0), "")
+    if not path:
+        raise RuntimeError(f"extractor produced no media for {resolved['platform']}")
+    return path, resolved
+
+
 def store_durable_media(path: str, name: str, folder_id: str | None = None) -> dict[str, Any]:
     """Write the durable GHL copy via the PRODUCTION upload helper.
 

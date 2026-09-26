@@ -102,6 +102,59 @@ GHL durable upload; Cloudflare + deferred-ACK acceptance.
 
 ---
 
+## INCREMENT — 2026-09-26 (later) — MANUAL URL INTAKE (MODE B) + MODEL ROUTING FIX
+
+**OpenClaw model routing (user config, NOT this repo).** `agents.entries.main.model` was
+`google/gemini-3.1-pro-preview`, so every agent-`main` run without a session override — the weekly
+`skill-collection-review` automation and spawned children — resolved to Gemini and hit provider
+rate limits (a spawn from this session died with "model request was rate-limited"). Set to
+`deepseek/deepseek-flash`, plus `agents.defaults.subagents.model = deepseek/deepseek-flash`.
+Gemini / Astra / Qwen / GLM / Grok all preserved and still opt-in-able. A fresh spawn now returns
+`resolvedModel=deepseek/deepseek-flash`, `resolvedProvider=deepseek`.
+
+**Mode B — URL-only Manual Intake (NEW).** `#manual-intake` now accepts a message with ONLY a
+source URL. `manual_media_intake.resolve_source_url()` reuses the EXISTING intake contract (which
+already delegates YouTube and Kick to their acquisition contracts), and `acquire_url_media()`
+reuses the acquisition lane's bounded, hygiene-checked local yt-dlp command builder ($0). It
+creates NO library row and NO acquisition job — the durable copy is GHL's. Both modes converge at
+`durable media available`.
+
+**Four seams found by running the real path (each fixed at its first failure):**
+1. Mode B never assigned `safe_name` → `UnboundLocalError` at the durable-store step.
+2. The card lookup used the SUBMISSION fingerprint, but a durable candidate is keyed by the
+   pipeline's own per-moment fingerprint → "durable row not found" although the row existed. It
+   now resolves by the authoritative fingerprint Content Intelligence already returned.
+3. `pipeline._process` set `tenant_id/profile_id/platform/canonical_url` only on the SCORED path,
+   so an early exit (`filtered_media`) persisted a row whose identity was EMPTY and was therefore
+   unreachable by the content-id lookup. Identity now attaches at candidate creation.
+4. `source_review.format_mining_embed` evaluated `None + str` when a candidate had no analyzer
+   output at all → TypeError while rendering the card. Now None-safe.
+
+**Runtime acceptance (real media, $0 paid acquisition):**
+
+| Fixture | Download | Durable media | CI | Card |
+|---|---|---|---|---|
+| reddit `1b6k4c7` | 2.98 MB | GHL filesafe | `manual-intake` scored | `1553526988835127387` |
+| kick `clip_01M2XHV0P0HDBFFCXKQ1XK1581` | 21.08 MB | GHL filesafe | ci_ok | `1553527220931133691` |
+| twitch `Spineless…O7h` | 42.67 MB | GHL filesafe | ci_ok | `1553527550259503195` |
+
+All three cards carry the manual **Approve Clip** action. Paid acquisition: **$0** — no Apify actor
+ran, `LOOM_ACQUISITION_LIVE=0`, and the local downloader is the same $0 path the Twitch/Kick/Reddit
+adapters already used.
+
+**Tests:** `content_intelligence` **477 OK** · `discord-review` **309 OK** (304 + 5 Mode B).
+
+**Known observation (not fixed):** re-running Content Intelligence on the same manual source mints
+a NEW candidate fingerprint each run, so repeated intake duplicates candidate rows and cards (two
+reddit cards exist from two runs). Manual re-ingest idempotency is not yet addressed.
+
+**Scope note:** the URL-only path is exercised by driving the real worker in-process; Discord's
+signed-interaction delivery layer is the only part not exercised (the interaction endpoint is
+Ed25519-verified, which a synthetic POST cannot satisfy). Durable media, CI, persistence and the
+posted card are all real.
+
+---
+
 > ## SUPERSEDED — "SEGMENT 5 IN PROGRESS" banner (2026-09-22)
 >
 > The resume pointer below is out of date (`c5ec62f`, 2026-09-22). The authoritative resume point

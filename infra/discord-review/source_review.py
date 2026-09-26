@@ -261,9 +261,13 @@ def format_mining_embed(c, base):
                        or assessment.get("moments"))
     # The analyzer ran and found no qualifying moment. Say exactly that, with its
     # own reason, instead of rendering real analysis as missing data.
-    add("Moment", (me.get("what_happens") if me.get("what_happens")
-                    else ("No qualifying moment identified" if _analyzed else None))
-        + f"\nType: {(c.get('moment_type') or {}).get('moment_type', 'unknown')}")
+    # None-safe: a candidate with no analyzer output at all (empty media_assessment
+    # AND no qualification evidence) previously produced `None + str` → TypeError
+    # while rendering, so a REAL durable candidate died at review_card. Render an
+    # explicit value instead; `add()` already maps empty values to "Unavailable".
+    _moment_text = (me.get("what_happens")
+                    or ("No qualifying moment identified" if _analyzed else "Unavailable"))
+    add("Moment", f"{_moment_text}\nType: {(c.get('moment_type') or {}).get('moment_type', 'unknown')}")
     if all(isinstance(p.get(k), (int,float)) for k in ('recommended_clip_start','recommended_clip_end')):
         s,e=p['recommended_clip_start'],p['recommended_clip_end']
         event = p.get('event_timestamp')
