@@ -6,10 +6,15 @@
 
 # START HERE NEXT SESSION
 
-**Snapshot: 2026-09-26 (closeout).** Branch `master` · HEAD
-`0a99e4f4913118821d1e7aa4386cbd57141d0dc9` == `origin/master` · worktree clean except
+**Snapshot: 2026-09-26 (Manual Intake closeout).** Branch `master` · HEAD
+`925a8343062e382b540ef20795fa2e2d8805bef9` == `origin/master` · worktree clean except
 `?? infra/supabase/038_loom_editor_session_tokens.sql` (preserved, SHA1
 `3da12826ef96dd05ce089b490ee490e66baf01c0`).
+
+**MANUAL INTAKE IS LIVE ACCEPTED** (Bryan drove the real Discord interactions): Reddit URL + file,
+Twitch URL + file, Kick URL + file, Instagram URL, TikTok URL. See `NEXT_SESSION_HANDOFF.md` §3-§4.
+The next roadmap item is the **timeline-editor capability**, which requires Bryan's explicit
+authorization.
 
 **Read `NEXT_SESSION_HANDOFF.md` in full — it is the authoritative resume point.** This section
 is the short form.
@@ -148,10 +153,38 @@ adapters already used.
 a NEW candidate fingerprint each run, so repeated intake duplicates candidate rows and cards (two
 reddit cards exist from two runs). Manual re-ingest idempotency is not yet addressed.
 
-**Scope note:** the URL-only path is exercised by driving the real worker in-process; Discord's
-signed-interaction delivery layer is the only part not exercised (the interaction endpoint is
-Ed25519-verified, which a synthetic POST cannot satisfy). Durable media, CI, persistence and the
-posted card are all real.
+**LIVE OPERATOR ACCEPTANCE — PASSED (commit `925a834`).** Bryan personally drove the real Discord
+interface for: Reddit URL, Reddit file, Twitch URL, Twitch file, Kick URL, Kick file, Instagram URL,
+TikTok URL. Full lifecycle proven: operator source → `#manual-intake` → intake-media → durable GHL
+media → CI (advisory) → durable candidate → exactly one active review card → human decision →
+durable `loom_source_reviews` row → same card visibly updated → **no re-download after approval**.
+The scope note below is SUPERSEDED: the in-process driving described there was a development aid
+only; acceptance is the real operator path.
+
+**ACCEPTED SEMANTICS — manual intake is HUMAN-ARBITRATED.** CI scores are advisory. A low score,
+`FIRE FAIL`, missing market evidence, unsupported classification, or `CI: NOT RECOMMENDED` MUST NOT
+prevent an operator-supplied asset from reaching human review. Bryan is the final arbiter. Kick
+proved it: `filtered_media` / `video_type_unproven` still exposed `Approve Clip / Reject / Hold`,
+was approved, persisted, and updated the same card. Do not reintroduce automated hard filtering into
+manual intake.
+
+**Fixes preserved:** (1) post-persist render can no longer hide a durable decision
+(`minimal_decision_embed`); (2) CI-declined manual media renders an explicit honest state
+(`format_manual_not_recommended_embed`) instead of coerced zeros; (3) operator content stays
+human-reviewable when CI declines; (4) manual re-ingest is bound deterministically — newest-first
+content-id lookup, older duplicates marked `SUPERSEDED_MANUAL_REINGEST`, card id remembered
+(`remember_card_message`) so one submission does not keep minting cards; (5) approved manual media
+never triggers acquisition/redownload (`media_already_acquired`).
+
+**GHL:** durable storage **LIVE PASS**. **Folder routing/organization: OPEN FOLLOW-UP,
+NON-BLOCKING — UNLOCATED / NOT YET RECONCILED.** Do not build it during a closeout and do not claim
+the historical mechanism is absent.
+
+**GUARDRAIL FOR THE FUTURE AUTOMATED-DISCOVERY SEGMENT:** manual intake and automated discovery are
+separate trust contexts. Automated discovery may rank/score for queue volume, but must NOT inherit
+old `filtered_media` / `video_type_unproven` / `FIRE FAIL` hard-rejection logic as sourcing policy
+merely because it exists in CI. Principle: FIND FIRE CONTENT FIRST → RANK IT → SURFACE
+RISK/UNCERTAINTY → LET HUMAN POLICY CONTROL WHAT IS ACTUALLY EXCLUDED. Do not redesign discovery now.
 
 ---
 
