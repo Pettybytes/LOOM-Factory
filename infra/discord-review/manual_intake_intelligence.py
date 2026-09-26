@@ -54,8 +54,10 @@ def manual_brief(tenant_id: str, *, profile_id: str = MANUAL_PROFILE_ID,
     """A tenant-scoped brief for operator-supplied media.
 
     Theme concepts are intentionally empty: the human already chose the source,
-    so there is no discovery shortlist to theme-filter. Safety and evidence gates
-    are unchanged (adults_only, nudity/explicit, directly-observed event).
+    so there is no discovery shortlist to theme-filter. Content-quality and safety
+    checks that ARE authorized remain unchanged (nudity/explicit media, directly
+    observed event). Age is not a gate anywhere: LOOM analyzes and informs, the
+    human decides.
     """
     from discovery.source_brief import SourceBrief
     return SourceBrief.from_dict({
@@ -82,7 +84,6 @@ def manual_brief(tenant_id: str, *, profile_id: str = MANUAL_PROFILE_ID,
         "mining_requirements": {
             "intent": intent,
             "required_concepts": [],
-            "adults_only": True,
             "review_policy": {"mode": "human_curated", "media_first": True,
                               "minimum_content": 50},
             "market_policy": "observed_demand_v1",

@@ -55,14 +55,28 @@ confidence 33, no boundary. This is a genuine rejection, **not** a seam failure.
 | 9 | No reacquisition on re-run | **PASS** (retrieved our durable copy only) |
 | 10 | No duplicate upload on identical bytes | **PASS** (reuse guard; unit-tested; re-run uploaded nothing) |
 | 11 | Candidate qualifying as a moment | **FAIL — honest content rejection** (no qualifying moment) |
-| 12 | Adult status confirmed | **FAIL — model returns `ambiguous`** ("Age is uncertain based on visual appearance alone") — safety gate left intact, not weakened |
+| 12 | Age gate present anywhere on the decision path | **PASS — removed** (`adult_status: null`, zero age tokens on the durable row; see the canonical rule below) |
 
-## Open decision for the owner (not changed unilaterally)
+## Canonical rule (2026-09-26, owner directive)
 
-`adults_only: true` in the manual lane means an outfit-style asset whose subjects are not
-provably adult is refused. That is a safety gate, so it was **not** relaxed. If manual
-intake should accept operator-supplied assets on operator attestation instead of model
-age-inference, that is an explicit policy change to authorise — not a patch.
+The `adults_only` / machine age-inference gate was **never a product requirement** and has been
+removed as a qualification / eligibility / routing / discovery / mining / Manual Intake /
+candidate / approval / scoring / ranking / persistence / review-eligibility / acquisition gate.
+It was **not** replaced by age attestation. Analyzer age metadata has no authorized consumer and
+is no longer requested; legacy `adults_only` keys in stored briefs are non-authoritative.
+
+**LOOM informs. Bryan decides.** For manually supplied content: Bryan already chose to bring it
+into LOOM; LOOM analyzes it; Bryan decides what happens next.
+
+## Resolved decision (owner directive, 2026-09-26)
+
+`adults_only` was **not** a product requirement. It has been removed entirely, and the
+alternative (operator age attestation) was explicitly declined. The canonical rule now lives in
+`NEXT_SESSION_HANDOFF.md`, with regression protection in
+`infra/content_intelligence/tests/test_age_gate_removed.py`. Post-removal runtime re-run on this
+same durable asset: `adult_status: null`, `rejection_reason: inspected_intent_mismatch,
+no_directly_observed_event`, zero age tokens — and the content-quality verdict (no qualifying
+moment) is unchanged, proving the removal did not alter unrelated scoring.
 
 ## Tests
 

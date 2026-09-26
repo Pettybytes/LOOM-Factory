@@ -5,6 +5,24 @@ September 25 morning closeout (`535cb72`). Session closed on Bryan's directive:
 no further mining, inspections, repairs, acceptance clicks, or implementation.
 No approvals were impersonated and no acquisition/download was executed.
 
+## CANONICAL PRODUCT RULE — age is not a gate
+
+The `adults_only` / machine age-inference gate was **never a product requirement** and was
+removed on 2026-09-26. It must not exist as a qualification, eligibility, routing, discovery,
+source-mining, Manual Intake, candidate, approval, scoring, ranking, persistence,
+review-eligibility, acquisition or production gate — and it must **not** be replaced by age
+attestation of any kind.
+
+- **Source mining:** discover → analyze → score/rank on authorized content/market criteria →
+  present the candidate → Bryan chooses Approve / Hold / Reject.
+- **Manual Intake:** Bryan supplies media → LOOM analyzes → LOOM informs → Bryan decides.
+- Analyzer age metadata has **no authorized consumer** and is no longer requested. Legacy
+  `adults_only` keys in stored brief payloads are **NON-AUTHORITATIVE / NON-GATING**.
+- Regression protection: `infra/content_intelligence/tests/test_age_gate_removed.py` fails if
+  any decision file consumes age again (discovery, mining, manual intake, qualification,
+  review eligibility).
+- Do not reintroduce this requirement without explicit owner authorization.
+
 ## 1. Current git state
 
 - Repository: `/Users/user/Desktop/LOOM-Factory`, branch `master`.
@@ -39,8 +57,8 @@ Astra's three repairs remain present at reverted HEAD `b68ef1a` (code-inspected 
 1. **Approve worker exception boundary** — reviewer parsing inside the worker
    try-block; failures surface via staged traceback logging and card patch, never a silent HTTP 200.
 2. **Actual-media tenant/niche enforcement** — tenant-configured
-   `mining_requirements` gates (intent / required_concepts / creator_identities /
-   adults_only), no hardcoded lane logic.
+   `mining_requirements` gates (intent / required_concepts / creator_identities),
+   no hardcoded lane logic. **Age is not a gate** (removed 2026-09-26).
 3. **Authoritative clip-window rendering** — cards render from persisted
    `recommended_clip_start/end`, not start anchors.
 
@@ -82,6 +100,10 @@ advisory. Honest rejections included: Twitch gameplay clips
 `adult_status_unproven` ×3 (no people visible — safety gate working as
 designed), Reddit EgyGym post intent_mismatch + adult_status_unproven,
 TikTok `no_directly_observed_event` ×2, Instagram reel adult_status_unproven.
+
+> **Historical note:** those `adult_status_unproven` rejections came from the age gate
+> that was later removed as an unauthorized requirement (see the canonical rule at the
+> top of this file). New runs produce no age reason at all.
 
 Lane-config notes (tenant terms only, no code changes): creator-pinned lanes
 (Twitch/Kick) and Instagram use `required_concepts: []` — theme enforced by

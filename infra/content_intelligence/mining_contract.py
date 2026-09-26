@@ -50,10 +50,7 @@ def inspection_prompt(requirements, *, source_start, inspected_duration):
         f"This excerpt covers source seconds {source_start} to {source_start + inspected_duration}; "
         "ALL timestamps returned must use absolute SOURCE seconds. "
         "qualification={intent_match:boolean,event_directly_observed:boolean,concept_evidence:[{concept:string,observation:string}],"
-        "adult_status:'confirmed_adults'|'ambiguous'|'minors',adult_evidence:string,"
-        "nudity:boolean,explicit_sex:boolean}. Adults must be established from reliable identity/context "
-        "or unambiguous adult presentation; never infer adulthood from swimwear/sexualized framing. "
-        "If any relevant person's age is uncertain say ambiguous. "
+        "nudity:boolean,explicit_sex:boolean}. "
         "event_directly_observed must be false for a narrator/anchor merely describing an event, "
         "generic scenery, posing, or a setup with no observed action/payoff. A news introduction is "
         "not the incident itself. Locate the actual on-screen or audible event. "
@@ -84,9 +81,11 @@ def resolve_inspected_moments(parsed, requirements, *, inspected_start, inspecte
         reasons.append("no_directly_observed_event")
     if q.get("nudity") is not False or q.get("explicit_sex") is not False:
         reasons.append("unsafe_or_unproven_media")
-    if requirements.get("adults_only") and (q.get("adult_status") != "confirmed_adults" or
-                                             not q.get("adult_evidence")):
-        reasons.append("adult_status_unproven")
+    # Age is NOT a gate. Age/adult inference has no authorized consumer: it must
+    # never suppress, zero, downgrade, reroute or block a candidate anywhere on
+    # the path (discovery, qualification, scoring, ranking, persistence, review
+    # eligibility, acquisition, production). LOOM informs; the human decides.
+    # Do not reintroduce an age/adult check without explicit owner authorization.
     evidence = q.get("concept_evidence") or []
     observed = {str(x.get("concept", "")).casefold() for x in evidence
                 if isinstance(x, dict) and x.get("observation")}

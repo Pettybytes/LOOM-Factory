@@ -66,12 +66,14 @@ def _submission():
 
 
 class TestManualBrief(unittest.TestCase):
-    def test_tenant_scoped_and_safety_gates_retained(self):
+    def test_tenant_scoped_and_authorized_gates_retained(self):
         b = mii.manual_brief("dreemzy")
         self.assertEqual(b.tenant_id, "dreemzy")
         self.assertEqual(b.profile_id, "manual-intake")
         req = b.mining_requirements
-        self.assertTrue(req["adults_only"])
+        # Age is NOT a gate (removed 2026-09-26): the brief must not carry it, and
+        # only authorized criteria (theme concepts, direct event) may remain.
+        self.assertNotIn("adults_only", req)
         self.assertEqual(req["required_concepts"], [])
         self.assertTrue(req["require_direct_event"])
         self.assertTrue(len(b.target_platforms) >= 1, "brief requires non-empty platforms")

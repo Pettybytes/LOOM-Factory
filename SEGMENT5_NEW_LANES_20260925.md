@@ -1,5 +1,10 @@
 # SEGMENT5 NEW LANES 2026-09-25 — rollback + six-platform human-review run
 
+> **Historical record.** The lane config described here (including `adults_only`) is
+> superseded: the age gate was removed on 2026-09-26 as an unauthorized requirement.
+> See the canonical rule in `NEXT_SESSION_HANDOFF.md`. Nothing in this file is a live
+> requirement.
+
 **Rollback first (Bryan's directive):** commit `6028fa3` (structured reject
 reasons) was reverted by `b68ef1a`; the reject work is preserved under tag
 `segment5-reject-reasons`. No schema changes had been made by that work

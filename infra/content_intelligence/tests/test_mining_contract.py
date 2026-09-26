@@ -42,7 +42,7 @@ class MiningContractTests(unittest.TestCase):
                         {"end": 12, "complete": True, "evidence": "unrelated next scene"}]}]}
 
     def resolve(self, parsed, **kw):
-        return resolve_inspected_moments(parsed, {"adults_only": True, "required_concepts": [["beach"]]},
+        return resolve_inspected_moments(parsed, {"required_concepts": [["beach"]]},
                                         inspected_start=0, inspected_end=12, **kw)
 
     def test_native_short_uses_first_complete_subwindow_not_whole_asset(self):
@@ -55,11 +55,30 @@ class MiningContractTests(unittest.TestCase):
         out,_=self.resolve(p,duration=8)
         self.assertEqual((out[0]["recommended_clip_start"],out[0]["recommended_clip_end"]),(0,8))
 
-    def test_unknown_age_misleading_title_and_explicit_media_fail_closed(self):
-        for k,v in (("adult_status","ambiguous"),("adult_status","minors"),("intent_match",False),
-                    ("nudity",True),("explicit_sex",True)):
+    def test_unrelated_gates_still_fail_closed(self):
+        for k,v in (("intent_match",False),("nudity",True),("explicit_sex",True)):
             p=self.fixture();p["qualification"][k]=v
             self.assertEqual(self.resolve(p)[0], [], (k,v))
+
+    def test_age_inference_never_blocks_a_candidate(self):
+        # Age is not a product gate (removed 2026-09-26, unauthorized requirement).
+        # Ambiguous/minors metadata must not suppress a candidate that otherwise
+        # qualifies, and must never add an age reason.
+        for k,v in (("adult_status","ambiguous"),("adult_status","minors"),
+                    ("adult_evidence",""),("adult_evidence","age uncertain")):
+            p=self.fixture();p["qualification"][k]=v
+            out, reasons = self.resolve(p)
+            self.assertTrue(out, (k,v))
+            self.assertNotIn("adult_status_unproven", reasons)
+
+    def test_legacy_adults_only_key_is_inert(self):
+        p=self.fixture()
+        p["qualification"]["adult_status"]="ambiguous"
+        out, reasons = resolve_inspected_moments(
+            p, {"adults_only": True, "required_concepts": [["beach"]]},
+            inspected_start=0, inspected_end=12)
+        self.assertTrue(out)
+        self.assertNotIn("adult_status_unproven", reasons)
 
     def test_uninspected_or_incomplete_end_selects_none(self):
         p=self.fixture();p["moments"][0]["boundaries"]=[{"end":15,"complete":True,"evidence":"unseen"}]
