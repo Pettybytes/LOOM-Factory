@@ -2383,18 +2383,6 @@ class Handler(BaseHTTPRequestHandler):
         attachments = message.get("attachments") or []
         channel_id = str(message.get("channel_id")
                          or (interaction.get("channel") or {}).get("id") or "")
-        try:
-            expected = resolve_manual_intake_channel()
-        except Exception as e:  # noqa: BLE001
-            self._send_json(200, {"type": 4, "data": {
-                "content": f"❌ Manual intake channel unavailable ({type(e).__name__}).",
-                "flags": 64}})
-            return
-        if channel_id and channel_id != expected:
-            self._send_json(200, {"type": 4, "data": {
-                "content": (f"❌ Run this on a post in <#{expected}> — that is where "
-                            f"supplied media is ingested."), "flags": 64}})
-            return
         parsed = manual_media_intake.parse_intake_message(content)
         attachment = manual_media_intake.scan_for_video(attachments)
         problems = []
@@ -2403,11 +2391,15 @@ class Handler(BaseHTTPRequestHandler):
         if not attachment:
             problems.append("no media file attached to the message")
         if problems:
+            # Local-only check: no network work happens before any response.
             self._send_json(200, {"type": 4, "data": {
                 "content": "❌ Cannot ingest: " + "; ".join(problems) + ".", "flags": 64}})
             return
-        # ACK inside Discord's 3-second deadline; durable work runs on the worker.
-        self._send_json(200, {"type": 6})
+        # Deferred CHANNEL MESSAGE (type 5) — the defer type an application
+        # command accepts. Type 6 is for component interactions only; Discord
+        # rejects it here, which the operator sees as "didn't respond in time".
+        # Nothing after this point may run before this response is returned.
+        self._send_json(200, {"type": 5, "data": {"flags": 64}})
         threading.Thread(target=self._manual_media_worker,
                          args=(interaction, dict(parsed), dict(attachment)),
                          daemon=True).start()
@@ -2424,11 +2416,30 @@ class Handler(BaseHTTPRequestHandler):
         application_id = str(interaction.get("application_id") or "")
         interaction_token = str(interaction.get("token") or "")
         submitter = self._reviewer_name(interaction)
-        stage = "resolve_tenant"
+        stage = "channel_guard"
         temp_dir = ""
         durable_url = ""
         persisted = False
         try:
+            # Everything below runs AFTER the acknowledgement: the channel guard
+            # costs a network lookup and must never precede the defer.
+            data_ctx = interaction.get("data", {}) or {}
+            msg_ctx = ((data_ctx.get("resolved") or {}).get("messages") or {}).get(
+                str(data_ctx.get("target_id") or "")) or {}
+            channel_id = str(msg_ctx.get("channel_id")
+                             or (interaction.get("channel") or {}).get("id") or "")
+            try:
+                expected = resolve_manual_intake_channel()
+            except Exception as e:  # noqa: BLE001
+                self._patch_original(application_id, interaction_token, content=(
+                    f"❌ Manual intake channel unavailable ({type(e).__name__})."))
+                return
+            if channel_id and channel_id != expected:
+                self._patch_original(application_id, interaction_token, content=(
+                    f"❌ Run this on a post in <#{expected}> — that is where supplied "
+                    f"media is ingested."))
+                return
+            stage = "resolve_tenant"
             active = tenant_routing.list_active_tenants(SUPABASE_URL, SUPABASE_KEY)
             tenant = manual_intake.validate_destination(
                 parsed.get("tenant") or MANUAL_MEDIA_TENANT_DEFAULT, active)
@@ -2448,8 +2459,19 @@ class Handler(BaseHTTPRequestHandler):
             if not probe.get("has_video"):
                 raise RuntimeError("supplied file has no video stream")
             stage = "durable_store_ghl"
-            durable = manual_media_intake.store_durable_media(
-                local_path, safe_name, folder_id=MANUAL_MEDIA_FOLDER_ID or None)
+            # Retry safety: if these exact bytes were already ingested for this
+            # source+tenant, reuse the durable copy instead of uploading twice.
+            _cv = manual_intake.validate_and_canonicalize(parsed["url"])
+            reused = manual_media_intake.find_existing_media(
+                SUPABASE_URL, SUPABASE_KEY, _cv["platform"], _cv["canonical_url"],
+                tenant, probe["sha256"])
+            if reused:
+                durable = {"url": reused["url"], "file_id": reused.get("file_id", ""),
+                           "folder_id": reused.get("folder_id", "")}
+                print("[manual-intake] durable media reused (same bytes)", flush=True)
+            else:
+                durable = manual_media_intake.store_durable_media(
+                    local_path, safe_name, folder_id=MANUAL_MEDIA_FOLDER_ID or None)
             durable_url = durable["url"]
             stage = "persist_submission"
             payload = manual_media_intake.build_media_submission(

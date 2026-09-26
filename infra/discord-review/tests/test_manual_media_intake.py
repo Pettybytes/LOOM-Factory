@@ -150,8 +150,11 @@ class TestSubmissionPayload(unittest.TestCase):
         self.assertEqual(p["boundary_provenance"], "manual_intake")
         self.assertEqual((p["time_start_s"], p["time_end_s"]), (2.0, 5.0))
 
-    def test_no_window_records_machine_provenance(self):
-        self.assertEqual(self._build()["boundary_provenance"], "machine")
+    def test_no_window_records_no_provenance_yet(self):
+        # Without an operator window, provenance is unknown until Content
+        # Intelligence produces a boundary (then 'machine'). Claiming 'machine'
+        # at intake time would assert something that has not happened.
+        self.assertIsNone(self._build()["boundary_provenance"])
 
     def test_invalid_url_rejected_by_existing_contract(self):
         with self.assertRaises(manual_intake.SubmissionError):

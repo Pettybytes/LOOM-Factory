@@ -34,6 +34,16 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import sys as _sys
+
+# The adapter's runtime (run.sh) puts this directory and the acquisition package on
+# sys.path but not infra/ itself, while the shared LOOM packages (content_intelligence,
+# discovery) live under infra/. Make them importable so this module behaves
+# identically inside the running service and in operator tools.
+_INFRA = Path(__file__).resolve().parents[1]
+if str(_INFRA) not in _sys.path:
+    _sys.path.insert(0, str(_INFRA))
+
 import manual_intake
 
 # Local inspection artifact cap (seconds). CI windows are bounded anyway; this
@@ -232,9 +242,34 @@ def build_media_submission(*, url: str, destination: str, content_format: str,
                             "size_bytes": probe.get("size_bytes"),
                             "has_audio": probe.get("has_audio")},
         "boundary_provenance": ("manual_intake" if start_s is not None or end_s is not None
-                                else "machine"),
+                                else None),
     })
     return payload
+
+
+def find_existing_media(url: str, key: str, platform: str, canonical_url: str,
+                        tenant_id: str, sha256: str) -> dict[str, Any] | None:
+    """Existing durable media for the same source+tenant AND the same bytes.
+
+    Retry safety: a re-run of the command for an already-ingested asset must not
+    upload a duplicate copy to GHL. Only an exact byte match (sha256) is reused.
+    """
+    fp = manual_intake.submission_fingerprint(platform, canonical_url)
+    req = urllib.request.Request(
+        f"{url}/rest/v1/loom_manual_submissions?duplicate_fingerprint=eq."
+        f"{urllib.parse.quote(fp)}&tenant_id=eq.{urllib.parse.quote(tenant_id)}"
+        f"&select=media_reference&limit=1",
+        headers=manual_intake._headers(key))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            rows = json.load(r)
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(rows, list) and rows:
+        ref = rows[0].get("media_reference") or {}
+        if isinstance(ref, dict) and ref.get("url") and ref.get("sha256") == sha256:
+            return ref
+    return None
 
 
 def persist_media_submission(url: str, key: str, payload: dict[str, Any]):

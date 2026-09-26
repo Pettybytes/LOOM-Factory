@@ -23,6 +23,14 @@ import urllib.parse
 from datetime import datetime, timezone
 from typing import Any
 
+import sys as _sys
+
+# See manual_media_intake: the service runtime does not put infra/ on sys.path,
+# but the shared LOOM packages live there.
+_INFRA = pathlib.Path(__file__).resolve().parents[1]
+if str(_INFRA) not in _sys.path:
+    _sys.path.insert(0, str(_INFRA))
+
 MANUAL_PROFILE_ID = "manual-intake"
 GEMINI_KEY_NAME = "LOOM_GEMINI_KEY"
 
