@@ -14,6 +14,129 @@ Tests: `python3 -m unittest discover -s infra/discord-review/tests` — **350 OK
 
 ---
 
+## INCREMENT — 2026-09-26 (later) — TIMELINE EDITOR PHASE 2A BUILT (reuse-first)
+
+**Status: `CODE COMPLETE — LIVE ACCEPTANCE REQUIRED`.** Not LIVE PASS. Per §12, tests prove wiring,
+never acceptance: the visual timeline exists on the `/edit` page but Bryan has not driven it.
+
+**Scope built:** trim start/end + ±1s, as authorized. No SFX, transitions, overlays, commentary, or
+timeline-UI expansion. No second renderer. No Discord Activity editor resurrection.
+
+### Reuse audit (§1A) — what was found, and what was done with it
+
+The editor page Bryan LIVE-tested is `openshorts/dashboard/src/components/ManualTrimEditor.jsx`,
+mounted at `main.jsx:112` (`view === 'editor'`, the `/edit` route) and `LoomActivityRoot.jsx:195`
+(Discord Activity). Its existing state: `clipUrl` (source video), `clipDurationSec`,
+`trimStart`/`trimEnd`, `videoTime` (playback/current time), `edl` (edit recipe), `framing`, `words`,
+`scenes`. **No parallel editor was created.**
+
+`openshorts/dashboard/src/components/ClipEditor.jsx` is the EXISTING OpenShorts range/trim UI. It is
+a **multi-segment NLE track** inlined in a 1613-line modal: a source monitor with rAF-throttled
+scrubbing, draggable trim handles (`edge: start|end|move`), a program track with per-segment handles
+and render-coverage status, three-point in/out marks, undo/redo, word snapping, and **original-source
+bounds** (`sourceAvailable ? {lo:0, hi:sourceDuration} : {lo:canonical.start, hi:canonical.end}`),
+rendering through `POST /api/clip/rerender`. It already provided most of this capability.
+
+| Capability | Verdict |
+|---|---|
+| Video preview / playback | **EXISTING + EXTENDED** — `PreviewSurface` (additive `muted`, `onDurationChange` props; defaults preserve accepted behaviour) |
+| Source media loading | **EXISTING + REUSED** — durable bootstrap `media_url` via `getApiUrl` |
+| Trim start/end state | **EXISTING + REUSED** — `trimStart`/`trimEnd` stay the single source of truth |
+| Source duration | **EXISTING + EXTENDED** — bootstrap `duration_seconds` now split from the measured media duration |
+| Seeking | **EXISTING + REUSED** — `seekTo` |
+| EDL / edit state | **EXISTING + REUSED** — `edl`; new control writes through `setRange` |
+| Clip rerender | **EXISTING + REUSED** — still `segments: [{start,end}]` → `POST /api/clip/rerender` |
+| Reframe | **EXISTING + REUSED** — `framing` |
+| Subtitles / hook / header | **EXISTING + REUSED** — `SubtitleModal`, `HookModal`, `HeaderModal` |
+| Render requests | **EXISTING + REUSED** — `/discord/editor/complete` → existing registration |
+| Word snapping / drag / scrub semantics | **EXISTING + REUSED** — ClipEditor's mechanics reused verbatim (primary-button-only + `preventDefault`, `setPointerCapture`, pxPerSec from the rect, scrub-to-edge while dragging, snap on RELEASE, ms rounding) |
+| Range RULES (min window, snap, rounding, bounds) | **EXISTING + EXTENDED** — moved to `src/lib/timelineState.js`, pinned to ClipEditor's old inline behaviour by parity tests |
+| Styling range controls (`RangeStyleControls`) | **NOT APPLICABLE** — it styles TEXT ranges, not time ranges |
+| Single-range visual track for `/edit` | **NEW — smallest possible.** Justification: ClipEditor's tracks are multi-segment, load their EDL from the live endpoint, and authenticate as an OpenShorts user; the `/edit` surface needs one range fed by the LOOM durable bootstrap under an editor-session Bearer. Its rules are NOT duplicated — they come from the shared module. |
+
+**No translation layer.** The timeline writes the same `trimStart`/`trimEnd` → `segments` →
+`POST /api/clip/rerender` contract OpenShorts already renders, and persists through the existing
+`edl_metadata` jsonb (LOOM's correction/event persistence). Nothing LOOM-only sits between the
+control and the render pipeline.
+
+### §7 answer — SOURCE RANGE vs SELECTED RANGE
+
+The timeline now shows the whole durable source as the track and the LOOM window as a band inside
+it, so a boundary can be extended into real source beyond the recommendation.
+
+**Measured, not assumed (read-only probes):** the accepted TikTok candidate
+(`platform_content_id 7671018311492193567`) carries `moment_evidence.lineage.media_reference` as a
+**bare URL string with no `duration_seconds`**, and its `boundary_plan` window is `0.0 → 11.166667`.
+`source_review.resolve_source_editor_identity` therefore derives `duration_seconds` from
+`boundary_plan.duration` and **floors it at the window end**. An `ffprobe` of the durable asset
+returned `duration=11.166667`, i.e. for that asset the window genuinely IS the whole file.
+
+**Smallest missing contract (reported, NOT built, no launch-seam redesign):** the durable source
+media reference can carry no duration, so LOOM cannot *declare* the true available source duration
+server-side; the declared value is a window-derived floor. The authoritative bound is therefore the
+**media element's own measured duration** of `media_url` — which the editor already loads. The
+editor takes `max(measured, declared, range.end)`, so a longer real source can never be under-reported
+and a range can never sit outside its own source. Closing this properly later means adding
+`duration_seconds` to `moment_evidence.lineage.media_reference` at intake (a data-completeness fix,
+not an editor change).
+
+### Preview selection (§8) — browser-native only
+
+`preview selection` seeks the existing preview element to START, plays, and pauses at END, and
+unmutes only while previewing so the cut can be *heard*. It issues **no** render, registration, asset
+version, review card, approval, or acquisition. Verified by construction: the handler only calls
+`currentTime`, `play()`, `pause()` and a `timeupdate` listener on the element that already holds the
+media; no API call is made.
+
+### Tests + build
+
+| Suite | Result |
+|---|---|
+| `node --test src/lib/*.test.mjs` (dashboard) | **191 pass** (157 baseline + **34 new** in `timelineState.test.mjs`) |
+| `npm run build` | **✓ built** (no errors) |
+| `infra/discord-review` | **350 OK** |
+| `infra/content_intelligence` | **477 OK** |
+| ESLint on changed files | no NEW errors (6 errors + 2 warnings are pre-existing in `ManualTrimEditor.jsx` at the starting commit) |
+
+The new tests include a **parity guard** that pins `clampSegmentToBounds` and `snapToWords` to
+verbatim copies of ClipEditor's former inline `clampSeg`/`snapEdge`, so the shared module cannot
+silently change what a legal cut is.
+
+### ⚠️ Version control finding (affects the commit step)
+
+**`openshorts/` is gitignored** — `.gitignore:2` is `openshorts/`. The entire editor frontend, and
+therefore every Phase 2A change, is **outside version control**: `git ls-files openshorts/dashboard/src`
+is empty and `git status --porcelain` shows only the preserved `038`. The capability cannot be
+committed from this repository as-is; the tracked durable record is this handoff plus
+`CURRENT_STATE.md`. This is a pre-existing repo property, not a Phase 2A regression — but it means
+Phase 2A has **no git rollback path**, which is why an unrelated refactor of the working
+`ClipEditor.jsx` was deliberately NOT attempted (see follow-up below).
+
+### Deliberate non-goals (with reasons)
+
+* **Word snapping on `/edit`** — NOT wired. Source-launch bootstraps return `captions: []`, and the
+  `words` on this surface are **clip-relative ms** (`startMs`/`endMs`) while the shared snapper reads
+  **source seconds** (`w.s`/`w.e`). A toggle here would have silently done nothing, so no control was
+  shipped. Revisit only with a durable source-time word set.
+* **ClipEditor dedup left undone** — ClipEditor still holds its own copies of the min-segment,
+  snap-window and rounding rules that now also live in `timelineState.js`. Consolidating it is a real
+  improvement but touches a working, unversioned production component, so it is flagged as a
+  follow-up rather than done blind. The shared module is ready for it and parity tests exist.
+
+### Live acceptance — Bryan's exact action
+
+1. Open a `#clip-review` card and click **Edit**.
+2. On the `/edit` page, drag the timeline START/END handles; use **start ±1s** / **end ±1s**; confirm
+   the numeric start/end fields track the handles exactly (one state, two views).
+3. Confirm START cannot go below `0` and neither boundary can leave the source.
+4. Click **preview selection** and confirm it plays the selected range and stops at END, with audio.
+5. Optionally confirm a boundary can move **outside** the original LOOM window but still inside the
+   source.
+
+Nothing is registered, approved, distributed, or rendered by steps 2–5.
+
+---
+
 **Authoritative closeout: 2026-09-26 (session ended ~19:30 EDT).**
 Supersedes the 2026-09-25 handoff and the 2026-09-26 Manual-Intake closeout.
 **Read this file first.** `HANDOFF.md` defers to it; `CURRENT_STATE.md` is the execution authority

@@ -6,6 +6,44 @@
 
 ---
 
+## INCREMENT — 2026-09-26 (later) — TIMELINE EDITOR PHASE 2A BUILT
+
+**`CODE COMPLETE — LIVE ACCEPTANCE REQUIRED`** (not LIVE PASS — per the handoff §12, tests prove wiring,
+never acceptance). Full detail, the §1A reuse audit, and the §7 source-duration finding live in
+**`NEXT_SESSION_HANDOFF.md` → `INCREMENT — TIMELINE EDITOR PHASE 2A`**. Short form:
+
+* **Reuse-first, no parallel editor.** The editor page Bryan LIVE-tested is
+  `openshorts/dashboard/src/components/ManualTrimEditor.jsx` (mounted at `main.jsx:112` for `/edit`
+  and `LoomActivityRoot.jsx:195` for the Activity). Its trim state (`trimStart`/`trimEnd`) is
+  unchanged and remains the single source of truth; the new visual track and the numeric fields both
+  write through one normalizer. **`ClipEditor.jsx` was located as the existing OpenShorts range/trim
+  UI** (multi-segment NLE track with draggable handles, source scrubbing, word snapping,
+  original-source bounds, `POST /api/clip/rerender`) and its mechanics were reused verbatim rather
+  than reimplemented.
+* **New code is minimal:** `src/lib/timelineState.js` (one shared range model + the typed-event seam),
+  `src/lib/timelineState.test.mjs`, `src/components/RangeTimeline.jsx`, plus an additive extension of
+  `PreviewSurface` (`muted`, `onDurationChange`; defaults preserve accepted behaviour). New controls
+  feed the existing `segments` → `POST /api/clip/rerender` contract — **no translation layer**.
+* **§7 answered:** the timeline shows the whole durable SOURCE with the LOOM window as a band inside
+  it, so a boundary can extend into real source beyond the recommendation. The authoritative bound is
+  the media element's **measured** duration; the declared bootstrap value is window-derived and used
+  only as a fallback. No launch-seam redesign. Reported (not built): the durable
+  `media_reference` can carry no `duration_seconds`, so intake should record it — a data-completeness
+  fix, not an editor change.
+* **Preview selection** is browser-native playback of the selected range only — no render,
+  registration, asset version, card, approval, or acquisition.
+* **Evidence:** dashboard tests **191 pass** (157 baseline + 34 new, incl. a parity guard pinning the
+  shared rules to ClipEditor's former inline behaviour) · `npm run build` **✓** ·
+  `infra/discord-review` **350 OK** · `infra/content_intelligence` **477 OK** · no new ESLint errors.
+* **⚠️ `openshorts/` is gitignored** (`.gitignore:2`), so all Phase 2A frontend changes are outside
+  version control and cannot be committed from this repo. The tracked durable record is this file plus
+  `NEXT_SESSION_HANDOFF.md`. `038` remains untouched.
+* **Not done, deliberately:** word snapping on `/edit` (no durable source-time word set — a control
+  would have silently no-opped) and ClipEditor's rule dedup (working, unversioned production
+  component — flagged as follow-up rather than changed blind).
+
+---
+
 # START HERE NEXT SESSION
 
 **Snapshot: 2026-09-26 (Manual Intake + engagement metadata + GHL routing complete).** Branch
