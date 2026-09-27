@@ -51,6 +51,43 @@ Bryan's explicit authorization. Then the launch spine / Segment 6.
 
 ---
 
+## INCREMENT — 2026-09-26 (GHL folder routing) — ARCHAEOLOGY DONE, FOLDER FOUND, BLOCKED ON ONE DETAIL
+
+GHL upload/storage remains **LIVE PASS**; only folder *placement* was investigated. Full detail:
+`NEXT_SESSION_HANDOFF.md` §12.
+
+**First question — did LOOM ever know the folder ID or have a working mechanism? → NO.** The `LOOM`
+folder id appears in **no commit** in the entire history; `folderId` appears nowhere in history; no
+commit ever implemented folder targeting. `ghl_upload_file()` sends only `file`/`name`/`hosted` to
+`POST /medias/upload-file`. `LOOM_GHL_INTAKE_FOLDER_ID` is whitelisted in `run.sh` and read into
+`MANUAL_MEDIA_FOLDER_ID`, but is **unset in every env file**, and `store_durable_media()` only
+*records* it. `loom_media.ghl_folder_id` (migration 002) is **never written by code**. Blueprint §5B
+(`LOOM/{tenant_id}/...`) was designed but Segment 5 is still PENDING. This is a finding about this
+repository, not a claim about manual GHL UI work (see §6 of the handoff).
+
+**The folder is discoverable through the existing integration.** With the SAME token and the
+production User-Agent (without it, Cloudflare 1010):
+`GET /medias/files?locationId=<loc>&type=folder` → exactly one `LOOM` folder,
+`_id = 6aa61446df2d015553434919`, `parentId: null`, created 2026-09-13T03:11:02Z. No second `LOOM`.
+
+**Root placement confirmed from the API:** all **64** files return `parentId: ""` (My Media root).
+
+**Blocker.** The upload parameter name for folder targeting could not be established from the repo,
+git history, GHL docs (JS-rendered), or read-only probes. A deliberately invalid folder id returned
+**HTTP 201 with the file at root** — a wrong value fails **silently**, so guessing it would reproduce
+the bug while appearing fixed. **Do not guess.**
+
+**Disclosed:** that probe accidentally persisted a 0-byte `probe.mp4`; it was deleted
+(`DELETE /medias/{id}?altId=<loc>&altType=location` → `{"deleted":true}`) and the library is back to
+**64 files**. No other asset was created, moved, or altered.
+
+### Status
+**BLOCKED — GHL media-upload folder parameter unverified.** Route options and the exact ask are in
+`NEXT_SESSION_HANDOFF.md` §12. Final routing acceptance remains Bryan's own live Discord action.
+**No timeline-editor work started.**
+
+---
+
 ## INCREMENT — 2026-09-26 (later still) — ENGAGEMENT-METADATA LIVE ACCEPTED (YouTube)
 
 Bryan personally ran a real YouTube URL through the live Discord Manual Intake workflow after the
