@@ -238,7 +238,8 @@ class TestModeBUrlIntake(unittest.TestCase):
                 # fail-closed and integrity-gate tests.
                 path, resolved = mmi.acquire_url_media(
                     self.FIXTURES[1][0], out_dir=d,
-                    probe_fn=lambda p: {"has_video": True, "has_audio": True},
+                    probe_fn=lambda p: {"has_video": True, "has_audio": True,
+                                        "duration_seconds": 3.0, "container": "mp4"},
                     integrity_fn=lambda p: {"ok": True, "reason": "", "detail": ""})
             self.assertGreater(os.path.getsize(path), 0)
             self.assertEqual(resolved["platform"], "kick")

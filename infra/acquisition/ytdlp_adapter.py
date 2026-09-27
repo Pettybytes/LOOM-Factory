@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import media_normalize as mn
+import media_validation as mval
 import source_window as swc
 
 PROVIDER_LOCAL = "local"
@@ -56,8 +57,9 @@ FRAGMENT_RETRIES = 3
 # hard-coded resolution or a silently raised cap.
 HEIGHT_LADDER = (1080, 720, 480, 360)
 
-# How much of the artifact's TAIL the integrity gate decode-verifies.
-INTEGRITY_TAIL_SECONDS = 2.0
+# How much of the artifact's TAIL the integrity gate decode-verifies. Owned by the
+# shared media-validation contract so there is exactly one definition.
+INTEGRITY_TAIL_SECONDS = mval.INTEGRITY_TAIL_SECONDS
 
 
 def build_format_selector(*, max_height: int | None = None) -> str:
@@ -584,41 +586,15 @@ def verify_media_integrity(path: str | Path, *,
                            runner: Callable[[list[str]], Any] | None = None) -> dict[str, Any]:
     """Decode-verify the TAIL of a media artifact. Returns a verdict dict.
 
-    WHY THIS TEST, AND WHY NOT ffprobe:
-    ``ffprobe -show_streams`` reads container metadata and returns rc=0 with
-    EMPTY stderr on the retained truncated artifact — it reported a valid
-    1920x1080 466.6s stream for a file that is 19,611 bytes short. Metadata alone
-    therefore cannot gate durable storage. Decoding the tail does, because
-    truncation breaks the final access units.
+    Thin alias for the SHARED implementation in ``media_validation``, so every
+    acquisition mechanism gated by LOOM uses one integrity rule and one definition
+    of what "truncated" means. Kept under this name because this module's callers
+    and tests already import it here.
 
-    Measured on the real artifact: rc=183 with `Invalid NAL unit size` / `corrupt
-    input packet in stream 0`; a healthy file returns rc=0 with empty stderr.
-
-    COST: ~0.06-0.11s on a 7:46 1080p source (2 seconds of tail decoded, no
-    output, ``-c copy`` never applied). It is NOT a full-file decode and NOT a
-    transcode, so it stays negligible per intake.
+    Why a decode and not ffprobe metadata: the retained truncated artifact reported
+    ``has_video=True`` at 1920x1080 / 466.6s through ffprobe (rc=0, empty stderr).
     """
-    p = str(path)
-    tail = max(float(tail_seconds), 0.1)
-    cmd = ["ffmpeg", "-v", "error", "-xerror",
-           "-sseof", f"-{tail:g}", "-i", p, "-f", "null", "-"]
-    try:
-        if runner is not None:
-            runner(cmd)
-            return {"ok": True, "reason": "", "detail": "", "tail_seconds": tail}
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "reason": "integrity_timeout",
-                "detail": "integrity check timed out", "tail_seconds": tail}
-    except (OSError, subprocess.SubprocessError) as exc:  # noqa: BLE001
-        return {"ok": False, "reason": "integrity_unavailable",
-                "detail": type(exc).__name__, "tail_seconds": tail}
-    if proc.returncode == 0 and not (proc.stderr or "").strip():
-        return {"ok": True, "reason": "", "detail": "", "tail_seconds": tail}
-    detail = " | ".join((proc.stderr or "").strip().splitlines()[:3])[:300]
-    return {"ok": False, "reason": "media_integrity_failed",
-            "detail": detail, "tail_seconds": tail,
-            "returncode": proc.returncode}
+    return mval.verify_media_integrity(path, tail_seconds=tail_seconds, runner=runner)
 
 
 def classify_download_failure(stderr: str) -> str:

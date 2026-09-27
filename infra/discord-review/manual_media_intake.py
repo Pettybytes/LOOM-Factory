@@ -110,43 +110,38 @@ def parse_intake_message(content: str) -> dict[str, Any]:
 
 
 def probe_media(path: str | os.PathLike[str]) -> dict[str, Any]:
-    """Local ffprobe only: duration/dimensions/hash/size. No network, no provider."""
-    p = str(path)
-    size = os.path.getsize(p)
-    cmd = ["ffprobe", "-v", "error", "-print_format", "json", "-show_format",
-           "-show_streams", p]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if proc.returncode != 0:
-        raise ValueError(f"ffprobe failed ({proc.returncode}): {proc.stderr.strip()[:200]}")
-    meta = json.loads(proc.stdout or "{}")
-    fmt = meta.get("format") or {}
-    streams = meta.get("streams") or []
-    video = next((s for s in streams if s.get("codec_type") == "video"), {})
-    audio = next((s for s in streams if s.get("codec_type") == "audio"), {})
-    duration = fmt.get("duration") or video.get("duration")
-    return {
-        "duration_seconds": float(duration) if duration else None,
-        "width": video.get("width"),
-        "height": video.get("height"),
-        "has_audio": bool(audio),
-        "has_video": bool(video),
-        "size_bytes": size,
-        "sha256": sha256_file(p),
-        "container": fmt.get("format_name", ""),
-    }
+    """Local ffprobe only: duration/dimensions/hash/size. No network, no provider.
+
+    Thin alias for the SHARED probe in ``media_validation`` so there is one
+    implementation of "what are this file's properties". Raises ValueError when
+    ffprobe itself fails (unreadable), which is distinct from "readable but
+    unsafe" — that judgement belongs to :func:`validate_finalized_media`.
+    """
+    return _acq("media_validation").probe_media_file(path)
 
 
 def verify_artifact_integrity(path: str | os.PathLike[str], **kwargs: Any) -> dict[str, Any]:
     """The ONE pre-durable integrity gate.
 
     Deliberately NOT ``probe_media``: container metadata is not proof of usable
-    media. Runtime evidence — the retained truncated artifact reported
-    ``has_video=True`` at 1920x1080 / 466.6s while being 19,611 bytes short.
-    This decodes the artifact's tail instead. See
-    ``ytdlp_adapter.verify_media_integrity`` for the mechanism and its cost.
+    media. Shared with every acquisition mechanism via ``media_validation`` — see
+    that module for the mechanism, the evidence, and the cost.
     """
-    ya = _acq("ytdlp_adapter")
-    return ya.verify_media_integrity(path, **kwargs)
+    return _acq("media_validation").verify_media_integrity(path, **kwargs)
+
+
+def validate_finalized_artifact(path: str | os.PathLike[str], *, max_bytes: int,
+                                probe_fn: Any = None, integrity_fn: Any = None,
+                                require_audio: bool = False) -> dict[str, Any]:
+    """The SHARED post-acquisition contract: is this artifact safe for LOOM?
+
+    Platform-specific code decides WHAT its finalized artifact is; this decides
+    whether it may be stored. Kept as a named seam here so Manual Intake consumes
+    the same contract every other mechanism does.
+    """
+    return _acq("media_validation").validate_finalized_media(
+        path, max_bytes=max_bytes, probe_fn=probe_fn, integrity_fn=integrity_fn,
+        require_audio=require_audio)
 
 
 def scan_for_video(attachments: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -375,8 +370,136 @@ def _count_split_intermediates(out_dir: str) -> int:
         return 0
 
 
+def resolve_platform_capability(platform: str) -> dict[str, Any]:
+    """The platform's acquisition MECHANISM + capability, from the EXISTING registry.
+
+    Read-only and non-upgrading: it REPORTS what the registered adapter claims
+    (``adapter_id``, ``implemented``, ``runtime_proven``, proven modes, long-form /
+    window requirements) plus the declared platform capability state.
+
+    It never asserts a capability the registry does not claim. That is why Kick
+    reads as clip-proven / VOD-not-proven here rather than being assumed: Manual
+    Intake must be able to record the mechanism truthfully per platform.
+    """
+    out: dict[str, Any] = {
+        "platform": (platform or "").lower(), "registered": False, "adapter_id": "",
+        "implemented": False, "runtime_proven": False, "proven_modes": [],
+        "long_form": False, "requires_window_for_long_source": False,
+        "capability_state": "", "capability_reason": "", "can_acquire": False,
+    }
+    if not out["platform"]:
+        return out
+    try:
+        sa = _acq("source_adapters")
+        pc = _acq("platform_capabilities")
+    except Exception as exc:  # noqa: BLE001
+        out["registry_error"] = type(exc).__name__
+        return out
+    adapter = sa.adapter_for(out["platform"])
+    out["registered"] = adapter is not None
+    if adapter is not None:
+        out["adapter_id"] = str(getattr(adapter, "adapter_id", "") or "")
+        out["implemented"] = bool(getattr(adapter, "implemented", False))
+        out["runtime_proven"] = bool(getattr(adapter, "runtime_proven", False))
+        modes = getattr(adapter, "proven_modes", None)
+        out["proven_modes"] = sorted(modes) if modes else []
+        out["long_form"] = bool(getattr(adapter, "long_form", False))
+        out["requires_window_for_long_source"] = bool(
+            getattr(adapter, "requires_window_for_long_source", False))
+    try:
+        out["capability_state"] = pc.capability(out["platform"])
+        out["capability_reason"] = pc.capability_reason(out["platform"])
+        out["can_acquire"] = bool(pc.can_acquire(out["platform"]))
+    except Exception:  # noqa: BLE001 — capability metadata is best-effort
+        pass
+    return out
+
+
+# Identity reconciliation verdicts. The SEMANTICS are the point: only an
+# AUTHORITATIVE, POSITIVE conflict may block an acquisition.
+IDENTITY_RECONCILED = "reconciled"        # adapter confirms the identity -> proceed
+IDENTITY_MISMATCH = "mismatch"            # authoritative AND conflicting -> FAIL CLOSED
+IDENTITY_UNVERIFIED = "unverified"        # no usable signal / undecidable -> do not block
+IDENTITY_NOT_APPLICABLE = "not_applicable"  # no adapter for this platform -> do not block
+
+
+def _has_authoritative_identity(meta: dict[str, Any] | None) -> bool:
+    """Does the platform metadata actually carry a usable identity signal?
+
+    Only the platform's own extractor output counts. An ABSENT signal means
+    UNVERIFIED, never a manufactured mismatch — a platform must not become
+    unusable merely because its identity cannot be proven.
+    """
+    if not isinstance(meta, dict):
+        return False
+    for key in ("id", "webpage_url", "url"):
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
+
+
+def _reconcile_platform_identity(platform: str, expected_id: str,
+                                 meta: dict[str, Any] | None) -> str:
+    """Identity cross-check via the PLATFORM'S OWN rule. Returns one of four verdicts.
+
+    The rule lives in the adapter registry (``source_adapters.reconcile_identity``),
+    so Twitch's numeric-id quirk and Kick's case-insensitivity are handled by the
+    platform that knows about them rather than by Manual Intake.
+
+    POLICY (only an authoritative positive conflict blocks):
+      * ``not_applicable`` — no adapter registered for the platform. Proceed.
+      * ``unverified``     — an adapter exists but the metadata carries no usable
+                             identity signal, or the check could not decide.
+                             Proceed; never fabricate a mismatch from absence.
+      * ``reconciled``     — authoritative and consistent. Proceed.
+      * ``mismatch``       — authoritative AND conflicting. FAIL CLOSED: storing
+                             the wrong asset durably is not recoverable.
+    """
+    if not platform or not expected_id:
+        return IDENTITY_UNVERIFIED
+    try:
+        sa = _acq("source_adapters")
+        if sa.adapter_for(platform) is None:
+            return IDENTITY_NOT_APPLICABLE
+    except Exception:  # noqa: BLE001
+        return IDENTITY_UNVERIFIED
+    if not _has_authoritative_identity(meta):
+        return IDENTITY_UNVERIFIED
+    try:
+        return (IDENTITY_RECONCILED if sa.reconcile_identity(platform, expected_id, meta)
+                else IDENTITY_MISMATCH)
+    except Exception:  # noqa: BLE001
+        return IDENTITY_UNVERIFIED
+
+
+def build_operator_window(*, platform: str, canonical_url: str, content_id: str,
+                          start_s: float, end_s: float,
+                          source_duration_s: float | None = None) -> dict[str, Any]:
+    """Validate + serialize an operator window through the SHARED contract.
+
+    ONE path for BOTH ingress modes (local upload and URL-only) so the 300 s clip
+    limit, the source-end tolerance and range identity can never differ between
+    them. A refusal is a refusal: it is never softened into a whole-source store.
+    """
+    swc = _acq("source_window")
+    start_ms, end_ms = swc.from_seconds(float(start_s), float(end_s))
+    try:
+        return swc.validate_window(
+            platform=platform, canonical_url=canonical_url, content_id=content_id,
+            start_ms=start_ms, end_ms=end_ms, origin="operator_adjusted",
+            source_duration_s=source_duration_s)
+    except Exception as exc:  # noqa: BLE001 — a window refusal is a refusal
+        raise MediaIntakeError(
+            "WINDOW_REJECTED",
+            "the requested window was refused",
+            detail=f"{getattr(exc, 'code', '') or type(exc).__name__}: "
+                   f"{str(exc)[:180]}") from None
+
+
 def _preflight_start_height(canonical_url: str, *, max_bytes: int,
-                            probe_runner: Any = None) -> tuple[int | None, int | None, str]:
+                            probe_runner: Any = None
+                            ) -> tuple[int | None, int | None, str, dict[str, Any] | None]:
     """Choose the starting rung from FREE metadata. Best-effort; NEVER fatal.
 
     Reuses the EXISTING bounded metadata probe (``build_probe_command``:
@@ -393,12 +516,13 @@ def _preflight_start_height(canonical_url: str, *, max_bytes: int,
             if len(entries) == 1:
                 meta = entries[0]
         if not isinstance(meta, dict) or not meta.get("formats"):
-            return None, None, "no_metadata"
-        return ya.choose_starting_height(meta, max_bytes=max_bytes)
+            return None, None, "no_metadata", meta if isinstance(meta, dict) else None
+        height, estimate, why = ya.choose_starting_height(meta, max_bytes=max_bytes)
+        return height, estimate, why, meta
     except Exception as exc:  # noqa: BLE001 — an optimisation must never block
         print(f"[intake] pre-flight unavailable ({type(exc).__name__}); "
               f"using the verified ladder", flush=True)
-        return None, None, "preflight_failed"
+        return None, None, "preflight_failed", None
 
 
 def acquire_url_media(url: str, *, out_dir: str,
@@ -407,6 +531,8 @@ def acquire_url_media(url: str, *, out_dir: str,
                       probe_fn: Any = None,
                       integrity_fn: Any = None,
                       preflight_runner: Any = None,
+                      start_s: float | None = None,
+                      end_s: float | None = None,
                       ) -> tuple[str, dict[str, Any]]:
     """Mode B: source URL -> EXISTING resolver -> EXISTING local downloader -> file.
 
@@ -432,6 +558,14 @@ def acquire_url_media(url: str, *, out_dir: str,
     """
     ya = _acq("ytdlp_adapter")
     resolved = resolve_source_url(url)
+    # Platform MECHANISM + capability come from the EXISTING registry (adapter
+    # selection), not from a Manual-Intake-local assumption about yt-dlp.
+    capability = resolve_platform_capability(resolved.get("platform", ""))
+    resolved = {**resolved, "capability": capability}
+    print(f"[intake] platform={capability['platform']} "
+          f"adapter={capability['adapter_id'] or 'none'} "
+          f"state={capability['capability_state'] or 'unknown'} "
+          f"proven_modes={capability['proven_modes']}", flush=True)
     os.makedirs(out_dir, exist_ok=True)
     template = os.path.join(out_dir, "%(id)s.%(ext)s")
     _download = run_download or (lambda cmd: ya.run_ytdlp_command(cmd, timeout=600.0))
@@ -442,11 +576,60 @@ def acquire_url_media(url: str, *, out_dir: str,
     start_height: int | None = None
     estimate: int | None = None
     why = "skipped"
+    meta: dict[str, Any] | None = None
     if preflight_runner is not None or run_download is None:
-        start_height, estimate, why = _preflight_start_height(
+        start_height, estimate, why, meta = _preflight_start_height(
             resolved["canonical_url"], max_bytes=max_bytes, probe_runner=preflight_runner)
         print(f"[intake] pre-flight start_height={start_height} "
               f"estimate={estimate} reason={why}", flush=True)
+
+    # Identity cross-check through the PLATFORM's own rule (recorded provenance).
+    identity = _reconcile_platform_identity(
+        capability["platform"], str(resolved.get("content_id") or ""), meta)
+    resolved["identity_reconciliation"] = identity
+    if identity == IDENTITY_MISMATCH:
+        # AUTHORITATIVE POSITIVE CONFLICT — fail closed. Storing the wrong asset
+        # durably is not recoverable, so this is the ONLY verdict that blocks.
+        print(f"[intake] identity MISMATCH (authoritative) for "
+              f"{capability['platform']} id={resolved.get('content_id')} — refusing",
+              flush=True)
+        raise MediaIntakeError(
+            "IDENTITY_MISMATCH",
+            "the source identity conflicts with the identity that was submitted",
+            detail=f"platform={capability['platform']} "
+                   f"expected={resolved.get('content_id')}")
+    if identity in (IDENTITY_UNVERIFIED, IDENTITY_NOT_APPLICABLE):
+        # NOT a conflict: record it and continue. Never manufacture a mismatch.
+        print(f"[intake] identity {identity} for "
+              f"{capability['platform']} (not authoritatively verifiable) — proceeding",
+              flush=True)
+
+    # ---- OPTIONAL SOURCE WINDOW (the SHARED source_window contract) ----------
+    # No start/end => the whole source, exactly as before. A bounded request is
+    # validated HERE and fails closed; it is NEVER silently downgraded to the
+    # whole source, and a resulting artifact that does not match the approved
+    # window is rejected below.
+    window: dict[str, Any] | None = None
+    if start_s is not None or end_s is not None:
+        if start_s is None or end_s is None:
+            raise MediaIntakeError(
+                "WINDOW_INCOMPLETE",
+                "a bounded acquisition needs BOTH a start and an end")
+        source_duration_s = None
+        if isinstance(meta, dict) and isinstance(meta.get("duration"), (int, float)):
+            source_duration_s = float(meta["duration"])
+        window = build_operator_window(
+            platform=capability["platform"] or resolved.get("platform", ""),
+            canonical_url=resolved["canonical_url"],
+            content_id=str(resolved.get("content_id") or ""),
+            start_s=float(start_s), end_s=float(end_s),
+            source_duration_s=source_duration_s)
+        print(f"[intake] bounded window "
+              f"{_acq('source_window').human_range(window['start_ms'], window['end_ms'])} "
+              f"({window['clip_duration_ms'] / 1000:.3f}s) "
+              f"range={str(window['range_fingerprint'])[:12]}", flush=True)
+    resolved["window"] = window
+    resolved["acquisition_mode"] = "bounded_segment" if window else "full_item"
 
     # ---- stage 2: the verified ladder (the safety net) ----------------------
     ladder = ya.ladder_from(start_height, ladder=ya.height_ladder(max_bytes))
@@ -454,7 +637,9 @@ def acquire_url_media(url: str, *, out_dir: str,
     for max_height in ladder:
         cmd = ya.build_download_command(
             resolved["canonical_url"], out_template=template,
-            max_bytes=max_bytes, max_height=max_height)
+            max_bytes=max_bytes, max_height=max_height,
+            section_arg=(_acq("source_window").ytdlp_section_arg(window)
+                         if window else None))
         stdout = _download(cmd)
 
         path, failure, evidence = _select_finalized_artifact(out_dir, stdout)
@@ -467,34 +652,43 @@ def acquire_url_media(url: str, *, out_dir: str,
                   f"evidence={evidence}", flush=True)
             continue
 
-        info = _probe(path)
-        if not info.get("has_video"):
-            attempts.append({"height": max_height, "code": "NO_VIDEO_STREAM",
-                             "detail": f"container={info.get('container', '')}"})
-            print(f"[intake] height={max_height} produced no video stream", flush=True)
-            continue
-
-        verdict = _integrity(path)
-        if not verdict.get("ok"):
-            attempts.append({"height": max_height, "code": "MEDIA_INTEGRITY_FAILED",
-                             "detail": str(verdict.get("detail", ""))[:200]})
-            print(f"[intake] height={max_height} failed integrity: "
-                  f"{str(verdict.get('detail'))[:160]}", flush=True)
-            continue
-
-        size = os.path.getsize(path)
-        if size <= max_bytes:
+        # ONE shared post-acquisition contract decides whether this artifact is
+        # safe for LOOM: exists -> non-zero -> within ceiling -> video-bearing ->
+        # positive duration -> integrity valid. The ladder no longer re-implements
+        # these checks, so the rule cannot drift between mechanisms.
+        verdict = validate_finalized_artifact(
+            path, max_bytes=max_bytes, probe_fn=_probe, integrity_fn=_integrity)
+        if verdict["eligible"]:
+            if window is not None:
+                # The delivered clip MUST match the window the operator approved.
+                swc_v = _acq("source_window")
+                try:
+                    swc_v.validate_resulting_duration(
+                        approved=window,
+                        measured_ms=int(round(float(verdict["duration_seconds"]) * 1000)))
+                except Exception as exc:  # noqa: BLE001
+                    attempts.append({"height": max_height, "code": "WINDOW_MISMATCH",
+                                     "detail": str(exc)[:200]})
+                    print(f"[intake] bounded window mismatch at height={max_height}: "
+                          f"{str(exc)[:160]}", flush=True)
+                    continue
+            resolved["working_source"] = {
+                "duration_seconds": verdict["duration_seconds"],
+                "timebase_origin_s": (window["start_ms"] / 1000.0) if window else 0.0,
+            }
             if attempts:
-                print(f"[intake] settled at height={max_height} bytes={size} after "
-                      f"rejecting {[a['height'] for a in attempts]}", flush=True)
+                print(f"[intake] settled at height={max_height} "
+                      f"bytes={verdict['size_bytes']} after rejecting "
+                      f"{[a['height'] for a in attempts]}", flush=True)
             return path, resolved
 
-        # Fits the format but not the ceiling: step DOWN. The rejected artifact
-        # is evidence, never a durable asset, and the cap is never raised.
-        attempts.append({"height": max_height, "code": "MEDIA_EXCEEDS_LIMIT",
-                         "bytes": size})
-        print(f"[intake] height={max_height} artifact {size}B exceeds ceiling "
-              f"{max_bytes}B; stepping down", flush=True)
+        code = verdict["reason"] or "MEDIA_INTEGRITY_FAILED"
+        attempts.append({"height": max_height, "code": code,
+                         "size_bytes": verdict.get("size_bytes"),
+                         "detail": _short_validation_detail(verdict)})
+        print(f"[intake] height={max_height} rejected code={code} "
+              f"size={verdict.get('size_bytes')} "
+              f"detail={_short_validation_detail(verdict)[:160]}", flush=True)
 
     # Every representation failed. Fail closed with the most actionable reason.
     code = _dominant_failure_code(attempts)
@@ -502,6 +696,19 @@ def acquire_url_media(url: str, *, out_dir: str,
         code,
         "no usable media representation could be acquired under the intake limit",
         detail=json.dumps(attempts)[:600])
+
+
+def _short_validation_detail(verdict: dict[str, Any]) -> str:
+    """Concise, log-friendly detail for a rejected artifact (never a raw dump)."""
+    integrity = verdict.get("integrity") or {}
+    if integrity and not integrity.get("ok"):
+        return str(integrity.get("detail", ""))[:200]
+    probe = verdict.get("probe") or {}
+    if probe:
+        return (f"container={probe.get('container', '')} "
+                f"has_video={probe.get('has_video')} "
+                f"duration={probe.get('duration_seconds')}")[:200]
+    return str(verdict.get("probe_error") or verdict.get("reason") or "")[:200]
 
 
 def _dominant_failure_code(attempts: list[dict[str, Any]]) -> str:
@@ -513,8 +720,8 @@ def _dominant_failure_code(attempts: list[dict[str, Any]]) -> str:
     """
     codes = [str(a.get("code") or "") for a in attempts]
     for preferred in ("MEDIA_EXCEEDS_LIMIT", "MEDIA_INTEGRITY_FAILED",
-                      "NO_VIDEO_STREAM", "SPLIT_STREAM_UNFINISHED",
-                      "DOWNLOAD_INCOMPLETE"):
+                      "NO_VIDEO_STREAM", "BAD_DURATION",
+                      "SPLIT_STREAM_UNFINISHED", "DOWNLOAD_INCOMPLETE"):
         if preferred in codes:
             return preferred
     return codes[0] if codes and codes[0] else "NO_FINALIZED_ARTIFACT"
@@ -599,12 +806,52 @@ def preview_fetchers(media_path: str):
     return _bounded, _contiguous
 
 
+def extract_local_window(path: str, *, start_s: float, end_s: float,
+                         out_dir: str | None = None) -> str:
+    """Extract the operator's window from a SUPPLIED file -> the working source.
+
+    For the LOCAL-UPLOAD path, where the supplied file may be far longer than the
+    moment wanted. Re-encodes to the accepted delivery contract
+    (H.264/AAC/yuv420p/fast-start) so the working asset needs no second
+    normalization pass. The window is validated by the SHARED ``source_window``
+    contract before this runs.
+
+    FAILS CLOSED: a bounded request never falls back to the whole file, and a
+    failed extraction is an error rather than a silent whole-source store.
+    """
+    start = max(0.0, float(start_s))
+    end = float(end_s)
+    if not (end > start):
+        raise MediaIntakeError("WINDOW_REJECTED",
+                               "extract window end must be greater than start")
+    span = end - start
+    folder = out_dir or tempfile.mkdtemp(prefix="loom-manual-window-")
+    Path(folder).mkdir(parents=True, exist_ok=True)
+    out = os.path.join(folder, f"window-{int(start * 1000)}-{int(end * 1000)}.mp4")
+    cmd = ["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-i", path,
+           "-t", f"{span:.3f}", "-c:v", "libx264", "-preset", "veryfast",
+           "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac",
+           "-movflags", "+faststart", "-y", out]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    except (OSError, subprocess.SubprocessError) as exc:  # noqa: BLE001
+        raise MediaIntakeError("WINDOW_EXTRACTION_FAILED",
+                               "the window could not be extracted",
+                               detail=type(exc).__name__) from None
+    if proc.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) <= 0:
+        raise MediaIntakeError(
+            "WINDOW_EXTRACTION_FAILED", "the window could not be extracted",
+            detail=(proc.stderr or "").strip()[:200])
+    return out
+
+
 def build_media_submission(*, url: str, destination: str, content_format: str,
                            submitter: str, media_reference: dict[str, Any],
                            probe: dict[str, Any], human_window: tuple[float | None, float | None],
                            reviewer_note: str = "",
                            active_tenants: set[str] | None = None,
-                           source_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+                           source_metadata: dict[str, Any] | None = None,
+                           acquisition_provenance: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build the durable submission payload, reusing the V1 contract verbatim.
 
     ``origin='manual_media'`` records that the operator supplied the bytes;
@@ -613,6 +860,15 @@ def build_media_submission(*, url: str, destination: str, content_format: str,
     source engagement evidence is durable at the SUBMISSION level — it therefore
     survives even when Content Intelligence later filters the asset before any
     candidate row exists. JSONB, so no migration is required.
+
+    ``acquisition_provenance`` records the acquisition, keeping TWO COORDINATE
+    SYSTEMS explicitly distinct so neither is ever inferred from the other:
+      * ORIGINAL source coordinates (``original_start_s`` / ``original_end_s``) —
+        what the operator asked for, in the source's own timeline;
+      * WORKING source coordinates (``working_source_duration_s`` /
+        ``working_timebase_origin_s``) — the durable asset's own 0-based timeline,
+        where t=0 corresponds to ``working_timebase_origin_s`` in the source.
+    A full-item acquisition has ``working_timebase_origin_s == 0``.
     """
     payload = manual_intake.build_submission(
         url=url, destination=destination, content_format=content_format,
@@ -627,6 +883,8 @@ def build_media_submission(*, url: str, destination: str, content_format: str,
                  "has_audio": probe.get("has_audio")}
     if source_metadata:
         reference["source_metadata"] = source_metadata
+    if acquisition_provenance:
+        reference["acquisition"] = acquisition_provenance
     payload.update({
         "origin": "manual_media",
         "media_reference": reference,

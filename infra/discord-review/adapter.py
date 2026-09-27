@@ -242,6 +242,18 @@ _INTAKE_FAILURE_REASONS: dict[str, str] = {
         "the media is truncated or corrupt, so it was not stored.",
     "NO_VIDEO_STREAM":
         "the source has no video stream LOOM can use.",
+    "BAD_DURATION":
+        "the media has no usable duration, so it cannot be reasoned about.",
+    "WINDOW_REJECTED":
+        "the requested start/end window was refused (over the clip limit or outside the source).",
+    "WINDOW_INCOMPLETE":
+        "a bounded intake needs BOTH a start and an end.",
+    "WINDOW_EXTRACTION_FAILED":
+        "the requested window could not be extracted from the supplied file.",
+    "WINDOW_MISMATCH":
+        "the extracted media does not match the requested window.",
+    "IDENTITY_MISMATCH":
+        "the source identity conflictually differs from the identity submitted.",
     "MEDIA_EXCEEDS_LIMIT":
         "the media exceeds the intake size limit, even at the lowest quality tried.",
     "PROBE_FAILED":
@@ -260,7 +272,7 @@ def classify_intake_failure(exc: Exception, stage: str = "") -> tuple[str, str]:
         return "MEDIA_EXCEEDS_LIMIT", _INTAKE_FAILURE_REASONS["MEDIA_EXCEEDS_LIMIT"]
     if code in ("YTDLP_FAILED", "NO_OUTPUT", "NO_RESULTS"):
         return "DOWNLOAD_FAILED", _INTAKE_FAILURE_REASONS["DOWNLOAD_FAILED"]
-    if code in ("FFPROBE_FAILED", "BAD_METADATA", "NO_STREAMS"):
+    if code in ("FFPROBE_FAILED", "BAD_METADATA", "NO_STREAMS", "BAD_DURATION"):
         return "PROBE_FAILED", _INTAKE_FAILURE_REASONS["PROBE_FAILED"]
     text = str(exc).lower()
     if "exceeds cap" in text:
@@ -2639,17 +2651,80 @@ class Handler(BaseHTTPRequestHandler):
                 parsed.get("tenant") or MANUAL_MEDIA_TENANT_DEFAULT, active)
             stage = "acquire_media"
             temp_dir = tempfile.mkdtemp(prefix="loom-manual-intake-")
+            # Acquisition provenance. Records the MECHANISM and keeps TWO
+            # COORDINATE SYSTEMS explicitly distinct so neither is ever inferred
+            # from the other: the ORIGINAL source timestamps the operator asked for,
+            # and the WORKING asset's own 0-based timeline (working t=0 is
+            # `working_timebase_origin_s` in the source).
+            acq_prov: dict = {
+                "acquisition_mode": "full_item",
+                "acquisition_mechanism": "",
+                "original_start_s": parsed.get("start_s"),
+                "original_end_s": parsed.get("end_s"),
+                "working_timebase_origin_s": 0.0,
+                "working_source_duration_s": None,
+                "window_seconds": None,
+                "range_fingerprint": None,
+                "platform_capability_state": None,
+                "platform_proven_modes": None,
+                "identity_reconciliation": None,
+            }
             if attachment:
                 safe_name = re.sub(r"[^A-Za-z0-9._-]", "_",
                                    attachment.get("filename") or "supplied.mp4")[:120]
                 local_path = os.path.join(temp_dir, safe_name)
                 manual_media_intake.download_attachment(attachment["url"], local_path)
+                acq_prov["acquisition_mechanism"] = "local:file_upload"
+                # OPERATOR WINDOW (local upload): the supplied file may be far longer
+                # than the moment wanted, so the EXTRACTED WINDOW becomes the working
+                # source. Validated through the SHARED window contract, and it fails
+                # closed — it is never downgraded to the whole file.
+                if parsed.get("start_s") is not None or parsed.get("end_s") is not None:
+                    if parsed.get("start_s") is None or parsed.get("end_s") is None:
+                        raise RuntimeError("a bounded window needs both start and end")
+                    _wres = manual_media_intake.resolve_source_url(parsed["url"])
+                    _w = manual_media_intake.build_operator_window(
+                        platform=_wres["platform"], canonical_url=_wres["canonical_url"],
+                        content_id=_wres["content_id"],
+                        start_s=parsed["start_s"], end_s=parsed["end_s"])
+                    local_path = manual_media_intake.extract_local_window(
+                        local_path, start_s=parsed["start_s"], end_s=parsed["end_s"],
+                        out_dir=temp_dir)
+                    _wext = os.path.splitext(local_path)[1] or ".mp4"
+                    safe_name = re.sub(
+                        r"[^A-Za-z0-9._-]", "_",
+                        f"{_wres['platform']}__{_wres['content_id']}"
+                        f"__window{int(_w['start_ms'])}-{int(_w['end_ms'])}{_wext}")[:150]
+                    acq_prov.update({
+                        "acquisition_mode": "bounded_segment",
+                        "window_seconds": _w["clip_duration_ms"] / 1000.0,
+                        "range_fingerprint": _w["range_fingerprint"],
+                        "working_timebase_origin_s": _w["start_ms"] / 1000.0,
+                    })
+                    print(f"[manual-intake] local window extracted "
+                          f"{_w['clip_duration_ms'] / 1000:.3f}s "
+                          f"range={str(_w['range_fingerprint'])[:12]}", flush=True)
             else:
                 # Mode B — URL only. EXISTING resolver + EXISTING bounded local
                 # downloader ($0). Deliberately creates NO library row and NO
                 # acquisition job: the durable copy is GHL's.
                 local_path, _resolved = manual_media_intake.acquire_url_media(
-                    parsed["url"], out_dir=temp_dir)
+                    parsed["url"], out_dir=temp_dir,
+                    start_s=parsed.get("start_s"), end_s=parsed.get("end_s"))
+                _cap = _resolved.get("capability") or {}
+                _win = _resolved.get("window")
+                _work = _resolved.get("working_source") or {}
+                acq_prov.update({
+                    "acquisition_mode": _resolved.get("acquisition_mode") or "full_item",
+                    "acquisition_mechanism": _cap.get("adapter_id") or "local:yt-dlp",
+                    "platform_capability_state": _cap.get("capability_state"),
+                    "platform_proven_modes": _cap.get("proven_modes"),
+                    "identity_reconciliation": _resolved.get("identity_reconciliation"),
+                    "working_source_duration_s": _work.get("duration_seconds"),
+                    "working_timebase_origin_s": _work.get("timebase_origin_s", 0.0),
+                    "window_seconds": (_win["clip_duration_ms"] / 1000.0) if _win else None,
+                    "range_fingerprint": _win["range_fingerprint"] if _win else None,
+                })
                 # Name the durable copy from the RESOLVED identity so the GHL
                 # filename is stable and human-meaningful. (Mode B has no
                 # attachment filename; leaving this unset is what raised
@@ -2712,7 +2787,13 @@ class Handler(BaseHTTPRequestHandler):
                 submitter=submitter, media_reference={**durable, "filename": safe_name},
                 probe=probe, human_window=(parsed.get("start_s"), parsed.get("end_s")),
                 reviewer_note=(parsed.get("note") or "")[:500], active_tenants=active,
-                source_metadata=source_metadata)
+                source_metadata=source_metadata,
+                acquisition_provenance={
+                    **acq_prov,
+                    # The WORKING source duration is the durable asset's own length.
+                    "working_source_duration_s": (acq_prov.get("working_source_duration_s")
+                                                  or probe.get("duration_seconds")),
+                })
             row, created = manual_media_intake.persist_media_submission(
                 SUPABASE_URL, SUPABASE_KEY, payload)
             persisted = True

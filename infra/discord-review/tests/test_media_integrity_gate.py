@@ -17,6 +17,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -102,6 +103,16 @@ class TestArtifactSelectionFailsClosed(unittest.TestCase):
             self.assertEqual(failure, "NO_FINALIZED_ARTIFACT")
 
 
+PROBE_OK = {"has_video": True, "has_audio": True, "duration_seconds": 12.0,
+            "container": "mov,mp4,m4a", "sha256": "deadbeef"}
+INTEGRITY_OK = {"ok": True, "reason": "", "detail": ""}
+
+
+def _probe_ok(_p):
+    """A probe that satisfies the shared contract's required fields."""
+    return dict(PROBE_OK)
+
+
 class TestAudioOnlyIsNeverReturned(unittest.TestCase):
     """The precise defect: an audio-only artifact must fail, not be returned."""
 
@@ -179,7 +190,7 @@ class TestAcquisitionIntegrityAndSizeLadder(unittest.TestCase):
                 mmi.acquire_url_media(
                     "https://www.youtube.com/watch?v=59xxeJCbzaM", out_dir=d,
                     run_download=lambda cmd: str(f),
-                    probe_fn=lambda p: {"has_video": True, "has_audio": True},
+                    probe_fn=_probe_ok,
                     integrity_fn=lambda p: {"ok": False, "reason": "media_integrity_failed",
                                             "detail": "corrupt input packet"})
             self.assertEqual(ctx.exception.code, "MEDIA_INTEGRITY_FAILED")
@@ -213,8 +224,8 @@ class TestAcquisitionIntegrityAndSizeLadder(unittest.TestCase):
                 "https://www.youtube.com/watch?v=59xxeJCbzaM", out_dir=d,
                 max_bytes=100,
                 run_download=fake_download,
-                probe_fn=lambda p: {"has_video": True, "has_audio": True},
-                integrity_fn=lambda p: {"ok": True})
+                probe_fn=_probe_ok,
+                integrity_fn=lambda p: dict(INTEGRITY_OK))
             self.assertTrue(path.endswith("h720.mp4"))
             self.assertEqual(calls[0], 1080, "highest quality is tried first")
             self.assertEqual(calls[1], 720)
@@ -230,8 +241,8 @@ class TestAcquisitionIntegrityAndSizeLadder(unittest.TestCase):
                     "https://www.youtube.com/watch?v=59xxeJCbzaM", out_dir=d,
                     max_bytes=100,
                     run_download=fake_download,
-                    probe_fn=lambda p: {"has_video": True, "has_audio": True},
-                    integrity_fn=lambda p: {"ok": True})
+                    probe_fn=_probe_ok,
+                    integrity_fn=lambda p: dict(INTEGRITY_OK))
             self.assertEqual(ctx.exception.code, "MEDIA_EXCEEDS_LIMIT")
 
 
@@ -265,6 +276,89 @@ class TestOperatorFacingClassification(unittest.TestCase):
         code, reason = adapter.classify_intake_failure(RuntimeError("boom"))
         self.assertEqual(code, "UNKNOWN")
         self.assertNotIn("boom", reason, "raw detail stays in the log")
+
+
+class TestIdentityPolicy(unittest.TestCase):
+    """Only an AUTHORITATIVE, POSITIVE conflict may block an acquisition.
+
+    The four verdicts must stay semantically distinct, and absence of proof must
+    never be treated as conflict — a platform cannot become unusable merely
+    because its identity cannot be verified.
+    """
+
+    KICK_URL = "https://kick.com/deenthegreat/clips/clip_01M36D2Z6ATNWZQGARH71S2DPP"
+    KICK_ID = "clip_01M36D2Z6ATNWZQGARH71S2DPP"
+    IG_URL = "https://www.instagram.com/reel/DdwlUqsOhP0"
+
+    def _acquire(self, url, meta, **kw):
+        d = tempfile.mkdtemp(prefix="loom-ident-")
+        f = Path(d) / "media.mp4"
+        f.write_bytes(b"m" * 512)
+        return mmi.acquire_url_media(
+            url, out_dir=d,
+            run_download=lambda cmd: str(f),
+            probe_fn=_probe_ok,
+            integrity_fn=lambda p: dict(INTEGRITY_OK),
+            preflight_runner=lambda cmd: json.dumps(meta), **kw)
+
+    # ---- verdicts --------------------------------------------------------
+
+    def test_no_adapter_is_not_applicable_and_does_not_block(self):
+        verdict = mmi._reconcile_platform_identity("instagram", "DdwlUqsOhP0",
+                                                   {"id": "DdwlUqsOhP0"})
+        self.assertEqual(verdict, mmi.IDENTITY_NOT_APPLICABLE)
+        # ...and acquisition still succeeds.
+        _, res = self._acquire(self.IG_URL, {"id": "DdwlUqsOhP0"})
+        self.assertEqual(res["identity_reconciliation"], mmi.IDENTITY_NOT_APPLICABLE)
+
+    def test_missing_identity_signal_is_unverified_and_does_not_block(self):
+        # An adapter exists (kick) but the metadata carries NO identity at all.
+        self.assertEqual(
+            mmi._reconcile_platform_identity("kick", self.KICK_ID, {}),
+            mmi.IDENTITY_UNVERIFIED)
+        _, res = self._acquire(self.KICK_URL, {})
+        self.assertEqual(res["identity_reconciliation"], mmi.IDENTITY_UNVERIFIED)
+
+    def test_missing_expected_id_is_unverified(self):
+        self.assertEqual(
+            mmi._reconcile_platform_identity("kick", "", {"id": "x"}),
+            mmi.IDENTITY_UNVERIFIED)
+
+    def test_consistent_identity_is_reconciled(self):
+        self.assertEqual(
+            mmi._reconcile_platform_identity("kick", self.KICK_ID,
+                                             {"id": self.KICK_ID}),
+            mmi.IDENTITY_RECONCILED)
+        _, res = self._acquire(self.KICK_URL, {"id": self.KICK_ID})
+        self.assertEqual(res["identity_reconciliation"], mmi.IDENTITY_RECONCILED)
+
+    # ---- the one blocking case -------------------------------------------
+
+    def test_authoritative_conflict_is_mismatch_and_fails_closed(self):
+        self.assertEqual(
+            mmi._reconcile_platform_identity("kick", self.KICK_ID,
+                                             {"id": "clip_SOMETHING_ELSE_999"}),
+            mmi.IDENTITY_MISMATCH)
+        with self.assertRaises(mmi.MediaIntakeError) as ctx:
+            self._acquire(self.KICK_URL, {"id": "clip_SOMETHING_ELSE_999"})
+        self.assertEqual(ctx.exception.code, "IDENTITY_MISMATCH")
+
+    def test_a_url_only_signal_can_also_confirm_identity(self):
+        # Twitch-style: the id may be absent but the resolved URL is authoritative.
+        self.assertEqual(
+            mmi._reconcile_platform_identity(
+                "kick", self.KICK_ID,
+                {"webpage_url": f"https://kick.com/x/clips/{self.KICK_ID}"}),
+            mmi.IDENTITY_RECONCILED)
+
+    def test_only_mismatch_blocks(self):
+        # Explicitly pins the policy: the three non-conflict verdicts must all be
+        # present and only one of them may gate.
+        self.assertNotEqual(mmi.IDENTITY_MISMATCH, mmi.IDENTITY_UNVERIFIED)
+        self.assertNotEqual(mmi.IDENTITY_MISMATCH, mmi.IDENTITY_NOT_APPLICABLE)
+        self.assertNotEqual(mmi.IDENTITY_MISMATCH, mmi.IDENTITY_RECONCILED)
+        self.assertEqual(adapter.classify_intake_failure(
+            mmi.MediaIntakeError("IDENTITY_MISMATCH", "x"))[0], "IDENTITY_MISMATCH")
 
 
 if __name__ == "__main__":
