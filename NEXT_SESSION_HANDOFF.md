@@ -1,5 +1,19 @@
 # LOOM — NEXT SESSION HANDOFF
 
+**Editor launch seam: 2026-09-26 ~21:20 EDT. CODE READY / LIVE ACCEPTANCE REQUIRED. Not a LIVE PASS.**
+
+Read-only seam proof, before this change: the accepted TikTok candidate (`platform_content_id` `7671018311492193567`, tenant `dreemzy`) has lineage media and window `0.0–11.166667`, and **zero** `loom_media` rows. Existing bootstrap keys only `loom_media`, so that hop was FAIL (`no_versions`). OpenShorts `127.0.0.1:8000` was up. Token table `loom_editor_session_tokens` was readable. No GHL browse.
+
+What changed: source-review cards now include **Edit** (`se_<fingerprint>`). Edit is not a decision. It mints the existing editor session as `src-<fingerprint>:0` / `source-1.0`, sends an ephemeral `/edit?token=` link, and restores the same card. Bootstrap for `src-` clip ids reads `moment_evidence.lineage.media_reference` plus `boundary_plan`. Rendered-clip rehydration is unchanged.
+
+Tests: `python3 -m unittest discover -s infra/discord-review/tests` — **350 OK**. `038` still untracked, SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0`.
+
+**Bryan live acceptance:** restart is required before a click. An already-posted card does not grow an Edit button; use a card posted after the restart. Click Edit. Expect an ephemeral Open Editor link, the same review card still undecided, no second card, no acquisition. Then stop. Do not treat that as timeline-UI acceptance.
+
+**Next editor phase, only after that acceptance:** trim start/end and ±1s on the existing OpenShorts edit/rerender path. Keep future events in `loom_edit_corrections.edl_metadata`. Do not build a second renderer or a full timeline UI in that step.
+
+---
+
 **Authoritative closeout: 2026-09-26 (session ended ~19:30 EDT).**
 Supersedes the 2026-09-25 handoff and the 2026-09-26 Manual-Intake closeout.
 **Read this file first.** `HANDOFF.md` defers to it; `CURRENT_STATE.md` is the execution authority

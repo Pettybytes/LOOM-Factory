@@ -2,6 +2,8 @@
 
 > **This file is the execution authority.** If `HANDOFF.md` disagrees, this file wins.
 
+**2026-09-26 editor launch:** `EDITOR LAUNCH — CODE READY / LIVE ACCEPTANCE REQUIRED`. Not LIVE PASS. Source-review Edit opens the existing editor from candidate lineage (`src-<fingerprint>:0`, `source-1.0`). It does not approve, acquire, re-download, or mint a second card. Discord-review suite 350 OK. `038` untouched. Next phase after Bryan's click: trim ±1s on the existing render path.
+
 ---
 
 # START HERE NEXT SESSION

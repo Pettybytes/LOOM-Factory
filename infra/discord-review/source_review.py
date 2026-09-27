@@ -31,11 +31,15 @@ MAX_LIMIT = 10
 DECISION_APPROVE = "approved_for_acquisition"
 DECISION_HOLD = "hold"
 DECISION_REJECT = "rejected"
+# Launch only. Never written to loom_source_reviews.
+DECISION_EDIT = "open_editor"
+SOURCE_EDITOR_ASSET_VERSION = "source-1.0"
 
 DECISION_CODES: dict[str, str] = {
     "sa": DECISION_APPROVE,
     "sh": DECISION_HOLD,
     "sr": DECISION_REJECT,
+    "se": DECISION_EDIT,
 }
 CODE_BY_DECISION: dict[str, str] = {v: k for k, v in DECISION_CODES.items()}
 
@@ -43,6 +47,7 @@ DECISION_LABELS: dict[str, str] = {
     DECISION_APPROVE: "Approve for Acquisition",
     DECISION_HOLD: "Hold",
     DECISION_REJECT: "Reject",
+    DECISION_EDIT: "Edit",
 }
 
 # Non-production markers (mirrors content_intelligence/store.py; kept inline so
@@ -338,18 +343,124 @@ def format_mining_embed(c, base):
     return base
 
 
+def source_editor_clip_id(fingerprint: str) -> str:
+    """Editor clip identity for a source-review candidate.
+
+    The existing session splitter reads ``job:index``. Index 0 is the editor's
+    single-clip workspace. The fingerprint stays the candidate key.
+    """
+    return f"src-{fingerprint}:0"
+
+
+def resolve_source_editor_identity(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """Map one review candidate onto the existing editor session identity.
+
+    Media comes from ``moment_evidence.lineage.media_reference`` only. Returns
+    None when tenant, fingerprint, an https media URL, or a real window is
+    missing. Does not fetch, download, or write.
+    """
+    if not isinstance(candidate, dict):
+        return None
+    fp = candidate.get("duplicate_fingerprint") or ""
+    tenant = candidate.get("tenant_id") or ""
+    if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-f]{64}", fp) or not tenant:
+        return None
+    lineage = ((candidate.get("moment_evidence") or {}).get("lineage") or {})
+    if not isinstance(lineage, dict):
+        lineage = {}
+    ref = lineage.get("media_reference")
+    media_url = ""
+    filename = ""
+    ref_duration = None
+    if isinstance(ref, str):
+        media_url = ref
+    elif isinstance(ref, dict):
+        media_url = ref.get("url") or ""
+        filename = ref.get("filename") or ""
+        ref_duration = ref.get("duration_seconds")
+    if not isinstance(media_url, str) or not media_url.startswith("https://"):
+        return None
+    plan = candidate.get("boundary_plan") or {}
+    if not isinstance(plan, dict):
+        return None
+    try:
+        start = float(plan.get("recommended_clip_start"))
+        end = float(plan.get("recommended_clip_end"))
+    except (TypeError, ValueError):
+        return None
+    if end <= start:
+        return None
+    duration = None
+    for raw in (ref_duration, plan.get("duration")):
+        try:
+            if raw is not None and float(raw) > 0:
+                duration = float(raw)
+                break
+        except (TypeError, ValueError):
+            continue
+    if duration is None or duration < end:
+        duration = end
+    return {
+        "tenant_id": tenant,
+        "duplicate_fingerprint": fp,
+        "clip_id": source_editor_clip_id(fp),
+        "asset_version": SOURCE_EDITOR_ASSET_VERSION,
+        "media_url": media_url,
+        "filename": filename,
+        "window": {"start": start, "end": end},
+        "duration_seconds": duration,
+        "platform": candidate.get("platform") or lineage.get("platform") or "",
+        "platform_content_id": candidate.get("platform_content_id") or "",
+    }
+
+
+def source_lineage_bootstrap(candidate: dict[str, Any],
+                             requested_version: str | None = None) -> tuple[dict[str, Any] | None, str]:
+    """Editor bootstrap payload from a candidate row. No fetch and no download."""
+    identity = resolve_source_editor_identity(candidate)
+    if not identity:
+        return None, "missing_durable_fields"
+    requested = str(requested_version or "").strip()
+    if requested and requested not in ("latest", "*", SOURCE_EDITOR_ASSET_VERSION):
+        return None, "version_not_found"
+    window = identity["window"]
+    return {
+        "media_url": identity["media_url"],
+        "clean_source_url": identity["media_url"],
+        "duration_seconds": round(float(identity["duration_seconds"]), 2),
+        "source_range": {"start": window["start"], "end": window["end"]},
+        "framing": "auto",
+        "title": candidate.get("title") or "",
+        "source_filename": identity.get("filename") or "",
+        "hook": "",
+        "has_burned_hook": False,
+        "has_burned_captions": False,
+        "social_caption": "",
+        "caption_text": "",
+        "captions": [],
+        "transcript": [],
+        "scenes": [],
+        "asset_version": SOURCE_EDITOR_ASSET_VERSION,
+        "version_mode": "source_lineage",
+        "tenant_id": identity["tenant_id"],
+        "duplicate_fingerprint": identity["duplicate_fingerprint"],
+    }, "ok"
+
+
 def format_source_buttons(fingerprint: str, *, disabled: bool = False,
                           source_url: str = "", manual_media: bool = False) -> list[dict[str, Any]]:
-    """Buttons in order: Approve (green), Reject (red), Hold (gray), Open Source (link).
+    """Buttons: Approve, Edit, Reject, Hold, then Open Source when a page URL exists.
 
-    ``manual_media`` candidates are CLIP approvals (their media is already stored),
-    so the action is named for what it does. The action itself is unchanged and
-    still creates zero acquisition jobs for supplied media.
+    Edit launches the existing editor against this candidate. It is not a
+    decision. ``manual_media`` only renames Approve; it still creates zero
+    acquisition jobs.
     """
     approve_label = "Approve Clip" if manual_media else DECISION_LABELS[DECISION_APPROVE]
     buttons = [
         {"type": 2, "style": 3, "label": approve_label,
          "custom_id": make_source_custom_id(DECISION_APPROVE, fingerprint), "disabled": disabled},
+        {"type": 2, "style": 1, "label": DECISION_LABELS[DECISION_EDIT],
+         "custom_id": make_source_custom_id(DECISION_EDIT, fingerprint), "disabled": disabled},
         {"type": 2, "style": 4, "label": DECISION_LABELS[DECISION_REJECT],
          "custom_id": make_source_custom_id(DECISION_REJECT, fingerprint), "disabled": disabled},
         {"type": 2, "style": 2, "label": DECISION_LABELS[DECISION_HOLD],

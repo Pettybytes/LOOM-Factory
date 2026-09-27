@@ -1135,6 +1135,31 @@ def durable_clip_payload(kind, durable):
     return out
 
 
+_SOURCE_CLIP_RE = re.compile(r"^src-([0-9a-f]{64}):0$")
+
+
+def resolve_source_lineage_bootstrap(tenant_id, clip_id, source_asset_version):
+    """Bootstrap a source-review launch from the candidate row.
+
+    Does not read loom_media and does not download. A tenant mismatch or a
+    malformed clip id fails closed.
+    """
+    match = _SOURCE_CLIP_RE.fullmatch(str(clip_id or ""))
+    if not match or not tenant_id:
+        return None, "missing_identity"
+    try:
+        candidate = source_review.fetch_candidate_by_fingerprint(
+            SUPABASE_URL, SUPABASE_KEY, match.group(1))
+    except Exception as e:  # noqa: BLE001
+        print(f"[bootstrap] source candidate lookup failed: {type(e).__name__}", flush=True)
+        return None, "lookup_failed"
+    if not candidate:
+        return None, "missing_durable_fields"
+    if (candidate.get("tenant_id") or "") != tenant_id:
+        return None, "missing_identity"
+    return source_review.source_lineage_bootstrap(candidate, source_asset_version)
+
+
 def resolve_durable_bootstrap_diag(tenant_id, clip_id, source_asset_version):
     """(durable_or_None, reason) — distinguishes WHY a bootstrap could not be
     resolved, so a 404 can be told apart from an auth failure or a lookup
@@ -1142,6 +1167,10 @@ def resolve_durable_bootstrap_diag(tenant_id, clip_id, source_asset_version):
     version_not_found, missing_durable_fields, ok."""
     if not (tenant_id and clip_id):
         return None, "missing_identity"
+    # Source-review launches are not loom_media rows. Resolve them from the
+    # candidate lineage before the rendered-clip lookup, and do not download.
+    if str(clip_id).startswith("src-"):
+        return resolve_source_lineage_bootstrap(tenant_id, clip_id, source_asset_version)
     try:
         media_rows = supabase_filter_get("loom_media",
                                          {"tenant_id": tenant_id, "clip_id": clip_id})
@@ -1799,9 +1828,17 @@ def rehydrate_edit_job(edit_session_id, tenant_id, clip_id, source_asset_version
     if os.path.exists(metadata_path) and os.path.exists(clean_path):
         return temp_job_id, 0
 
-    durable = resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version)
+    # Source-review launches are not loom_media rows. Rendered clips keep the
+    # existing resolver so a live workspace is rebuilt from loom_media.
+    if str(clip_id).startswith("src-"):
+        durable, reason = resolve_durable_bootstrap_diag(
+            tenant_id, clip_id, source_asset_version)
+    else:
+        durable = resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version)
+        reason = "ok" if durable else "missing_durable_fields"
     if not durable:
-        print(f"[rehydrate] no durable bootstrap for {clip_id}@{source_asset_version}", flush=True)
+        print(f"[rehydrate] no durable bootstrap for {clip_id}@{source_asset_version} "
+              f"reason={reason}", flush=True)
         return None, None
     clean_url = durable.get("clean_source_url") or durable.get("media_url")
     if not clean_url:
@@ -2273,6 +2310,7 @@ def source_review_health():
     """
     block = {"route": "SR", "route_active": True, "approve_handoff": True,
              "duplicate_click_stored_decision": True, "open_source_button": True,
+             "editor_launch": True,
              "worker_error_boundary": "identity_through_patch_v2"}
     try:
         block["candidates_table"] = bool(
@@ -2963,6 +3001,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._patch_original(application_id, interaction_token,
                                      content="Unknown candidate.")
                 return
+            if decision == source_review.DECISION_EDIT:
+                stage = "editor_launch"
+                self._launch_source_editor(
+                    interaction, candidate, application_id, interaction_token)
+                return
             payload = source_review.source_decision_payload(candidate, decision, reviewer)
             stage = "persist_decision"
             row, created = source_review.persist_decision(
@@ -3049,6 +3092,94 @@ class Handler(BaseHTTPRequestHandler):
         if not job_created:
             return "ℹ️ Acquisition job already pending for this source."
         return "📥 Queued for acquisition — approve the range, then click Acquire."
+
+    def _source_editor_followup(self, application_id, interaction_token, content=None, url=None):
+        """Ephemeral follow-up. Does not replace the review card."""
+        data = {"flags": 64}
+        if url:
+            data["content"] = "Edit this clip — opens the secure editor. The review card is unchanged."
+            data["components"] = [{
+                "type": 1,
+                "components": [{"type": 2, "style": 5, "label": "Open Editor", "url": url}],
+            }]
+        else:
+            data["content"] = content or "Editor unavailable."
+        req = Request(
+            f"{DISCORD_API}/webhooks/{application_id}/{interaction_token}",
+            data=json.dumps(data).encode(),
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "LOOMReviewAdapter/1.0 (DiscordBot)"},
+            method="POST")
+        with urlopen(req, timeout=15) as resp:
+            resp.read()
+
+    def _restore_source_card(self, application_id, interaction_token, candidate):
+        """Clear the deferred spinner by rewriting the same card in place."""
+        lineage = ((candidate.get("moment_evidence") or {}).get("lineage") or {})
+        payload = {
+            "embeds": [source_review.format_source_embed(candidate)],
+            "components": source_review.format_source_buttons(
+                candidate["duplicate_fingerprint"],
+                source_url=candidate.get("canonical_url") or "",
+                manual_media=lineage.get("origin") == "manual_media_intake"),
+        }
+        req = Request(
+            f"{DISCORD_API}/webhooks/{application_id}/{interaction_token}/messages/@original",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "LOOMReviewAdapter/1.0 (DiscordBot)"},
+            method="PATCH")
+        with urlopen(req, timeout=15) as resp:
+            resp.read()
+
+    def _launch_source_editor(self, interaction, candidate, application_id, interaction_token):
+        """Open the existing editor for this candidate. Not a decision.
+
+        Reuses register_editor_token and the /edit deep-link. Does not approve,
+        acquire, download, or post another review card.
+        """
+        try:
+            identity = source_review.resolve_source_editor_identity(candidate)
+            if not identity:
+                self._source_editor_followup(
+                    application_id, interaction_token,
+                    "Could not open the editor — this candidate has no durable media or window.")
+                return
+            if not application_id or not interaction_token:
+                print("[edit] missing application_id/token for source launch", flush=True)
+                return
+            editor_token = secrets.token_urlsafe(18)
+            status, _body = register_editor_token(
+                editor_token,
+                {"tenant_id": identity["tenant_id"],
+                 "clip_id": identity["clip_id"],
+                 "asset_version": identity["asset_version"]},
+                self._reviewer_name(interaction),
+                launch_user_id=self._reviewer_user_id(interaction),
+                launch_guild_id=str(interaction.get("guild_id") or ""),
+                launch_channel_id=str(interaction.get("channel_id") or ""))
+            if status not in (200, 201):
+                self._source_editor_followup(
+                    application_id, interaction_token,
+                    "Could not start the editor session.")
+                return
+            if not EDITOR_PUBLIC_URL:
+                self._source_editor_followup(
+                    application_id, interaction_token,
+                    "Editor public URL is not configured.")
+                return
+            edit_url = f"{EDITOR_PUBLIC_URL.rstrip('/')}/edit?token={editor_token}"
+            print(f"[edit] source editor link issued clip={identity['clip_id']}", flush=True)
+            self._source_editor_followup(application_id, interaction_token, url=edit_url)
+            self._restore_source_card(application_id, interaction_token, candidate)
+        except Exception as e:  # noqa: BLE001
+            print(f"[edit] source launch failed: {type(e).__name__}", flush=True)
+            try:
+                self._source_editor_followup(
+                    application_id, interaction_token,
+                    "Editor failed to start. The review card was not changed.")
+            except Exception:
+                pass
 
     def _patch_original(self, application_id, interaction_token, *,
                         content=None, embed=None, preserve_controls=False):

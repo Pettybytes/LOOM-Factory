@@ -28,6 +28,10 @@ from source_review import (  # noqa: E402
     fetch_pending_candidates,
     persist_decision,
     _is_non_production,
+    resolve_source_editor_identity,
+    source_editor_clip_id,
+    source_lineage_bootstrap,
+    SOURCE_EDITOR_ASSET_VERSION,
 )
 
 
@@ -74,7 +78,7 @@ class TestCustomId(unittest.TestCase):
         self.assertIn("00:08", window["value"])
 
     def test_roundtrip(self):
-        for decision in (DECISION_APPROVE, DECISION_HOLD, DECISION_REJECT):
+        for decision in (DECISION_APPROVE, DECISION_HOLD, DECISION_REJECT, "open_editor"):
             cid = make_source_custom_id(decision, "a" * 64)
             self.assertEqual(parse_source_custom_id(cid),
                              {"decision": decision, "fingerprint": "a" * 64})
@@ -116,15 +120,15 @@ class TestFormatting(unittest.TestCase):
         e = format_source_embed(_candidate(), fixture=True)
         self.assertIn("TEST FIXTURE", e["footer"]["text"])
 
-    def test_buttons_three(self):
+    def test_buttons_include_edit_without_replacing_decisions(self):
         comps = format_source_buttons("a" * 64)
         self.assertEqual(len(comps), 1)
         buttons = comps[0]["components"]
-        self.assertEqual(len(buttons), 3)
+        self.assertEqual(len(buttons), 4)
         labels = [b["label"] for b in buttons]
-        # Order: Approve (green), Reject (red), Hold (gray).
-        self.assertEqual(labels, ["Approve for Acquisition", "Reject", "Hold"])
-        self.assertEqual([b["style"] for b in buttons], [3, 4, 2])
+        self.assertEqual(labels, ["Approve for Acquisition", "Edit", "Reject", "Hold"])
+        self.assertEqual([b["style"] for b in buttons], [3, 1, 4, 2])
+        self.assertEqual(buttons[1]["custom_id"][:3], "se_")
 
     def test_buttons_disabled_for_fixture(self):
         comps = format_source_buttons("a" * 64, disabled=True)
@@ -134,7 +138,7 @@ class TestFormatting(unittest.TestCase):
     def test_open_source_link_button(self):
         comps = format_source_buttons("a" * 64, source_url="https://example.com/v")
         buttons = comps[0]["components"]
-        self.assertEqual(len(buttons), 4)
+        self.assertEqual(len(buttons), 5)
         self.assertEqual(buttons[-1]["label"], "Open Source")
         self.assertEqual(buttons[-1]["style"], 5)
         self.assertEqual(buttons[-1]["url"], "https://example.com/v")
@@ -389,6 +393,61 @@ class TestAuthoritativeCandidateQueue(unittest.TestCase):
             cand = sr.fetch_candidate_by_fingerprint("http://sb", "k", "h" * 64)
         self.assertEqual(cand["boundary_plan"]["recommended_clip_start"], 2.0)
         self.assertEqual(cand["boundary_plan"]["recommended_clip_end"], 14.0)
+
+
+class TestSourceEditorIdentity(unittest.TestCase):
+    def _ready(self, **overrides):
+        c = _candidate(
+            moment_evidence={"lineage": {
+                "origin": "manual_media_intake",
+                "media_reference": "https://assets.cdn.filesafe.space/file.mp4",
+                "media_already_acquired": True,
+            }},
+            boundary_plan={"recommended_clip_start": 0.0,
+                           "recommended_clip_end": 11.166667,
+                           "duration": 30.0},
+        )
+        c.update(overrides)
+        return c
+
+    def test_identity_keeps_tenant_media_and_window(self):
+        ident = resolve_source_editor_identity(self._ready())
+        self.assertEqual(ident["tenant_id"], "dreemzy")
+        self.assertEqual(ident["duplicate_fingerprint"], "a" * 64)
+        self.assertEqual(ident["clip_id"], source_editor_clip_id("a" * 64))
+        self.assertTrue(ident["clip_id"].endswith(":0"))
+        self.assertEqual(ident["media_url"], "https://assets.cdn.filesafe.space/file.mp4")
+        self.assertEqual(ident["window"], {"start": 0.0, "end": 11.166667})
+        self.assertEqual(ident["asset_version"], SOURCE_EDITOR_ASSET_VERSION)
+
+    def test_dict_media_reference_is_accepted(self):
+        c = self._ready(moment_evidence={"lineage": {"media_reference": {
+            "url": "https://assets.cdn.filesafe.space/other.mp4",
+            "filename": "clip.mp4",
+            "duration_seconds": 40,
+        }}})
+        ident = resolve_source_editor_identity(c)
+        self.assertEqual(ident["filename"], "clip.mp4")
+        self.assertEqual(ident["duration_seconds"], 40.0)
+
+    def test_missing_media_or_window_fails_closed(self):
+        self.assertIsNone(resolve_source_editor_identity(self._ready(
+            moment_evidence={"lineage": {}})))
+        self.assertIsNone(resolve_source_editor_identity(self._ready(
+            boundary_plan={"recommended_clip_start": 4, "recommended_clip_end": 4})))
+        self.assertIsNone(resolve_source_editor_identity(self._ready(tenant_id="")))
+        self.assertIsNone(resolve_source_editor_identity(self._ready(
+            moment_evidence={"lineage": {"media_reference": "http://insecure/a.mp4"}})))
+
+    def test_bootstrap_carries_window_and_rejects_a_foreign_version(self):
+        payload, reason = source_lineage_bootstrap(self._ready(), SOURCE_EDITOR_ASSET_VERSION)
+        self.assertEqual(reason, "ok")
+        self.assertEqual(payload["source_range"], {"start": 0.0, "end": 11.166667})
+        self.assertEqual(payload["tenant_id"], "dreemzy")
+        self.assertEqual(payload["media_url"], "https://assets.cdn.filesafe.space/file.mp4")
+        missing, why = source_lineage_bootstrap(self._ready(), "render-9.9")
+        self.assertIsNone(missing)
+        self.assertEqual(why, "version_not_found")
 
 
 if __name__ == "__main__":

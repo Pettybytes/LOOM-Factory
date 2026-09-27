@@ -145,6 +145,52 @@ class SourceReviewWorkerTests(unittest.TestCase):
                                     {"fingerprint": "f" * 64, "decision": "hold"})
         self.assertTrue(patches and "content" in patches[0])
 
+    def test_edit_does_not_persist_or_approve(self):
+        h = _handler()
+        launched = []
+        h._launch_source_editor = lambda *a, **k: launched.append(a)
+        cand = {"duplicate_fingerprint": "f" * 64, "tenant_id": "dreemzy"}
+        with mock.patch.object(source_review, "fetch_candidate_by_fingerprint", return_value=cand), \
+             mock.patch.object(source_review, "persist_decision") as persist, \
+             mock.patch.object(h, "_source_approve_handoff") as handoff:
+            h._source_button_worker(
+                {"application_id": "1", "token": "t"},
+                {"fingerprint": "f" * 64, "decision": source_review.DECISION_EDIT})
+        persist.assert_not_called()
+        handoff.assert_not_called()
+        self.assertEqual(len(launched), 1)
+        self.assertIs(launched[0][1], cand)
+
+    def test_launch_binds_the_candidate_and_does_not_download_or_decide(self):
+        h = _handler()
+        posted = []
+        h._source_editor_followup = lambda *a, **k: posted.append(k)
+        h._restore_source_card = lambda *a, **k: posted.append({"restored": True})
+        cand = {
+            "duplicate_fingerprint": "a" * 64,
+            "tenant_id": "dreemzy",
+            "canonical_url": "https://www.tiktok.com/video/1",
+            "moment_evidence": {"lineage": {
+                "origin": "manual_media_intake",
+                "media_reference": "https://assets.cdn.filesafe.space/file.mp4",
+            }},
+            "boundary_plan": {"recommended_clip_start": 0.0, "recommended_clip_end": 11.1},
+        }
+        with mock.patch.object(adapter, "register_editor_token", return_value=(201, [{"id": "s"}])) as reg, \
+             mock.patch.object(adapter, "EDITOR_PUBLIC_URL", "https://app.loomz.stream"), \
+             mock.patch.object(source_review, "persist_decision") as persist, \
+             mock.patch.object(adapter, "urlopen", side_effect=AssertionError("download")):
+            h._launch_source_editor(
+                {"guild_id": "g", "channel_id": "c", "member": {"user": {"id": "9", "username": "bryan"}}},
+                cand, "app", "tok")
+        persist.assert_not_called()
+        identity = reg.call_args.args[1]
+        self.assertEqual(identity["tenant_id"], "dreemzy")
+        self.assertEqual(identity["clip_id"], "src-" + "a" * 64 + ":0")
+        self.assertEqual(identity["asset_version"], "source-1.0")
+        self.assertTrue(posted[0]["url"].startswith("https://app.loomz.stream/edit?token="))
+        self.assertEqual(posted[-1], {"restored": True})
+
 
 if __name__ == "__main__":
     unittest.main()
