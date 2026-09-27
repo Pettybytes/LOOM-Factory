@@ -221,3 +221,49 @@ weakened and no accepted semantics from §3–§4 changed.
 
 **Live.** Adapter restarted after the commit and verified serving `c7eaedd`: PID 71579,
 `/health` → `ok`, new symbols confirmed present in the loaded bytecode.
+
+---
+
+## 11. LIVE ACCEPTED — engagement-metadata capture through the real Discord flow (2026-09-26)
+
+Bryan personally submitted a real YouTube URL through the live Manual Intake workflow **after** the
+§10 patch and adapter restart. **This is live operator acceptance, not a unit test.**
+
+| Item | Observed on the live `#clip-review` card |
+|---|---|
+| Source | `https://www.youtube.com/watch?v=eFHfe7AArlE` |
+| Views/plays | **2,010,656** |
+| Likes | **13,411** |
+| Comments | **645** |
+| Native demand | 2,010,656 views |
+| Age | ~74.34 h |
+| Lifetime avg VPH | ~27,047.7 |
+| Engagement | ~0.006991 |
+| Market score | **100 / 100** |
+| Evidence coverage | **3/5** |
+| Route | `established` |
+| Durable media | appeared in GHL Media Storage as `youtube__eFHfe7AArlE.mp4` |
+
+Bryan then clicked **Approve Clip** on that same card, which visibly persisted:
+decision `Approve for Acquisition`, reviewer `passportpetty`, timestamp recorded.
+
+### Scope of this acceptance (read carefully)
+
+It covers the **engagement-metadata / Manual Intake path**: real platform evidence reached the
+card, durable media was stored, and human arbitration persisted on the same card.
+
+The reported figures are internally consistent with the §10 contract: engagement `~0.006991`
+= (13,411 + 645) / 2,010,656, and coverage `3/5` reflects YouTube exposing no share/save
+counters — those two stay honestly **Unavailable** rather than becoming 0.
+
+### Explicitly NOT part of this acceptance
+
+The same asset separately showed `Moment unavailable`, `Content 0`, `Selection 0`, `FIRE FAIL`.
+That is a **separate CI / moment-analysis concern**. It is not a failure of this acceptance and
+must not be used to reopen the accepted Manual Intake architecture (§3–§5).
+
+### Platform metadata capabilities are unchanged
+
+The §10 table still governs: TikTok full · Instagram / Reddit / Kick partial-native ·
+**YouTube = views / likes / comments only** · Twitch via the existing Helix app-token path.
+No new platform capability is claimed by this acceptance.

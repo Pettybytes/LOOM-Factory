@@ -51,6 +51,38 @@ Bryan's explicit authorization. Then the launch spine / Segment 6.
 
 ---
 
+## INCREMENT — 2026-09-26 (later still) — ENGAGEMENT-METADATA LIVE ACCEPTED (YouTube)
+
+Bryan personally ran a real YouTube URL through the live Discord Manual Intake workflow after the
+engagement-metadata patch and restart. **LIVE ACCEPTED — operator-driven, not unit-tested.**
+
+Source `https://www.youtube.com/watch?v=eFHfe7AArlE` · live `#clip-review` card showed
+**Views/plays 2,010,656 · Likes 13,411 · Comments 645 · Native demand 2,010,656 views · Age
+~74.34 h · Lifetime avg VPH ~27,047.7 · Engagement ~0.006991 · Market 100/100 · Coverage 3/5 ·
+Route `established`**, and the durable asset appeared in GHL Media Storage as
+`youtube__eFHfe7AArlE.mp4`. Bryan then clicked **Approve Clip**, which visibly persisted
+(`Approve for Acquisition`, reviewer `passportpetty`, timestamp recorded).
+
+Figures are consistent with the contract: engagement ≈ (13,411 + 645) / 2,010,656, and coverage
+`3/5` because YouTube exposes no share/save counters — those remain honestly Unavailable, not 0.
+
+**Scope:** this acceptance covers the **engagement-metadata / Manual Intake path** only. The same
+asset separately showed `Moment unavailable` / `Content 0` / `Selection 0` / `FIRE FAIL` — a
+**separate CI/moment-analysis concern**, not a failure of this acceptance, and not grounds to
+reopen accepted Manual Intake architecture.
+
+Platform capability table unchanged (TikTok full · Instagram/Reddit/Kick partial-native ·
+YouTube views/likes/comments · Twitch via existing Helix path). Full detail:
+`NEXT_SESSION_HANDOFF.md` §11.
+
+### GHL folder routing — investigated separately (see below)
+
+GHL upload/storage is **LIVE PASS** (durable media lands and is retrievable). Folder *placement*
+is the open item and is recorded separately; nothing about it changes this acceptance.
+**Segment 5 remains OPEN.**
+
+---
+
 ## INCREMENT — 2026-09-26 (later) — MANUAL INTAKE ENGAGEMENT METADATA CAPTURED
 
 Commit **`c7eaedd`** (HEAD == `origin/master`, worktree clean except the preserved 038).
