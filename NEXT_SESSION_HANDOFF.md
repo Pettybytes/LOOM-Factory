@@ -1,6 +1,8 @@
 # LOOM — NEXT SESSION HANDOFF
 
-**Editor launch seam: 2026-09-26 ~21:36 EDT. LIVE PASS.** Bryan drove a fresh post-reload Manual Intake card. Not a timeline-UI pass. Next editor phase is not started.
+**Editor launch seam: 2026-09-26 ~21:36 EDT. LIVE PASS.** Bryan drove a fresh post-reload Manual Intake card. Not a timeline-UI pass.
+
+**Timeline Editor Phase 2A: LIVE PASS (2026-09-26 ~22:11 EDT). CLOSED — do not redesign or further polish.** Bryan drove the visual timeline on the real editor surface (measured source ~33.30s; START ~3.37s; END ~30.70s; selected ~27.34s). Full evidence, provenance and preserved invariants: **`INCREMENT — TIMELINE EDITOR PHASE 2A`** below.
 
 Read-only seam proof, before this change: the accepted TikTok candidate (`platform_content_id` `7671018311492193567`, tenant `dreemzy`) has lineage media and window `0.0–11.166667`, and **zero** `loom_media` rows. Existing bootstrap keys only `loom_media`, so that hop was FAIL (`no_versions`). OpenShorts `127.0.0.1:8000` was up. Token table `loom_editor_session_tokens` was readable. No GHL browse.
 
@@ -10,14 +12,33 @@ Tests: `python3 -m unittest discover -s infra/discord-review/tests` — **350 OK
 
 **Bryan live acceptance — LIVE PASS (2026-09-26 ~21:36 EDT):** fresh post-reload `#clip-review` card showed `Approve Clip | Edit | Reject | Hold | Open Source`. Edit returned the private Open Editor action. The original card stayed present and undecided. Open Editor opened `app.loomz.stream/edit`. The correct source loaded at `0.0 → 20.897959s`, matching the card's `00:00 → 00:20.89`. No approval, rejection, or hold. No second card. No acquisition.
 
-**Next editor phase is authorized to wait, not to start.** When Bryan says go: trim start/end and ±1s on the existing OpenShorts edit/rerender path. Keep future events in `loom_edit_corrections.edl_metadata`. Do not build a second renderer or a full timeline UI in that step.
+**Next editor phase — AUTHORIZED, BUILT, AND NOW LIVE ACCEPTED.** Trim start/end + ±1s were built on the existing OpenShorts edit/rerender path and Bryan accepted them live on 2026-09-26 ~22:11 EDT. No second renderer was built and no full timeline UI was added. Future typed edit events ride in `loom_edit_corrections.edl_metadata`. **Do not reopen Phase 2A.**
 
 ---
 
-## INCREMENT — 2026-09-26 (later) — TIMELINE EDITOR PHASE 2A BUILT (reuse-first)
+## INCREMENT — 2026-09-26 (later) — TIMELINE EDITOR PHASE 2A — **LIVE PASS**
 
-**Status: `CODE COMPLETE — LIVE ACCEPTANCE REQUIRED`.** Not LIVE PASS. Per §12, tests prove wiring,
-never acceptance: the visual timeline exists on the `/edit` page but Bryan has not driven it.
+**Status: `PHASE 2A — LIVE PASS` (2026-09-26 ~22:11 EDT). CLOSED — do not redesign or further polish.**
+
+### Live acceptance evidence (Bryan, real editor surface)
+
+| Observable | Live value |
+|---|---|
+| Source duration measured by the editor | **~33.30s** |
+| START moved to | **~3.37s** |
+| END moved to | **~30.70s** |
+| Selected duration | **~27.34s** |
+
+**Live-verified:** Edit → Open Editor works · the correct source media loads · the timeline renders
+against the **measured** source duration · START handle works · END handle works · dragging updates
+the selection correctly · numeric START/END values stay synchronized with the handles · ±1 second
+controls function correctly · the selection remains bounded by the real source · **Preview
+Selection** functions correctly · the preview is **non-destructive** · editor interaction behaved
+properly.
+
+The accepted figures also confirm the §7 contract end to end: the measured source (~33.30s) is
+longer than the previously recommended window, and Bryan was able to move START later and END
+earlier/later *within the real source* — the LOOM window behaved as a recommendation, not a bound.
 
 **Scope built:** trim start/end + ±1s, as authorized. No SFX, transitions, overlays, commentary, or
 timeline-UI expansion. No second renderer. No Discord Activity editor resurrection.
@@ -102,15 +123,41 @@ The new tests include a **parity guard** that pins `clampSegmentToBounds` and `s
 verbatim copies of ClipEditor's former inline `clampSeg`/`snapEdge`, so the shared module cannot
 silently change what a legal cut is.
 
-### ⚠️ Version control finding (affects the commit step)
+### Provenance, version control + preserved invariants
 
-**`openshorts/` is gitignored** — `.gitignore:2` is `openshorts/`. The entire editor frontend, and
-therefore every Phase 2A change, is **outside version control**: `git ls-files openshorts/dashboard/src`
-is empty and `git status --porcelain` shows only the preserved `038`. The capability cannot be
-committed from this repository as-is; the tracked durable record is this handoff plus
-`CURRENT_STATE.md`. This is a pre-existing repo property, not a Phase 2A regression — but it means
-Phase 2A has **no git rollback path**, which is why an unrelated refactor of the working
-`ClipEditor.jsx` was deliberately NOT attempted (see follow-up below).
+**Resolved.** `openshorts/` is gitignored by the ROOT repo (`.gitignore:2`, deliberately, added in the
+initial commit `2bfb421` as *"Upstream OpenShorts clone (separate repo with its own remote/history)"*).
+It is therefore an **embedded upstream checkout, not a submodule** — `openshorts/.git` is a real
+directory and there is no `.gitmodules`. Phase 2A was committed in that nested repo instead of being
+force-added to the root repo; the root ignore rules were left untouched.
+
+| Item | Value |
+|---|---|
+| Nested OpenShorts commit | **`c2d89beaf5a0da52b205b72b0d821a4cdb961228`** — 5 files, +1302/−6 |
+| Nested branch | **`loom/factory-mvp-baseline-fixes`** (tracking `loom/loom/factory-mvp-baseline-fixes`) |
+| Private backup | **`Pettybytes/loom-openshorts`** (PRIVATE, created 2026-09-27T02:01:42Z) |
+| Third-party upstream | `origin` = `https://github.com/mutonby/openshorts.git` — **unchanged, received no push** |
+| Upstream provenance | merge-base with `origin/main` still `a602a2aa96f3eeb436ef740a011b3b9092350a43`; 420 upstream commits reachable |
+| Integrity | SHA-256 of all 5 Phase 2A files **identical** pre- and post-commit (no Git normalization) |
+| Root LOOM repo | `HEAD == origin/master == 45b9d12201e2a39f1b0e5bcce106824c975a8991`, pushed to `Pettybytes/LOOM-Factory` |
+| Root worktree | clean **except** the preserved untracked `038` |
+| **Preserved `038` invariant** | `infra/supabase/038_loom_editor_session_tokens.sql` — untracked, **do not add, do not commit, do not modify, do not execute**; SHA1 **`3da12826ef96dd05ce089b490ee490e66baf01c0`** unchanged |
+| Untouched by design | the 6 pre-existing unrelated nested changes (`.gitignore`, `LoomActivityRoot.jsx`, `api.js`, `test_header_rich_text.py`, `aborted-runs/`, `security_utils.py.bak-*`) were left uncommitted |
+
+**Non-blocking observation:** the push warned that the pre-existing upstream file
+`churchil_queen_vertical.gif` (62.36 MB) exceeds GitHub's 50 MB recommendation. It is **not** part of
+Phase 2A (commit `b485854` upstream) and the push succeeded; a candidate for Git LFS if the repo grows.
+
+### Remaining follow-up (recorded, NOT built)
+
+**`duration_seconds` chain for Manual Intake.** The durable source media reference can be a bare URL
+with no duration, so the bootstrap's declared `duration_seconds` is window-derived (floored at the
+window end) rather than the true source length. Phase 2A already handles this correctly by taking the
+**measured** media duration as authoritative and treating declared as a fallback — which is exactly
+what the live acceptance exercised (~33.30s measured). The chain to close it properly: Manual Intake
+records the real duration into `media_reference` → the source editor bootstrap uses it → browser
+measurement remains verification/fallback. This is a data-completeness fix, **not** an editor change,
+and it must not be used to reopen Phase 2A.
 
 ### Deliberate non-goals (with reasons)
 
@@ -123,17 +170,21 @@ Phase 2A has **no git rollback path**, which is why an unrelated refactor of the
   improvement but touches a working, unversioned production component, so it is flagged as a
   follow-up rather than done blind. The shared module is ready for it and parity tests exist.
 
-### Live acceptance — Bryan's exact action
+### Live acceptance — PASSED (2026-09-26 ~22:11 EDT)
 
-1. Open a `#clip-review` card and click **Edit**.
-2. On the `/edit` page, drag the timeline START/END handles; use **start ±1s** / **end ±1s**; confirm
-   the numeric start/end fields track the handles exactly (one state, two views).
-3. Confirm START cannot go below `0` and neither boundary can leave the source.
-4. Click **preview selection** and confirm it plays the selected range and stops at END, with audio.
-5. Optionally confirm a boundary can move **outside** the original LOOM window but still inside the
-   source.
+Bryan drove the real editor surface. The five checks below were executed live and all passed; the
+observed values are recorded in the evidence table at the top of this increment.
 
-Nothing is registered, approved, distributed, or rendered by steps 2–5.
+1. Opened a `#clip-review` card and clicked **Edit** — passed.
+2. Dragged the timeline START/END handles and used **start ±1s** / **end ±1s**; the numeric
+   start/end fields tracked the handles exactly (one state, two views) — passed.
+3. Confirmed neither boundary could leave the real source — passed.
+4. Clicked **preview selection**: it played the selected range and stopped at END, and was
+   non-destructive — passed.
+5. Moved boundaries within the real source (measured ~33.30s) — passed.
+
+Nothing was registered, approved, distributed, or rendered by these interactions. **Phase 2A is
+CLOSED.**
 
 ---
 

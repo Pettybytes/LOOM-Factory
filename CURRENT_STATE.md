@@ -2,15 +2,25 @@
 
 > **This file is the execution authority.** If `HANDOFF.md` disagrees, this file wins.
 
-**2026-09-26 editor launch: LIVE PASS.** Bryan drove a fresh post-reload Manual Intake card: Edit opened `app.loomz.stream/edit`, the source loaded, and the window `0.0 → 20.897959s` matched the card's `00:00 → 00:20.89`. The original card stayed undecided. No approval, rejection, hold, second card, or acquisition. This is the launch seam only. Next phase (trim ±1s) is not started. `038` untouched.
+**2026-09-26 editor launch: LIVE PASS.** Bryan drove a fresh post-reload Manual Intake card: Edit opened `app.loomz.stream/edit`, the source loaded, and the window `0.0 → 20.897959s` matched the card's `00:00 → 00:20.89`. The original card stayed undecided. No approval, rejection, hold, second card, or acquisition. This is the launch seam only. `038` untouched.
+
+**2026-09-26 Timeline Editor Phase 2A: LIVE PASS (~22:11 EDT). CLOSED — do not redesign or further polish.** Bryan drove the visual timeline on the real editor surface: measured source **~33.30s**, START moved to **~3.37s**, END to **~30.70s**, selected **~27.34s**. Handles, drag, numeric sync, ±1s, source-bounded selection and non-destructive **Preview Selection** all LIVE VERIFIED. See the increment below.
 
 ---
 
-## INCREMENT — 2026-09-26 (later) — TIMELINE EDITOR PHASE 2A BUILT
+## INCREMENT — 2026-09-26 (later) — TIMELINE EDITOR PHASE 2A — **LIVE PASS**
 
-**`CODE COMPLETE — LIVE ACCEPTANCE REQUIRED`** (not LIVE PASS — per the handoff §12, tests prove wiring,
-never acceptance). Full detail, the §1A reuse audit, and the §7 source-duration finding live in
-**`NEXT_SESSION_HANDOFF.md` → `INCREMENT — TIMELINE EDITOR PHASE 2A`**. Short form:
+**`PHASE 2A — LIVE PASS` (2026-09-26 ~22:11 EDT). CLOSED.** Full detail, the §1A reuse audit, and the
+§7 source-duration finding live in **`NEXT_SESSION_HANDOFF.md` → `INCREMENT — TIMELINE EDITOR PHASE 2A`**.
+Short form:
+
+**Live acceptance evidence (Bryan, real editor surface):** measured source duration **~33.30s** · START
+moved to **~3.37s** · END moved to **~30.70s** · selected duration **~27.34s**. LIVE VERIFIED: Edit →
+Open Editor · correct source media loads · timeline renders against the MEASURED source duration ·
+START handle · END handle · dragging updates the selection · numeric START/END stay synchronized ·
+±1 second controls · selection stays bounded by the real source · **Preview Selection** functions and
+is **non-destructive** · editor interaction behaved properly. Nothing was registered, approved,
+distributed or rendered.
 
 * **Reuse-first, no parallel editor.** The editor page Bryan LIVE-tested is
   `openshorts/dashboard/src/components/ManualTrimEditor.jsx` (mounted at `main.jsx:112` for `/edit`
@@ -35,12 +45,25 @@ never acceptance). Full detail, the §1A reuse audit, and the §7 source-duratio
 * **Evidence:** dashboard tests **191 pass** (157 baseline + 34 new, incl. a parity guard pinning the
   shared rules to ClipEditor's former inline behaviour) · `npm run build` **✓** ·
   `infra/discord-review` **350 OK** · `infra/content_intelligence` **477 OK** · no new ESLint errors.
-* **⚠️ `openshorts/` is gitignored** (`.gitignore:2`), so all Phase 2A frontend changes are outside
-  version control and cannot be committed from this repo. The tracked durable record is this file plus
-  `NEXT_SESSION_HANDOFF.md`. `038` remains untouched.
+* **Provenance — committed and backed up.** Phase 2A is committed in the **nested OpenShorts repo** as
+  **`c2d89beaf5a0da52b205b72b0d821a4cdb961228`** (5 files, +1302/−6) on branch
+  **`loom/factory-mvp-baseline-fixes`**, backed up to the private **`Pettybytes/loom-openshorts`**.
+  `origin` remains the third-party upstream `mutonby/openshorts` and received **no** push; merge-base
+  with `origin/main` is unchanged. SHA-256 of all 5 files is identical pre/post-commit. The root repo's
+  `openshorts/` ignore rule was deliberately left untouched.
+* **Root LOOM state:** `HEAD == origin/master == 45b9d12201e2a39f1b0e5bcce106824c975a8991`, pushed to
+  `Pettybytes/LOOM-Factory`; worktree clean except the preserved untracked `038`.
+* **Preserved `038` invariant:** `infra/supabase/038_loom_editor_session_tokens.sql` remains untracked
+  and untouched — **do not add, do not commit, do not modify, do not execute**; SHA1
+  `3da12826ef96dd05ce089b490ee490e66baf01c0`.
+* **Remaining follow-up (recorded, NOT built):** the `duration_seconds` chain for Manual Intake —
+  intake records the real media duration into `media_reference` → the source bootstrap uses it →
+  browser measurement stays as verification/fallback. Phase 2A already handles the gap correctly
+  (measured is authoritative, declared is a fallback), so this is a data-completeness fix, **not** an
+  editor change, and it must not be used to reopen Phase 2A.
 * **Not done, deliberately:** word snapping on `/edit` (no durable source-time word set — a control
-  would have silently no-opped) and ClipEditor's rule dedup (working, unversioned production
-  component — flagged as follow-up rather than changed blind).
+  would have silently no-opped) and ClipEditor's rule dedup (working production component backed up
+  only in the nested repo — parity tests exist and the shared module is ready for it).
 
 ---
 
