@@ -335,7 +335,7 @@ Disclosed: one such probe accidentally persisted a 0-byte `probe.mp4`; it was **
 (`DELETE /medias/{id}?altId=<loc>&altType=location` → `{"deleted":true}`) and the library is back
 to **64 files**. No other asset was created, moved, or altered.
 
-### Status
+### Status — SUPERSEDED BY §13 (resolved in the same session)
 
 **BLOCKED — GHL media-upload folder parameter unverified.** Exact need is one of: (a) authorize a
 single controlled self-cleaning probe upload against `6aa61446df2d015553434919`, (b) supply the
@@ -343,3 +343,118 @@ field name(s) `POST /medias/upload-file` accepts, or (c) ship the plumbing with 
 placement verification so a wrong value fails loudly, then prove it with Bryan's live Discord test.
 
 Regardless of route, final routing acceptance is Bryan's own Discord action — never a test result.
+
+---
+
+## 13. GHL FOLDER ROUTING — CONTRACT PROVEN + CODE READY (2026-09-26)
+
+Bryan authorized **Option 1** (a tightly bounded, self-cleaning live probe). Status now:
+
+**`CODE READY — LIVE ACCEPTANCE REQUIRED`** — not LIVE PASS until Bryan's own Discord submit.
+
+### 1. Proven GHL folder-targeting request contract
+
+The targeting field is the **multipart form field `parentId`**, whose value is the target folder id:
+
+```
+POST https://services.leadconnectorhq.com/medias/upload-file
+Authorization: Bearer <token>   Version: v3
+Content-Type: multipart/form-data
+
+file=<bytes>  name=<filename>  hosted=false  parentId=6aa61446df2d015553434919
+```
+
+`folderId` is **NOT honoured** — GHL answers **HTTP 201**, silently ignores it, and stores the asset
+in My Media root. That silent-ignore behaviour is why HTTP success can never be treated as placement
+proof.
+
+### 2. Probe evidence
+
+Every candidate used the same 1,709-byte disposable `loom-probe-*.mp4`; success was judged ONLY by
+the stored record's own `parentId`:
+
+| Probe (multipart fields) | HTTP | resulting `parentId` | verdict |
+|---|---|---|---|
+| `folderId` only | 201 | `""` (root) | ❌ not the contract |
+| `parentId` only | 201 | `6aa61446df2d015553434919` | ✅ **contract** |
+| `parentId` only (repeat) | 201 | `6aa61446df2d015553434919` | ✅ contract |
+| `folderId` + `parentId` | 201 | `6aa61446df2d015553434919` | ✅ contract |
+| `folderId` + `parentId` (repeat) | 201 | `6aa61446df2d015553434919` | ✅ contract |
+| `?parentId=` query | 201 | `""` (root) | ❌ |
+| `?folderId=` query | 201 | `""` (root) | ❌ |
+
+All four probe records were located via
+`GET /medias/files?locationId=<loc>&type=file&parentId=<folder>` and **deleted**
+(`DELETE /medias/{id}?altId=<loc>&altType=location` → `{"deleted":true}`).
+
+**Final state: LOOM folder contents 0 · root listing 64 · `count` 64 · zero probe residue.**
+
+One earlier probe (before authorization) accidentally persisted a 0-byte `probe.mp4`; it was also
+deleted and is covered by the same final counts.
+
+**Note:** the LOOM folder was EMPTY before this work — every one of the 64 assets was at root, and
+the folder's own contents contained only probe files. The folder existed (created 2026-09-13) but
+LOOM had never populated it.
+
+### 3. Root cause
+
+LOOM never targeted a folder: `ghl_upload_file()` sent only `file`/`name`/`hosted`, and
+`store_durable_media(folder_id=…)` recorded the id without passing it. With the env var also unset,
+every upload landed in My Media root by default.
+
+### 4. Files changed
+
+* `infra/discord-review/adapter.py` — folder-aware upload + placement verification
+  (`_ghl_list_media_files`, `ghl_verify_placement`, `ghl_upload_file(..., parent_id=None)`,
+  `GHL_MEDIA_PARENT_ID`).
+* `infra/discord-review/manual_media_intake.py` — passes the folder through and propagates
+  placement evidence into the returned durable reference.
+* `infra/discord-review/tests/test_ghl_folder_routing.py` — new, 11 focused tests.
+
+### 5. Configuration
+
+`LOOM_GHL_INTAKE_FOLDER_ID=6aa61446df2d015553434919` — the **existing** pattern (already whitelisted
+in `run.sh`), now actually consumed. It is read once into `MANUAL_MEDIA_FOLDER_ID` /
+`GHL_MEDIA_PARENT_ID` and is the **default target for every LOOM upload**, not just Manual Intake.
+The folder id is not a secret; no value is hardcoded in application code. With the variable unset the
+request is byte-identical to the previous behaviour (root).
+
+### 6. Post-upload verification (fail-loud)
+
+HTTP success is never treated as placement evidence. After every upload the durable record is read
+back and its `parentId` compared to the target:
+
+* match → `placement_verified: true`, `placement_reason: in_target_folder`;
+* mismatch → loud `[media] ROUTING FAILURE …`, `placement_verified: false`, with
+  `placement_expected/actual/reason` carried into the durable media reference for diagnosis.
+
+The asset is still kept (the durable-media lifecycle is unchanged) but root placement is **never**
+reported as folder success. Verification can never fail an upload that already succeeded.
+
+### 7. Tests
+
+Focused: **11 OK** (`test_ghl_folder_routing.py`) covering the proven contract, matching placement,
+HTTP-201-but-root → fail loud, missing configuration, and no regression to the upload shape.
+Regressions: `discord-review` **344 OK** (333 + 11) · `content_intelligence` **477 OK**.
+
+### 8-12. Repo / runtime state
+
+Committed and pushed; `HEAD == origin/master`; worktree clean except the preserved
+`infra/supabase/038_loom_editor_session_tokens.sql` (untouched, SHA1
+`3da12826ef96dd05ce089b490ee490e66baf01c0`). Runtime **restarted** (folder config is read at process
+start): PID **86696**, `/health` → `ok`, and the folder variable is present in the running process
+environment.
+
+### Live acceptance — Bryan's exact action
+
+1. In Discord, post a source in `#manual-intake-📸` and run the `intake-media` command
+   (the normal Manual Intake flow — one new source only).
+2. Let it complete to the `#clip-review` card.
+3. Confirm BOTH:
+   * the asset appears **inside the existing `LOOM` folder** in GHL Media Storage (not My Media root), and
+   * API evidence: `GET /medias/files?locationId=<loc>&type=file&parentId=6aa61446df2d015553434919`
+     lists it, i.e. its `parentId` equals `6aa61446df2d015553434919`.
+
+If the card or logs show `ROUTING FAILURE`, the placement guard worked — report it rather than
+retrying blindly. Until Bryan completes this, the status stays `CODE READY — LIVE ACCEPTANCE REQUIRED`
+and must not be called live-passed.

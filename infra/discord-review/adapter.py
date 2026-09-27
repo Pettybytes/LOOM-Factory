@@ -108,6 +108,13 @@ MANUAL_INTAKE_CHANNEL_ID = _env("LOOM_MANUAL_INTAKE_CHANNEL_ID", "")
 MANUAL_MEDIA_COMMAND = "intake-media"           # MESSAGE context-menu command
 MANUAL_MEDIA_TENANT_DEFAULT = _env("LOOM_MANUAL_INTAKE_TENANT", "dreemzy")
 MANUAL_MEDIA_FOLDER_ID = _env("LOOM_GHL_INTAKE_FOLDER_ID", "")
+# Canonical GHL Media Storage folder for LOOM-created assets — the SAME setting as
+# above (one source of truth, no second env var). The PROVEN folder-targeting
+# contract for POST /medias/upload-file is the multipart form field `parentId`
+# carrying the target folder id. `folderId` is NOT honoured: GHL answers HTTP 201,
+# silently ignores it, and stores the asset in My Media root (probed live
+# 2026-09-26 against the LOOM folder 6aa61446df2d015553434919).
+GHL_MEDIA_PARENT_ID = MANUAL_MEDIA_FOLDER_ID
 # Post-Content-Intelligence manual candidates are CONTENT/CANDIDATE review, not
 # source-acquisition review: they must never land in #source-review. Reuse the
 # existing clip-review destination (or an explicit override id).
@@ -1496,17 +1503,80 @@ def _strip_clean_filename(filename: str) -> str:
 GHL_UPLOAD_ATTEMPTS = int(_env("LOOM_GHL_UPLOAD_ATTEMPTS", "3"))
 
 
-def ghl_upload_file(path: str, name: str):
+def _ghl_list_media_files(*, parent_id: str | None = None, limit: int = 200) -> list[dict]:
+    """List durable GHL media files for this location, optionally ONE folder.
+
+    Used for placement read-back. Never raises — verification must not be able to
+    break an upload that already succeeded.
+    """
+    from urllib.parse import quote
+    query = f"?locationId={quote(GHL_LOCATION_ID)}&type=file&limit={int(limit)}"
+    if parent_id:
+        query += f"&parentId={quote(parent_id)}"
+    req = Request(f"{GHL_MEDIA_API}/medias/files{query}", method="GET")
+    req.add_header("Authorization", f"Bearer {GHL_TOKEN}")
+    req.add_header("Version", "v3")
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", "LOOMReviewAdapter/1.0")
+    try:
+        with urlopen(req, timeout=20) as resp:
+            body = json.loads(resp.read().decode() or "{}")
+        rows = body.get("files")
+        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def ghl_verify_placement(file_id: str, expected_parent_id: str | None) -> dict:
+    """Confirm a durable media record's REAL folder placement.
+
+    GHL can answer HTTP 201 while silently ignoring an unrecognised folder target
+    and storing the file at My Media root, so HTTP success is NOT placement
+    evidence. The only proof is the stored record's own ``parentId``.
+    """
+    expected = expected_parent_id or ""
+    if not (GHL_TOKEN and file_id):
+        return {"verified": False, "expected": expected, "actual": None,
+                "reason": "no_token_or_file_id"}
+    if expected:
+        if any(r.get("_id") == file_id for r in _ghl_list_media_files(parent_id=expected)):
+            return {"verified": True, "expected": expected, "actual": expected,
+                    "reason": "in_target_folder"}
+        if any(r.get("_id") == file_id for r in _ghl_list_media_files()):
+            return {"verified": False, "expected": expected, "actual": "",
+                    "reason": "landed_at_my_media_root"}
+        return {"verified": False, "expected": expected, "actual": None,
+                "reason": "not_listed_yet"}
+    row = next((r for r in _ghl_list_media_files() if r.get("_id") == file_id), None)
+    if row is None:
+        return {"verified": False, "expected": "", "actual": None,
+                "reason": "not_listed_yet"}
+    return {"verified": True, "expected": "", "actual": row.get("parentId", ""),
+            "reason": "root_by_configuration"}
+
+
+def ghl_upload_file(path: str, name: str, parent_id: str | None = None):
     """Upload a local file to GHL Media Storage (filesafe CDN). Returns
-    {'fileId': ..., 'url': ...} or None on failure (never raises).
+    {'fileId': ..., 'url': ..., placement fields} or None on failure (never raises).
+
+    ``parent_id`` is the target folder id; when omitted it falls back to the
+    configured LOOM folder, so future LOOM uploads land there. With no folder
+    configured the request is byte-identical to the previous behaviour (root).
+    The PROVEN targeting contract is the multipart form field ``parentId``.
 
     Retries a bounded number of times with exponential backoff. Non-retryable
     preconditions (no token, missing file) fail immediately without retrying.
     The file is read once and re-framed per attempt so a retry never re-reads
     from disk and each attempt gets a fresh multipart boundary.
+
+    Placement is VERIFIED by reading the durable record back: folder success is
+    only ever reported when the stored ``parentId`` matches the target. A mismatch
+    is surfaced loudly and never represented as folder success.
     """
     if not GHL_TOKEN or not os.path.exists(path):
         return None
+
+    target_parent = GHL_MEDIA_PARENT_ID if parent_id is None else parent_id
 
     with open(path, "rb") as f:
         payload = f.read()
@@ -1527,6 +1597,12 @@ def ghl_upload_file(path: str, name: str):
         body += b"\r\n"
         body += f"--{boundary}\r\n".encode()
         body += b'Content-Disposition: form-data; name="hosted"\r\n\r\nfalse\r\n'
+        if target_parent:
+            # PROVEN contract: the target folder is expressed as `parentId`.
+            body += f"--{boundary}\r\n".encode()
+            body += b'Content-Disposition: form-data; name="parentId"\r\n\r\n'
+            body += str(target_parent).encode()
+            body += b"\r\n"
         body += f"--{boundary}--\r\n".encode()
         req = Request(f"{GHL_MEDIA_API}/medias/upload-file", data=body, method="POST")
         req.add_header("Authorization", f"Bearer {GHL_TOKEN}")
@@ -1539,6 +1615,27 @@ def ghl_upload_file(path: str, name: str):
                 if data.get("url"):
                     if attempt:
                         print(f"[media] GHL upload ok for {name} on attempt {attempt + 1}", flush=True)
+                    # Read-back verification must NEVER be able to fail an upload that
+                    # already succeeded: the durable-media lifecycle is unchanged.
+                    try:
+                        placement = ghl_verify_placement(data.get("fileId", ""), target_parent)
+                    except Exception as e:  # noqa: BLE001
+                        placement = {"verified": False, "expected": target_parent or "",
+                                     "actual": None,
+                                     "reason": f"verification_error:{type(e).__name__}"}
+                    data["placement_verified"] = bool(placement["verified"])
+                    data["placement_expected"] = placement["expected"]
+                    data["placement_actual"] = placement["actual"]
+                    data["placement_reason"] = placement["reason"]
+                    if target_parent and not placement["verified"]:
+                        print(f"[media] ROUTING FAILURE for {name}: expected parentId="
+                              f"{target_parent} but the durable record reports "
+                              f"parentId={placement['actual']!r} ({placement['reason']}). "
+                              f"The asset IS stored, but NOT in the configured LOOM "
+                              f"folder - do not treat this as folder success.", flush=True)
+                    elif target_parent:
+                        print(f"[media] folder placement verified for {name}: "
+                              f"parentId={placement['actual']}", flush=True)
                     return data
                 last_error = "response carried no url"
         except Exception as e:

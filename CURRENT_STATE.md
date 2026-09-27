@@ -51,7 +51,7 @@ Bryan's explicit authorization. Then the launch spine / Segment 6.
 
 ---
 
-## INCREMENT — 2026-09-26 (GHL folder routing) — ARCHAEOLOGY DONE, FOLDER FOUND, BLOCKED ON ONE DETAIL
+## INCREMENT — 2026-09-26 (GHL folder routing) — CONTRACT PROVEN, CODE READY, AWAITING BRYAN
 
 GHL upload/storage remains **LIVE PASS**; only folder *placement* was investigated. Full detail:
 `NEXT_SESSION_HANDOFF.md` §12.
@@ -82,9 +82,38 @@ the bug while appearing fixed. **Do not guess.**
 **64 files**. No other asset was created, moved, or altered.
 
 ### Status
-**BLOCKED — GHL media-upload folder parameter unverified.** Route options and the exact ask are in
-`NEXT_SESSION_HANDOFF.md` §12. Final routing acceptance remains Bryan's own live Discord action.
-**No timeline-editor work started.**
+
+**`CODE READY — LIVE ACCEPTANCE REQUIRED`** — not LIVE PASS until Bryan's own Discord submit.
+
+**Proven contract** (authorized self-cleaning live probe): the folder target is the multipart form
+field **`parentId`** on `POST /medias/upload-file`. **`folderId` is NOT honoured** — GHL answers
+HTTP 201, silently ignores it and stores the asset at My Media root. A `?parentId=`/`?folderId=`
+query parameter is also ignored.
+
+**Probe evidence** (disposable 1,709-byte `loom-probe-*.mp4`, judged only by the stored `parentId`):
+`folderId`-only → root ❌ · `parentId`-only ×2 → in LOOM ✅ · `folderId`+`parentId` ×2 → in LOOM ✅ ·
+query variants → root ❌. All four records located via
+`GET /medias/files?locationId=<loc>&type=file&parentId=<folder>` and deleted. **Final state: LOOM
+folder 0 · root 64 · `count` 64 · zero residue.** (The LOOM folder was empty beforehand — LOOM had
+never populated it.)
+
+**Files changed:** `adapter.py` (folder-aware upload + `ghl_verify_placement`), 
+`manual_media_intake.py` (pass-through + placement evidence), `tests/test_ghl_folder_routing.py` (new).
+
+**Configuration:** `LOOM_GHL_INTAKE_FOLDER_ID=6aa61446df2d015553434919` via the existing pattern
+(already whitelisted in `run.sh`), now actually consumed as the default target for every LOOM upload.
+Not a secret; nothing hardcoded in application code; unset ⇒ byte-identical previous behaviour (root).
+
+**Fail-loud guard:** HTTP success is never placement evidence — the durable record is read back and
+its `parentId` must match, else a loud `ROUTING FAILURE` is surfaced with
+`placement_expected/actual/reason` carried into the durable media reference. The asset is kept (media
+lifecycle unchanged) but root placement is never reported as folder success.
+
+**Tests:** focused **11 OK** · `discord-review` **344 OK** (333 + 11) · `content_intelligence` **477 OK**.
+Runtime restarted: PID **86696**, `/health` ok, folder var present in the process environment.
+
+Bryan's single live test (Manual Intake → asset inside the existing `LOOM` folder, `parentId ==`
+`6aa61446df2d015553434919`) is in `NEXT_SESSION_HANDOFF.md` §13. **No timeline-editor work started.**
 
 ---
 

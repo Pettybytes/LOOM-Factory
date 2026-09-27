@@ -331,11 +331,27 @@ def store_durable_media(path: str, name: str, folder_id: str | None = None) -> d
     """
     import adapter  # production helper (single upload implementation)
 
-    result = adapter.ghl_upload_file(path, name)
+    # Pass the target folder THROUGH. The upload helper defaults to the configured
+    # LOOM folder and VERIFIES placement by reading the durable record back, so a
+    # silently-ignored folder target cannot be mistaken for success.
+    result = adapter.ghl_upload_file(path, name, parent_id=folder_id)
     if not isinstance(result, dict) or not result.get("url"):
         raise RuntimeError("GHL media upload failed (no durable url returned)")
+    placement = {
+        "placement_verified": bool(result.get("placement_verified")),
+        "placement_expected": result.get("placement_expected", folder_id or ""),
+        "placement_actual": result.get("placement_actual"),
+        "placement_reason": result.get("placement_reason", ""),
+    }
+    if placement["placement_expected"] and not placement["placement_verified"]:
+        # Durable but in the WRONG place. The asset is kept (the media lifecycle is
+        # unchanged) while root placement is never represented as folder success.
+        print(f"[manual-intake] media ROUTING FAILURE: expected folder "
+              f"{placement['placement_expected']}, got "
+              f"parentId={placement['placement_actual']!r} "
+              f"({placement['placement_reason']})", flush=True)
     return {"url": result["url"], "file_id": result.get("fileId", ""),
-            "folder_id": folder_id or ""}
+            "folder_id": folder_id or "", **placement}
 
 
 def clip_supplied_media(media_path: str, *, start: float = 0.0, end: float = 3.0,
