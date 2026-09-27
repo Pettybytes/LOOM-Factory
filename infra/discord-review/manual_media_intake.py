@@ -136,6 +136,19 @@ def probe_media(path: str | os.PathLike[str]) -> dict[str, Any]:
     }
 
 
+def verify_artifact_integrity(path: str | os.PathLike[str], **kwargs: Any) -> dict[str, Any]:
+    """The ONE pre-durable integrity gate.
+
+    Deliberately NOT ``probe_media``: container metadata is not proof of usable
+    media. Runtime evidence — the retained truncated artifact reported
+    ``has_video=True`` at 1920x1080 / 466.6s while being 19,611 bytes short.
+    This decodes the artifact's tail instead. See
+    ``ytdlp_adapter.verify_media_integrity`` for the mechanism and its cost.
+    """
+    ya = _acq("ytdlp_adapter")
+    return ya.verify_media_integrity(path, **kwargs)
+
+
 def scan_for_video(attachments: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Pick the first video/audio attachment. Discord reports video with
     ``content_type``; a bare .mp4 sometimes arrives as octet-stream."""
@@ -293,32 +306,218 @@ def fetch_source_metadata(url: str, platform: str = "") -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Classified intake failures
+# ---------------------------------------------------------------------------
+class MediaIntakeError(RuntimeError):
+    """A URL-acquisition failure with a STABLE code the caller can classify.
+
+    The operator-facing message is derived from ``code``; raw provider stderr is
+    kept in ``detail`` for logs only and is never sent to Discord.
+    """
+
+    def __init__(self, code: str, message: str, detail: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.detail = detail
+
+
+# An unfinished transfer is marked by yt-dlp's own ``.part`` suffix, and a
+# split-stream download leaves the per-format intermediates behind. Both are
+# recognised explicitly so neither can be mistaken for a finished artifact.
+_PART_FILE_RE = re.compile(r"\.part$", re.IGNORECASE)
+_SPLIT_STREAM_RE = re.compile(r"\.f\d+\.[A-Za-z0-9]+$", re.IGNORECASE)
+
+
+def _select_finalized_artifact(out_dir: str, stdout: str,
+                               ) -> tuple[str | None, str, dict[str, Any]]:
+    """The ONE finalized artifact, or (None, failure_code, evidence).
+
+    FAIL CLOSED. The only trusted signal is the path yt-dlp reports through
+    ``--print after_move:filepath``, which it emits only after a successful
+    download AND merge. There is deliberately NO "newest non-zero file wins"
+    fallback: that is exactly how an audio-only ``.m4a`` half was returned as if
+    it were the acquired media, producing the misleading
+    "supplied file has no video stream".
+    """
+    printed = []
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if line and os.path.isfile(line):
+            printed.append(line)
+    if printed:
+        return printed[-1], "", {"reported_by": "after_move:filepath"}
+
+    try:
+        present = sorted(os.listdir(out_dir))
+    except OSError:
+        present = []
+    parts = [f for f in present if _PART_FILE_RE.search(f)]
+    split = [f for f in present if _SPLIT_STREAM_RE.search(f)]
+    evidence = {"present": present[:20], "partial_files": parts[:10],
+                "split_streams": split[:10]}
+    if parts:
+        # An unfinished transfer: `.part` is still on disk, so the final file
+        # was never completed (this is what --no-part used to hide).
+        return None, "DOWNLOAD_INCOMPLETE", evidence
+    if split:
+        # Separate video/audio streams were fetched but the merge that produces
+        # the single deliverable did not complete. Intermediates are evidence,
+        # never a result.
+        return None, "SPLIT_STREAM_UNFINISHED", evidence
+    return None, "NO_FINALIZED_ARTIFACT", evidence
+
+
+def _count_split_intermediates(out_dir: str) -> int:
+    try:
+        return sum(1 for f in os.listdir(out_dir) if _SPLIT_STREAM_RE.search(f))
+    except OSError:
+        return 0
+
+
+def _preflight_start_height(canonical_url: str, *, max_bytes: int,
+                            probe_runner: Any = None) -> tuple[int | None, int | None, str]:
+    """Choose the starting rung from FREE metadata. Best-effort; NEVER fatal.
+
+    Reuses the EXISTING bounded metadata probe (``build_probe_command``:
+    ``--skip-download``, no cookies, no auth, no download, $0) so pre-flight adds
+    no new provider and no new transport. Any failure degrades to the verified
+    ladder rather than blocking the intake.
+    """
+    try:
+        ya = _acq("ytdlp_adapter")
+        runner = probe_runner or (lambda cmd: ya.run_ytdlp_command(cmd, timeout=120.0))
+        meta = json.loads(runner(ya.build_probe_command(canonical_url)) or "{}")
+        if isinstance(meta, dict) and meta.get("_type") in ("playlist", "multi_video"):
+            entries = [e for e in (meta.get("entries") or []) if isinstance(e, dict)]
+            if len(entries) == 1:
+                meta = entries[0]
+        if not isinstance(meta, dict) or not meta.get("formats"):
+            return None, None, "no_metadata"
+        return ya.choose_starting_height(meta, max_bytes=max_bytes)
+    except Exception as exc:  # noqa: BLE001 — an optimisation must never block
+        print(f"[intake] pre-flight unavailable ({type(exc).__name__}); "
+              f"using the verified ladder", flush=True)
+        return None, None, "preflight_failed"
+
+
 def acquire_url_media(url: str, *, out_dir: str,
-                     max_bytes: int = MAX_URL_BYTES) -> tuple[str, dict[str, Any]]:
+                      max_bytes: int = MAX_URL_BYTES,
+                      run_download: Any = None,
+                      probe_fn: Any = None,
+                      integrity_fn: Any = None,
+                      preflight_runner: Any = None,
+                      ) -> tuple[str, dict[str, Any]]:
     """Mode B: source URL -> EXISTING resolver -> EXISTING local downloader -> file.
 
-    Returns (local_path, resolved). The caller owns the temp dir. Raises on
-    failure with the underlying classified reason; it never fabricates media.
+    Returns (local_path, resolved) where ``local_path`` is ONE finalized,
+    VIDEO-BEARING artifact that passed the integrity gate and fits the intake
+    ceiling. The caller owns the temp dir.
+
+    CONTRACT (fail closed at every step):
+      * the artifact must be the one yt-dlp finalized (no newest-file guessing),
+      * it must contain video,
+      * its TAIL must decode cleanly (truncation is not acceptable media),
+      * it must fit ``max_bytes``.
+
+    TWO-STAGE REPRESENTATION CHOICE:
+      1. PRE-FLIGHT (free metadata) picks the STARTING rung so an obviously
+         oversized representation is never downloaded at all.
+      2. The VERIFIED LADDER remains the safety net: the chosen rung and every
+         lower one are tried, each gated by the finalized-artifact check, the
+         integrity gate and the post-download ceiling check. If the estimate was
+         wrong, the ladder still finds a representation that genuinely fits.
+    When a caller injects ``run_download`` it owns representation choice, so
+    pre-flight is skipped unless ``preflight_runner`` is given explicitly.
     """
     ya = _acq("ytdlp_adapter")
     resolved = resolve_source_url(url)
     os.makedirs(out_dir, exist_ok=True)
     template = os.path.join(out_dir, "%(id)s.%(ext)s")
-    cmd = ya.build_download_command(resolved["canonical_url"],
-                                    out_template=template, max_bytes=max_bytes)
-    stdout = ya.run_ytdlp_command(cmd, timeout=600.0)
-    path = ""
-    for line in (stdout or "").splitlines():
-        line = line.strip()
-        if line and os.path.exists(line):
-            path = line
-    if not path:
-        cands = sorted((os.path.join(out_dir, f) for f in os.listdir(out_dir)),
-                       key=os.path.getmtime, reverse=True)
-        path = next((c for c in cands if os.path.getsize(c) > 0), "")
-    if not path:
-        raise RuntimeError(f"extractor produced no media for {resolved['platform']}")
-    return path, resolved
+    _download = run_download or (lambda cmd: ya.run_ytdlp_command(cmd, timeout=600.0))
+    _probe = probe_fn or probe_media
+    _integrity = integrity_fn or (lambda p: ya.verify_media_integrity(p))
+
+    # ---- stage 1: pre-flight (optimisation only, never authoritative) --------
+    start_height: int | None = None
+    estimate: int | None = None
+    why = "skipped"
+    if preflight_runner is not None or run_download is None:
+        start_height, estimate, why = _preflight_start_height(
+            resolved["canonical_url"], max_bytes=max_bytes, probe_runner=preflight_runner)
+        print(f"[intake] pre-flight start_height={start_height} "
+              f"estimate={estimate} reason={why}", flush=True)
+
+    # ---- stage 2: the verified ladder (the safety net) ----------------------
+    ladder = ya.ladder_from(start_height, ladder=ya.height_ladder(max_bytes))
+    attempts: list[dict[str, Any]] = []
+    for max_height in ladder:
+        cmd = ya.build_download_command(
+            resolved["canonical_url"], out_template=template,
+            max_bytes=max_bytes, max_height=max_height)
+        stdout = _download(cmd)
+
+        path, failure, evidence = _select_finalized_artifact(out_dir, stdout)
+        if path is None:
+            # This REPRESENTATION did not finalize (an unfinished transfer, an
+            # unmerged split pair, or nothing produced). Never a result — but a
+            # lower representation may still finalize, so record and step down.
+            attempts.append({"height": max_height, "code": failure, **evidence})
+            print(f"[intake] height={max_height} not usable code={failure} "
+                  f"evidence={evidence}", flush=True)
+            continue
+
+        info = _probe(path)
+        if not info.get("has_video"):
+            attempts.append({"height": max_height, "code": "NO_VIDEO_STREAM",
+                             "detail": f"container={info.get('container', '')}"})
+            print(f"[intake] height={max_height} produced no video stream", flush=True)
+            continue
+
+        verdict = _integrity(path)
+        if not verdict.get("ok"):
+            attempts.append({"height": max_height, "code": "MEDIA_INTEGRITY_FAILED",
+                             "detail": str(verdict.get("detail", ""))[:200]})
+            print(f"[intake] height={max_height} failed integrity: "
+                  f"{str(verdict.get('detail'))[:160]}", flush=True)
+            continue
+
+        size = os.path.getsize(path)
+        if size <= max_bytes:
+            if attempts:
+                print(f"[intake] settled at height={max_height} bytes={size} after "
+                      f"rejecting {[a['height'] for a in attempts]}", flush=True)
+            return path, resolved
+
+        # Fits the format but not the ceiling: step DOWN. The rejected artifact
+        # is evidence, never a durable asset, and the cap is never raised.
+        attempts.append({"height": max_height, "code": "MEDIA_EXCEEDS_LIMIT",
+                         "bytes": size})
+        print(f"[intake] height={max_height} artifact {size}B exceeds ceiling "
+              f"{max_bytes}B; stepping down", flush=True)
+
+    # Every representation failed. Fail closed with the most actionable reason.
+    code = _dominant_failure_code(attempts)
+    raise MediaIntakeError(
+        code,
+        "no usable media representation could be acquired under the intake limit",
+        detail=json.dumps(attempts)[:600])
+
+
+def _dominant_failure_code(attempts: list[dict[str, Any]]) -> str:
+    """The single most useful code after every representation failed.
+
+    A size rejection is the most actionable ("the source is too large for this
+    ceiling"), then corruption, then a missing video stream; otherwise the first
+    download-integrity failure is reported. Never a silent success.
+    """
+    codes = [str(a.get("code") or "") for a in attempts]
+    for preferred in ("MEDIA_EXCEEDS_LIMIT", "MEDIA_INTEGRITY_FAILED",
+                      "NO_VIDEO_STREAM", "SPLIT_STREAM_UNFINISHED",
+                      "DOWNLOAD_INCOMPLETE"):
+        if preferred in codes:
+            return preferred
+    return codes[0] if codes and codes[0] else "NO_FINALIZED_ARTIFACT"
 
 
 def store_durable_media(path: str, name: str, folder_id: str | None = None) -> dict[str, Any]:

@@ -219,6 +219,61 @@ REVIEW_TOKEN_TTL_SECONDS = 72 * 3600  # 72h. Expired cards revert to manual Hold
 EDITOR_TOKEN_TTL_SECONDS = 15 * 60     # 15 min single-use LAUNCH window (pending -> authenticated).
 EDITOR_SESSION_TTL_SECONDS = 4 * 3600  # 4h authenticated editor session (draft stays resumable).
 
+# ---------------------------------------------------------------------------
+# Operator-facing intake failure classification.
+#
+# Raw provider stderr stays in adapter.log; Discord gets ONE stable code plus a
+# plain-language reason. This exists because the previous error ("supplied file
+# has no video stream") pointed the operator at their input when the real fault
+# was a truncated download.
+# ---------------------------------------------------------------------------
+_INTAKE_FAILURE_REASONS: dict[str, str] = {
+    "DOWNLOAD_INCOMPLETE":
+        "the download did not finish — an incomplete transfer was detected.",
+    "DOWNLOAD_FAILED":
+        "the source could not be downloaded.",
+    "SPLIT_STREAM_UNFINISHED":
+        "the video and audio streams downloaded but never merged into one file.",
+    "NO_FINALIZED_ARTIFACT":
+        "the extractor produced no finalized media file.",
+    "MERGE_FAILED":
+        "the downloaded streams could not be merged.",
+    "MEDIA_INTEGRITY_FAILED":
+        "the media is truncated or corrupt, so it was not stored.",
+    "NO_VIDEO_STREAM":
+        "the source has no video stream LOOM can use.",
+    "MEDIA_EXCEEDS_LIMIT":
+        "the media exceeds the intake size limit, even at the lowest quality tried.",
+    "PROBE_FAILED":
+        "the media could not be inspected.",
+    "UNKNOWN":
+        "an unexpected error occurred; the adapter log has the detail.",
+}
+
+
+def classify_intake_failure(exc: Exception, stage: str = "") -> tuple[str, str]:
+    """(code, operator_reason) — concise, truthful, never a raw stderr dump."""
+    code = str(getattr(exc, "code", "") or "")
+    if code in _INTAKE_FAILURE_REASONS:
+        return code, _INTAKE_FAILURE_REASONS[code]
+    if code == "TOO_LARGE":
+        return "MEDIA_EXCEEDS_LIMIT", _INTAKE_FAILURE_REASONS["MEDIA_EXCEEDS_LIMIT"]
+    if code in ("YTDLP_FAILED", "NO_OUTPUT", "NO_RESULTS"):
+        return "DOWNLOAD_FAILED", _INTAKE_FAILURE_REASONS["DOWNLOAD_FAILED"]
+    if code in ("FFPROBE_FAILED", "BAD_METADATA", "NO_STREAMS"):
+        return "PROBE_FAILED", _INTAKE_FAILURE_REASONS["PROBE_FAILED"]
+    text = str(exc).lower()
+    if "exceeds cap" in text:
+        return "MEDIA_EXCEEDS_LIMIT", _INTAKE_FAILURE_REASONS["MEDIA_EXCEEDS_LIMIT"]
+    if "no video stream" in text:
+        return "NO_VIDEO_STREAM", _INTAKE_FAILURE_REASONS["NO_VIDEO_STREAM"]
+    if "integrity" in text:
+        return "MEDIA_INTEGRITY_FAILED", _INTAKE_FAILURE_REASONS["MEDIA_INTEGRITY_FAILED"]
+    if isinstance(exc, ValueError) or "ffprobe" in text:
+        return "PROBE_FAILED", _INTAKE_FAILURE_REASONS["PROBE_FAILED"]
+    return "UNKNOWN", _INTAKE_FAILURE_REASONS["UNKNOWN"]
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -2611,6 +2666,18 @@ class Handler(BaseHTTPRequestHandler):
             probe = manual_media_intake.probe_media(local_path)
             if not probe.get("has_video"):
                 raise RuntimeError("supplied file has no video stream")
+            # INTEGRITY GATE — before any durable write. ffprobe metadata alone is
+            # explicitly NOT sufficient: a truncated artifact answered
+            # has_video=True with a valid resolution and duration. Only decoding
+            # part of the media proves it is usable, so a partial file can never
+            # become a durable GHL asset or a review candidate.
+            stage = "media_integrity"
+            verdict = manual_media_intake.verify_artifact_integrity(local_path)
+            if not verdict.get("ok"):
+                print(f"[manual-intake] integrity REJECTED reason={verdict.get('reason')} "
+                      f"detail={str(verdict.get('detail'))[:200]}", flush=True)
+                raise RuntimeError(
+                    f"media integrity failed ({verdict.get('reason')})")
             stage = "durable_store_ghl"
             # Retry safety: if these exact bytes were already ingested for this
             # source+tenant, reuse the durable copy instead of uploading twice.
@@ -2693,9 +2760,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             frames = ";".join(f"{Path(f.filename).name}:{f.lineno}:{f.name}"
                               for f in traceback.extract_tb(e.__traceback__))
-            print(f"[manual-intake] failed stage={stage} error={type(e).__name__} "
+            code, operator_reason = classify_intake_failure(e, stage)
+            # Full detail stays in the log; Discord gets a concise, actionable
+            # reason. Never a raw stderr dump, never secrets.
+            print(f"[manual-intake] failed stage={stage} code={code} "
+                  f"error={type(e).__name__} detail={str(e)[:300]!r} "
                   f"frames={frames}", flush=True)
-            note = [f"❌ Manual intake failed at **{stage}** ({type(e).__name__})."]
+            note = [f"❌ Manual intake failed at **{stage}**\n**{code}** — {operator_reason}"]
             if durable_url:
                 note.append(f"durable media kept: {durable_url}")
             if persisted:

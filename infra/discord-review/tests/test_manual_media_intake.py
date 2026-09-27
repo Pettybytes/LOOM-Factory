@@ -233,7 +233,13 @@ class TestModeBUrlIntake(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(ya, "build_download_command", fake_build), \
                  mock.patch.object(ya, "run_ytdlp_command", fake_run):
-                path, resolved = mmi.acquire_url_media(self.FIXTURES[1][0], out_dir=d)
+                # This test is about WHERE the command came from, so the artifact
+                # validators are injected. The real ones are exercised by the
+                # fail-closed and integrity-gate tests.
+                path, resolved = mmi.acquire_url_media(
+                    self.FIXTURES[1][0], out_dir=d,
+                    probe_fn=lambda p: {"has_video": True, "has_audio": True},
+                    integrity_fn=lambda p: {"ok": True, "reason": "", "detail": ""})
             self.assertGreater(os.path.getsize(path), 0)
             self.assertEqual(resolved["platform"], "kick")
 

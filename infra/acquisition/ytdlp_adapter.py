@@ -44,6 +44,138 @@ FORMAT_SELECTOR = ("bv*[vcodec^=avc1]+ba[acodec^=mp4a]"
                    "/b[ext=mp4]"
                    "/bv*+ba/b")
 
+# Bounded recovery. An interrupted download must be RESUMABLE/RETRYABLE rather
+# than accepted as a complete file. Bounded so an unreachable or hostile source
+# can never loop: at most 3 attempts plus 3 fragment-level retries.
+DOWNLOAD_RETRIES = 3
+FRAGMENT_RETRIES = 3
+
+# Size-aware representation ladder, highest quality first. Callers walk it and
+# step DOWN only when the FINALIZED artifact would exceed the intake ceiling, so
+# a large source yields the best representation that actually fits instead of a
+# hard-coded resolution or a silently raised cap.
+HEIGHT_LADDER = (1080, 720, 480, 360)
+
+# How much of the artifact's TAIL the integrity gate decode-verifies.
+INTEGRITY_TAIL_SECONDS = 2.0
+
+
+def build_format_selector(*, max_height: int | None = None) -> str:
+    """The format selector, optionally bounded to a maximum height.
+
+    ``max_height=None`` returns the unrestricted selector (unchanged behaviour
+    for every existing caller). A height bound is how the size ceiling is
+    respected: the merged artifact must contain video AND audio, and a lower
+    bound is the general lever that keeps it under the intake cap.
+    """
+    if not max_height:
+        return FORMAT_SELECTOR
+    h = int(max_height)
+    return (f"bv*[vcodec^=avc1][height<={h}]+ba[acodec^=mp4a]"
+            f"/b[ext=mp4][height<={h}]"
+            f"/bv*[height<={h}]+ba/b[height<={h}]")
+
+
+def height_ladder(max_bytes: int | None = None) -> tuple[int, ...]:
+    """The ordered heights to try. Present so the strategy is one definition."""
+    return HEIGHT_LADDER
+
+
+# Fixed allowance for mux/merge overhead so an estimate is never talked under the
+# ceiling by rounding.
+MERGE_OVERHEAD_BYTES = 1 * 1024 * 1024
+
+
+def _reported_size(fmt: Any) -> int | None:
+    if not isinstance(fmt, dict):
+        return None
+    for key in ("filesize", "filesize_approx"):
+        value = fmt.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            continue
+        return int(value)
+    return None
+
+
+def estimate_merged_bytes(meta: dict | None, *, max_height: int) -> int | None:
+    """Estimated bytes of the representation the selector would merge at <= max_height.
+
+    Mirrors the selector's FIRST branch (avc1 video + mp4a audio) so the estimate
+    describes what would actually be fetched. REFUSES TO GUESS: if either half
+    has no reported size the estimate is ``None``, and the caller falls back to
+    the verified ladder instead of trusting a number.
+
+    Measurements are estimates only. On the incident source the reported size of
+    the 1080p avc1 stream (245,080,589 B) over-stated the bytes actually fetched
+    (102,170,412 B) by ~2.4x, which is exactly why pre-flight CHOOSES but the
+    post-download checks still DECIDE.
+    """
+    formats = (meta or {}).get("formats")
+    if not isinstance(formats, list):
+        return None
+    limit = int(max_height)
+
+    def vcodec(f):
+        return str(f.get("vcodec") or "none")
+
+    def acodec(f):
+        return str(f.get("acodec") or "none")
+
+    videos = [f for f in formats if isinstance(f, dict)
+              and vcodec(f) != "none" and acodec(f) == "none"
+              and isinstance(f.get("height"), int) and f["height"] <= limit
+              and _reported_size(f)]
+    audios = [f for f in formats if isinstance(f, dict)
+              and vcodec(f) == "none" and acodec(f) != "none" and _reported_size(f)]
+    if not videos or not audios:
+        return None
+
+    avc1 = [f for f in videos if vcodec(f).startswith("avc1")]
+    video = max(avc1 or videos,
+                key=lambda f: (f.get("height") or 0, _reported_size(f) or 0))
+    mp4a = [f for f in audios if acodec(f).startswith("mp4a")]
+    audio = max(mp4a or audios, key=lambda f: _reported_size(f) or 0)
+    return int(_reported_size(video) + _reported_size(audio) + MERGE_OVERHEAD_BYTES)
+
+
+def choose_starting_height(meta: dict | None, *, max_bytes: int,
+                           ladder: tuple[int, ...] | None = None
+                           ) -> tuple[int | None, int | None, str]:
+    """(height, estimate, reason) — highest rung whose ESTIMATE fits the ceiling.
+
+    Pre-flight is an OPTIMISATION, never an authority: it exists so an obviously
+    oversized representation (which would download ~100 MB and abort) is never
+    attempted. An unknown estimate is NOT "too large", so the highest unknown
+    rung is preferred over a lower rung with a known fitting estimate — a missing
+    number must never silently cost quality.
+    """
+    rungs = list(ladder or HEIGHT_LADDER)
+    unknown: int | None = None
+    for height in rungs:
+        estimate = estimate_merged_bytes(meta, max_height=height)
+        if estimate is None:
+            if unknown is None:
+                unknown = height
+            continue
+        if estimate <= max_bytes:
+            return height, estimate, "estimate_fits"
+    if unknown is not None:
+        return unknown, None, "estimate_unknown"
+    return (rungs[0] if rungs else None), None, "no_estimate"
+
+
+def ladder_from(start_height: int | None, *, ladder: tuple[int, ...] | None = None
+                ) -> tuple[int, ...]:
+    """The rungs to try: start where pre-flight chose, then step DOWN.
+
+    Rungs ABOVE the choice are skipped as obviously oversized; the chosen rung and
+    every lower one remain, so the verified ladder is still the safety net.
+    """
+    rungs = list(ladder or HEIGHT_LADDER)
+    if start_height is None or start_height not in rungs:
+        return tuple(rungs)
+    return tuple(rungs[rungs.index(start_height):])
+
 # Flags that must NEVER appear in a generated command.
 FORBIDDEN_FLAGS = (
     "--cookies", "--cookies-from-browser", "--username", "--password",
@@ -75,18 +207,26 @@ def build_probe_command(url: str, *, ytdlp: str = "yt-dlp") -> list[str]:
 
 def build_download_command(url: str, *, out_template: str, ytdlp: str = "yt-dlp",
                            max_bytes: int = MAX_BYTES,
-                           section_arg: str | None = None) -> list[str]:
-    """One bounded item with local ffmpeg merge; never enumerates the playlist."""
+                           section_arg: str | None = None,
+                           max_height: int | None = None) -> list[str]:
+    """One bounded item with local ffmpeg merge; never enumerates the playlist.
+
+    ``--no-part`` is deliberately ABSENT: writing straight to the final filename
+    let an interrupted download masquerade as a completed file (runtime-proven —
+    a truncated stream with a normal-looking name and no `.part` marker). The
+    default `.part` suffix means an unfinished transfer is always identifiable.
+    Retries are bounded (DOWNLOAD_RETRIES / FRAGMENT_RETRIES), never infinite.
+    """
     cmd = [ytdlp,
            "--no-playlist",
            "--playlist-items", "1",
-           "--format", FORMAT_SELECTOR,
+           "--format", build_format_selector(max_height=max_height),
            "--merge-output-format", "mp4",
            "--no-warnings", "--no-progress", "--no-color", "--newline",
            "--socket-timeout", "20",
-           "--retries", "0",
+           "--retries", str(DOWNLOAD_RETRIES),
+           "--fragment-retries", str(FRAGMENT_RETRIES),
            "--max-filesize", str(max_bytes),
-           "--no-part",
            "--output", out_template,
            "--print", "after_move:filepath",
            "--", url]
@@ -437,3 +577,58 @@ def run_ffprobe_json(path: str) -> dict:
         raise YtDlpError("FFPROBE_FAILED", (proc.stderr or "ffprobe failed")[:200])
     import json as _json
     return _json.loads(proc.stdout or "{}")
+
+
+def verify_media_integrity(path: str | Path, *,
+                           tail_seconds: float = INTEGRITY_TAIL_SECONDS,
+                           runner: Callable[[list[str]], Any] | None = None) -> dict[str, Any]:
+    """Decode-verify the TAIL of a media artifact. Returns a verdict dict.
+
+    WHY THIS TEST, AND WHY NOT ffprobe:
+    ``ffprobe -show_streams`` reads container metadata and returns rc=0 with
+    EMPTY stderr on the retained truncated artifact — it reported a valid
+    1920x1080 466.6s stream for a file that is 19,611 bytes short. Metadata alone
+    therefore cannot gate durable storage. Decoding the tail does, because
+    truncation breaks the final access units.
+
+    Measured on the real artifact: rc=183 with `Invalid NAL unit size` / `corrupt
+    input packet in stream 0`; a healthy file returns rc=0 with empty stderr.
+
+    COST: ~0.06-0.11s on a 7:46 1080p source (2 seconds of tail decoded, no
+    output, ``-c copy`` never applied). It is NOT a full-file decode and NOT a
+    transcode, so it stays negligible per intake.
+    """
+    p = str(path)
+    tail = max(float(tail_seconds), 0.1)
+    cmd = ["ffmpeg", "-v", "error", "-xerror",
+           "-sseof", f"-{tail:g}", "-i", p, "-f", "null", "-"]
+    try:
+        if runner is not None:
+            runner(cmd)
+            return {"ok": True, "reason": "", "detail": "", "tail_seconds": tail}
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "reason": "integrity_timeout",
+                "detail": "integrity check timed out", "tail_seconds": tail}
+    except (OSError, subprocess.SubprocessError) as exc:  # noqa: BLE001
+        return {"ok": False, "reason": "integrity_unavailable",
+                "detail": type(exc).__name__, "tail_seconds": tail}
+    if proc.returncode == 0 and not (proc.stderr or "").strip():
+        return {"ok": True, "reason": "", "detail": "", "tail_seconds": tail}
+    detail = " | ".join((proc.stderr or "").strip().splitlines()[:3])[:300]
+    return {"ok": False, "reason": "media_integrity_failed",
+            "detail": detail, "tail_seconds": tail,
+            "returncode": proc.returncode}
+
+
+def classify_download_failure(stderr: str) -> str:
+    """Map yt-dlp stderr onto one honest failure code (never a raw dump)."""
+    text = (stderr or "").lower()
+    if "max-filesize" in text or "file is larger than max-filesize" in text:
+        return "MEDIA_EXCEEDS_LIMIT"
+    if "ffmpeg" in text or "merging" in text:
+        return "MERGE_FAILED"
+    if "unable to download" in text or "http error" in text or "timed out" in text \
+            or "connection" in text:
+        return "DOWNLOAD_INCOMPLETE"
+    return "DOWNLOAD_FAILED"
