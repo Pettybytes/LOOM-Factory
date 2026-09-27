@@ -4,6 +4,94 @@
 
 **Timeline Editor Phase 2A: LIVE PASS (2026-09-26 ~22:11 EDT). CLOSED — do not redesign or further polish.** Bryan drove the visual timeline on the real editor surface (measured source ~33.30s; START ~3.37s; END ~30.70s; selected ~27.34s). Full evidence, provenance and preserved invariants: **`INCREMENT — TIMELINE EDITOR PHASE 2A`** below.
 
+## INCREMENT — 2026-09-27 (later) — BOUNDED-INTAKE SEAM REPAIR
+
+**Status: `CODE/SEAM VERIFIED — LIVE ACCEPTANCE EXTERNALLY BLOCKED`.**
+Two seam defects closed. **Not** called LIVE PASS: the real Discord run has not succeeded
+(YouTube is issuing an anti-bot challenge — see below).
+
+### Defect 1 — window intent could silently downgrade to full source
+
+Discord text → `START/END` parsing dropped several natural forms, and the loss was **silent**:
+the intake proceeded as a **full-source** acquisition and reported success. Parser truth table
+before → after:
+
+| Operator form | BEFORE | AFTER |
+|---|---|---|
+| `start=1:23 end=2:45` | parsed | parsed (unchanged) |
+| `start=83 end=165` | parsed | parsed (unchanged) |
+| `START: 120` / `END: 180` | parsed | parsed (unchanged) |
+| **`START 120` (space, no delimiter)** | **dropped → full source** | **parsed** |
+| **`START 0:02:00` (clock, no delimiter)** | **dropped → full source** | **parsed** |
+| **`window: 120-180`** | **dropped → full source** | **parsed** |
+| **bare line `120-180`** | **dropped → full source** | **parsed** |
+| **`START` alone / `END` alone / `START: abc`** | **silently full source** | **FAILS CLOSED** |
+| URL only · prose containing "start" · a date like `2026-09-27` | full source | full source (unchanged) |
+
+Enforcement is in two places, both before any network work: the operator-facing validation in
+`adapter._handle_manual_media_intake` (immediate, explicit refusal), and a `window_validate` stage in
+`_manual_media_worker` (defence in depth). **No window intent at all** still allows full source.
+The URL is stripped before window scanning, so a query string like `&start=` is never mistaken for an
+operator instruction.
+
+### Defect 2 — P0 ORIGINAL-vs-WORKING coordinate collapse
+
+`boundary_plan.recommended_clip_*` is read by every downstream consumer (acquisition handoff,
+source-lineage bootstrap, the Phase 2A editor) as **relative to the durable working asset**. It was
+being overwritten with the operator's **ORIGINAL-absolute** window.
+
+**Concrete example — ORIGINAL 120 → 180, working asset 0 → 60, origin 120:**
+
+| Field | Value | Coordinate system |
+|---|---|---|
+| `original_window.start_s/end_s` | 120 / 180 | **ORIGINAL** source |
+| `working_timebase_origin_s` | 120 | ORIGINAL time of working t=0 |
+| `recommended_clip_start/end` | **0 / 60** | **WORKING asset** |
+| working duration | 60 | WORKING asset |
+
+The conversion happens at the smallest authoritative seam (`manual_intake_intelligence`, both
+`run_manual_intelligence` and the retry path `enrich_manual_candidate`), and the ORIGINAL pair is
+preserved alongside. **A full-source acquisition has origin 0, so its behaviour is unchanged.**
+The editor is NOT made to translate ORIGINAL coordinates — it keeps receiving coordinates native to
+the media file it edits.
+
+### Defence in depth — working-range assertion
+
+`source_window.validate_working_range()` rejects a plan that does not fit the working asset
+(`WORKING_RANGE_REVERSED`, `WORKING_RANGE_NEGATIVE`, `WORKING_RANGE_BEYOND_WORKING_SOURCE`,
+`WORKING_RANGE_UNUSABLE`, `WORKING_SOURCE_DURATION_UNKNOWN`), tolerance 2.0 s. It runs on the FINAL
+plan whatever produced it, so bad coordinates fail at the CI seam rather than being hidden later by
+editor-side clamping. Regression test reproduces the audit's exact case: ORIGINAL 42:00 → 47:30,
+origin 2520, working 330 s → plan must satisfy `0 <= start < end <= 330`, and neither 2520 nor 2850
+may appear in a working-relative range, while ORIGINAL provenance still records 2520 → 2850.
+
+### Files changed
+
+`infra/acquisition/source_window.py` · `infra/discord-review/adapter.py` ·
+`infra/discord-review/manual_intake_intelligence.py` · `infra/discord-review/manual_media_intake.py` ·
+**new** `infra/discord-review/tests/test_window_intent_and_coordinates.py`
+
+### Tests
+
+acquisition **596 OK** · discord-review **389 OK** (**+14** new focused) · content_intelligence
+**477 OK** · dashboard editor/bootstrap **191 pass / 0 fail**.
+
+### Live Discord acceptance — EXTERNALLY BLOCKED
+
+The single live Discord retest is a **Bryan-only** action. YouTube was returning
+*"Sign in to confirm you're not a bot"* at 23:03, and the standing instruction is not to hammer it,
+so **no further YouTube requests were issued in this pass**. Do not call bounded Manual Intake
+LIVE PASS until the Discord run actually succeeds. Retry when YouTube allows:
+`https://www.youtube.com/watch?v=59xxeJCbzaM` with `START: 120` / `END: 180`, expecting a ~60 s
+working source, `--download-sections` present, LOOM-folder storage, a review card, **Edit** opening
+the ~60 s working source, handles unable to escape real media, and ORIGINAL 120–180 provenance
+retained.
+
+**Unchanged by this pass:** Phase 2A · OBS (not started) · the 300 s safety limit · `038` · the
+nested OpenShorts repo · GHL routing · decision semantics.
+
+---
+
 ## INCREMENT — 2026-09-27 — MANUAL INTAKE: BOUNDED SOURCE + SHARED VALIDATION + PLATFORM ROUTING
 
 **Two commits, in this order. `eeff60c` is deliberately its own commit.**

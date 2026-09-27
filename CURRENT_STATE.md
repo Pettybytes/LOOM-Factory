@@ -8,6 +8,39 @@
 
 ---
 
+## INCREMENT — 2026-09-27 (later) — BOUNDED-INTAKE SEAM REPAIR
+
+**`CODE/SEAM VERIFIED — LIVE ACCEPTANCE EXTERNALLY BLOCKED`** (the live Discord run has not
+succeeded; YouTube is issuing an anti-bot challenge). Full detail:
+**`NEXT_SESSION_HANDOFF.md` → `INCREMENT — 2026-09-27 (later) — BOUNDED-INTAKE SEAM REPAIR`**.
+
+* **Defect 1 — silent window downgrade.** Discord text → START/END parsing dropped `START 120`
+  (no delimiter), clock forms, `window: 120-180` and bare `120-180`, and the loss was **silent**:
+  the intake proceeded as a **full-source** acquisition. All of those now parse; a message with
+  window intent that cannot produce a valid START+END pair now **fails closed** with an explicit
+  window error at two points (operator-facing validation and a `window_validate` worker stage).
+  **No window intent at all still allows full source** — unchanged.
+* **Defect 2 (P0) — ORIGINAL-vs-WORKING coordinate collapse.** `boundary_plan.recommended_clip_*`
+  is read downstream as relative to the durable working asset, but was being overwritten with the
+  operator's ORIGINAL-absolute window. Fixed at the smallest authoritative seam: the operator window
+  is converted into WORKING coordinates, with the ORIGINAL pair preserved
+  (`original_window`, `working_timebase_origin_s`). Example — ORIGINAL 120→180, working 0→60,
+  origin 120 → `recommended_clip_start/end` = **0/60**. Full-source (origin 0) is unchanged.
+* **Defence in depth.** `source_window.validate_working_range()` rejects a plan that does not fit the
+  working asset, on the FINAL plan whatever produced it — so bad coordinates fail at the CI seam
+  instead of being hidden by editor-side clamping. Regression test reproduces the audit's exact
+  case (42:00→47:30, origin 2520, working 330 → plan within 0–330; 2520/2850 never in a
+  working-relative range; ORIGINAL provenance retained).
+* **Proof without YouTube.** The end-to-end test drives the **SAME parser seam Discord uses**
+  (message text → parser → acquisition → provenance → CI → editor bootstrap), not a programmatic
+  injection below that seam.
+* **Tests:** acquisition **596 OK** · discord-review **389 OK** (+14) · content_intelligence
+  **477 OK** · dashboard editor/bootstrap **191 pass**.
+* **Unchanged:** Phase 2A · OBS (not started) · 300 s safety limit · `038` · nested OpenShorts repo ·
+  GHL routing · decision semantics.
+
+---
+
 ## INCREMENT — 2026-09-27 — MANUAL INTAKE: BOUNDED SOURCE + SHARED VALIDATION + PLATFORM ROUTING
 
 **Two commits (in order; `eeff60c` is deliberately its own commit):**

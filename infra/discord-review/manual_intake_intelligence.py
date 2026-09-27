@@ -159,6 +159,62 @@ def _submission_source_metadata(submission: dict[str, Any]) -> dict[str, Any]:
     return captured if isinstance(captured, dict) else {}
 
 
+def _working_origin_s(submission: dict[str, Any]) -> float:
+    """The ORIGINAL-source time that corresponds to working t=0 (0.0 for a full source)."""
+    ref = (submission or {}).get("media_reference") or {}
+    acq = ref.get("acquisition") if isinstance(ref, dict) else None
+    if isinstance(acq, dict):
+        value = acq.get("working_timebase_origin_s")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return 0.0
+
+
+def _operator_window_in_working_coords(*, start_s, end_s, submission
+                                       ) -> tuple[float, float, float]:
+    """Convert an operator's ORIGINAL window into WORKING-asset coordinates.
+
+    The durable working asset has its OWN 0-based timeline: for a bounded
+    acquisition, ORIGINAL 120->180 with origin 120 IS WORKING 0->60. Writing the
+    ORIGINAL pair into `boundary_plan.recommended_clip_*` (which every downstream
+    consumer reads as relative to the working asset) was the P0 coordinate
+    collapse — a 120->180 range on a 60-second asset.
+
+    Returns (working_start_s, working_end_s, origin_s). The ORIGINAL values remain
+    the caller's to preserve as provenance; only this pair is safe to write into a
+    working-relative field. A full-source acquisition has origin 0, so its
+    behaviour is unchanged.
+    """
+    origin = _working_origin_s(submission)
+    w_start = max(0.0, float(start_s) - origin) if start_s is not None else 0.0
+    w_end = float(end_s) - origin if end_s is not None else 0.0
+    return round(w_start, 3), round(w_end, 3), origin
+
+
+def _assert_working_range(*, plan: dict[str, Any], probe: dict[str, Any]) -> None:
+    """C: defence in depth. Reject a plan that does not fit the working asset.
+
+    Runs whether the range came from the operator or the machine, so bad upstream
+    coordinates fail HERE rather than being hidden later by editor-side clamping.
+    Skipped only when the working duration is genuinely unknown (nothing to assert
+    against) — never silently when it is known.
+    """
+    duration = (probe or {}).get("duration_seconds")
+    if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
+        return
+    start = plan.get("recommended_clip_start")
+    end = plan.get("recommended_clip_end")
+    if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+        return
+    # Lazy import: this module is loaded under several sys.path layouts (the
+    # adapter runtime and the test runners), and the CI seam must not depend on
+    # load-order to reach the shared window contract.
+    import manual_media_intake as _mmi
+    swc = _mmi._acq("source_window")
+    swc.validate_working_range(start_s=float(start), end_s=float(end),
+                               working_duration_s=float(duration))
+
+
 def run_manual_intelligence(*, submission: dict[str, Any], media_path: str,
                             probe: dict[str, Any], media_url: str,
                             brief: Any | None = None, provider: Any = None,
@@ -233,13 +289,22 @@ def run_manual_intelligence(*, submission: dict[str, Any], media_path: str,
     machine_plan = dict(plan)
     if start_s is not None or end_s is not None:
         # Preserve the operator's window; keep the machine result as evidence.
+        # The recommended_* fields are WORKING-relative: convert first, and keep
+        # the ORIGINAL pair alongside so nothing is lost.
+        w_start, w_end, origin = _operator_window_in_working_coords(
+            start_s=start_s, end_s=end_s, submission=submission)
         plan.update({
-            "recommended_clip_start": float(start_s if start_s is not None else 0.0),
-            "recommended_clip_end": float(end_s if end_s is not None else plan.get("recommended_clip_end") or 0.0),
+            "recommended_clip_start": w_start,
+            "recommended_clip_end": w_end,
             "provenance": ["manual_intake_window", "operator_supplied"],
             "machine_recommendation": machine_plan,
+            "original_window": {"start_s": float(start_s), "end_s": float(end_s)},
+            "working_timebase_origin_s": origin,
         })
         boundary_provenance = "manual_intake"
+
+    # C — the range must fit the WORKING asset, whatever produced it.
+    _assert_working_range(plan=plan, probe=probe)
 
     return enrich_manual_candidate(
         submission=submission, probe=probe, media_url=media_url, human_window=human_window,
@@ -269,16 +334,20 @@ def enrich_manual_candidate(*, submission: dict[str, Any], probe: dict[str, Any]
     start_s, end_s = human_window
     if boundary_provenance is None:
         if start_s is not None or end_s is not None:
+            w_start, w_end, origin = _operator_window_in_working_coords(
+                start_s=start_s, end_s=end_s, submission=submission)
             plan.update({
-                "recommended_clip_start": float(start_s if start_s is not None else 0.0),
-                "recommended_clip_end": float(end_s if end_s is not None
-                                             else plan.get("recommended_clip_end") or 0.0),
+                "recommended_clip_start": w_start,
+                "recommended_clip_end": w_end,
                 "provenance": ["manual_intake_window", "operator_supplied"],
                 "machine_recommendation": dict(plan),
+                "original_window": {"start_s": float(start_s), "end_s": float(end_s)},
+                "working_timebase_origin_s": origin,
             })
             boundary_provenance = "manual_intake"
         else:
             boundary_provenance = "machine"
+    _assert_working_range(plan=plan, probe=probe)
 
     lineage = {
         "origin": "manual_media_intake",

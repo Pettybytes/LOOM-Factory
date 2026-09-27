@@ -57,6 +57,29 @@ BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.3
 _TS = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2}(?:\.\d+)?)$|^(\d+(?:\.\d+)?)$")
 _URL = re.compile(r"https?://\S+")
 
+# --- window-intent tokens -------------------------------------------------
+# Delimiters are OPTIONAL so the shapes an operator actually types
+# (`START 120`, `window: 120-180`) are understood instead of being silently
+# dropped into a full-source acquisition. A number is still REQUIRED by the
+# value patterns, so ordinary prose cannot be mistaken for a value.
+_NUM = r"[0-9][0-9:.]*"
+_WIN_KV_START = re.compile(rf"\bstart\s*[:=]?\s*({_NUM})", re.IGNORECASE)
+_WIN_KV_END = re.compile(rf"\bend\s*[:=]?\s*({_NUM})", re.IGNORECASE)
+# A range may be introduced by a keyword, or stand alone on its own line. The
+# line form is anchored to EXACTLY two values so a date (2026-09-27) can never
+# be read as a window.
+_WIN_RANGE_KW = re.compile(
+    rf"\b(?:window|range|clip)\s*[:=]?\s*({_NUM})\s*[-\u2013]\s*({_NUM})", re.IGNORECASE)
+_WIN_RANGE_LINE = re.compile(
+    rf"^\s*({_NUM})\s*[-\u2013]\s*({_NUM})\s*$", re.MULTILINE)
+# "Intent" is deliberately narrower than "any mention": it needs a delimiter or
+# a digit after the keyword, so a sentence like "start the download" is NOT
+# intent, while `START: abc` (delimiter, unusable value) IS intent and fails.
+_WIN_INTENT = re.compile(
+    r"\bstart\s*[:=]|\bend\s*[:=]|\bstart\s+[0-9]|\bend\s+[0-9]|"
+    r"\b(?:window|range|clip)\s*[:=]",
+    re.IGNORECASE)
+
 
 def sha256_file(path: str | os.PathLike[str]) -> str:
     h = hashlib.sha256()
@@ -81,13 +104,21 @@ def parse_timestamp(raw: str | None) -> float | None:
 
 
 def parse_intake_message(content: str) -> dict[str, Any]:
-    """Parse an operator message: a URL plus optional ``start=``/``end=``/``tenant=``.
+    """Parse an operator message: a URL plus an OPTIONAL bounded window.
 
-    Accepted forms: bare URL anywhere in the text, or explicit ``url:``.
-    Timestamps: ``start=1:23 end=2:45`` (also ``start=83``).
+    Accepted URL forms: bare URL anywhere in the text, or explicit ``url:``.
+
+    Accepted window forms (delimiter optional; clock values supported):
+      ``start=1:23 end=2:45`` · ``START 120`` / ``END 180`` · ``START: 120``
+      ``window: 120-180`` · a standalone ``120-180`` line
+
+    Returns ``window_intent``/``window_problem`` so a caller can tell "no window
+    requested" (full source is legitimate) from "a window was requested but could
+    not be understood" (which must FAIL CLOSED, never fall back to the source).
     """
     text = content or ""
-    out: dict[str, Any] = {"url": "", "start_s": None, "end_s": None, "tenant": ""}
+    out: dict[str, Any] = {"url": "", "start_s": None, "end_s": None, "tenant": "",
+                           "window_intent": False, "window_problem": ""}
     for token in ("url", "source"):
         m = re.search(rf"^{token}\s*[:=]\s*(\S+)", text, re.IGNORECASE | re.MULTILINE)
         if m:
@@ -97,12 +128,42 @@ def parse_intake_message(content: str) -> dict[str, Any]:
         m = _URL.search(text)
         if m:
             out["url"] = m.group(0).rstrip(".,)")
-    start_raw = re.search(r"\bstart\s*[:=]\s*([0-9:.]+)", text, re.IGNORECASE)
-    end_raw = re.search(r"\bend\s*[:=]\s*([0-9:.]+)", text, re.IGNORECASE)
-    if start_raw:
-        out["start_s"] = parse_timestamp(start_raw.group(1))
-    if end_raw:
-        out["end_s"] = parse_timestamp(end_raw.group(1))
+
+    # Scan window tokens with URLs REMOVED: a query string can legitimately carry
+    # `&start=`, and that is part of the source identity rather than an operator
+    # window instruction.
+    scan = _URL.sub(" ", text)
+    start_raw = _WIN_KV_START.search(scan)
+    end_raw = _WIN_KV_END.search(scan)
+    range_kw = _WIN_RANGE_KW.search(scan)
+    range_line = _WIN_RANGE_LINE.search(scan)
+    intent = bool(_WIN_INTENT.search(scan) or range_kw or range_line)
+    out["window_intent"] = intent
+
+    def _to_seconds(token: str) -> float | None:
+        try:
+            return parse_timestamp((token or "").strip())
+        except ValueError:
+            return None
+
+    if range_kw:
+        out["start_s"] = _to_seconds(range_kw.group(1))
+        out["end_s"] = _to_seconds(range_kw.group(2))
+    elif range_line and not (start_raw or end_raw):
+        out["start_s"] = _to_seconds(range_line.group(1))
+        out["end_s"] = _to_seconds(range_line.group(2))
+    else:
+        if start_raw:
+            out["start_s"] = _to_seconds(start_raw.group(1))
+        if end_raw:
+            out["end_s"] = _to_seconds(end_raw.group(1))
+
+    if intent:
+        if out["start_s"] is None and out["end_s"] is None:
+            out["window_problem"] = "window_unparsed"
+        elif out["start_s"] is None or out["end_s"] is None:
+            out["window_problem"] = "window_incomplete"
+
     tenant_raw = re.search(r"\btenant\s*[:=]\s*([A-Za-z0-9_.-]+)", text, re.IGNORECASE)
     if tenant_raw:
         out["tenant"] = tenant_raw.group(1).strip()

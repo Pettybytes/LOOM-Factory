@@ -269,6 +269,48 @@ def validate_resulting_duration(*, approved: dict, measured_ms: int,
             "delta_ms": measured - approved_ms, "tolerance_ms": tolerance_ms}
 
 
+# ---------------------------------------------------------------------------
+# WORKING-ASSET range contract
+#
+# Everything that operates ON a durable working asset (a bounded extraction, or a
+# full source whose origin is 0) must express its range in THAT asset's own
+# 0-based timeline. ORIGINAL source coordinates are preserved separately as
+# provenance and must never be written into a working-relative field.
+# ---------------------------------------------------------------------------
+WORKING_RANGE_TOLERANCE_S = 2.0
+
+
+def validate_working_range(*, start_s: float, end_s: float,
+                           working_duration_s: float,
+                           tolerance_s: float = WORKING_RANGE_TOLERANCE_S) -> dict:
+    """Assert a plan's range fits the WORKING asset. Fails closed.
+
+    Defence in depth behind the coordinate CONVERSION: even a correct conversion
+    must not be trusted blindly, because a wrong upstream value would otherwise
+    surface only as editor-side clamping over bad data.
+    """
+    try:
+        start = float(start_s)
+        end = float(end_s)
+        duration = float(working_duration_s)
+    except (TypeError, ValueError):
+        _reject("WORKING_RANGE_UNUSABLE", "working range values are not numeric")
+    if duration <= 0:
+        _reject("WORKING_SOURCE_DURATION_UNKNOWN",
+                "working-source duration is unknown or zero")
+    if start < 0:
+        _reject("WORKING_RANGE_NEGATIVE", f"working start {start} is negative")
+    if end <= start:
+        _reject("WORKING_RANGE_REVERSED",
+                f"working end {end} must be greater than start {start}")
+    if end > duration + float(tolerance_s):
+        _reject("WORKING_RANGE_BEYOND_WORKING_SOURCE",
+                f"working range {start}-{end}s exceeds the working source "
+                f"({duration}s, tolerance {tolerance_s}s)")
+    return {"start_s": start, "end_s": end, "working_duration_s": duration,
+            "clip_duration_s": round(end - start, 3)}
+
+
 def ytdlp_section_arg(window: dict) -> str:
     """yt-dlp/ffmpeg download-section expression for the approved interval."""
     return f"*{window['start_ms'] / 1000:.3f}-{window['end_ms'] / 1000:.3f}"

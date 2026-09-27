@@ -248,6 +248,8 @@ _INTAKE_FAILURE_REASONS: dict[str, str] = {
         "the requested start/end window was refused (over the clip limit or outside the source).",
     "WINDOW_INCOMPLETE":
         "a bounded intake needs BOTH a start and an end.",
+    "WINDOW_MALFORMED":
+        "a window was requested but could not be understood — supply a valid START and END.",
     "WINDOW_EXTRACTION_FAILED":
         "the requested window could not be extracted from the supplied file.",
     "WINDOW_MISMATCH":
@@ -2590,6 +2592,14 @@ class Handler(BaseHTTPRequestHandler):
         problems = []
         if not parsed.get("url"):
             problems.append("no source URL in the message (add `url: https://…`)")
+        # WINDOW INTENT THAT CANNOT BE HONOURED IS A REFUSAL, NOT A DOWNGRADE.
+        # Silently doing this as a full-source acquisition is the defect this
+        # guard exists to prevent. No window intent at all is still fine.
+        if parsed.get("window_intent") and parsed.get("window_problem"):
+            problems.append(
+                "window intent detected but no valid START+END pair "
+                f"(`{parsed['window_problem']}`) — supply BOTH, e.g. "
+                "`START 120` / `END 180`. LOOM will not fall back to the whole source")
         # Two ingress modes, ONE downstream path:
         #   Mode A — supplied media + source URL (operator already has the bytes)
         #   Mode B — source URL only: LOOM resolves the platform and downloads with
@@ -2646,6 +2656,14 @@ class Handler(BaseHTTPRequestHandler):
                     f"media is ingested."))
                 return
             stage = "resolve_tenant"
+            # Defence in depth for the gate above: the worker refuses an
+            # unhonourable window BEFORE any network work, so no path can turn an
+            # intended bounded request into a full-source acquisition.
+            if parsed.get("window_intent") and parsed.get("window_problem"):
+                raise manual_media_intake.MediaIntakeError(
+                    "WINDOW_MALFORMED" if parsed["window_problem"] == "window_unparsed"
+                    else "WINDOW_INCOMPLETE",
+                    "window intent detected but no valid START+END pair")
             active = tenant_routing.list_active_tenants(SUPABASE_URL, SUPABASE_KEY)
             tenant = manual_intake.validate_destination(
                 parsed.get("tenant") or MANUAL_MEDIA_TENANT_DEFAULT, active)
