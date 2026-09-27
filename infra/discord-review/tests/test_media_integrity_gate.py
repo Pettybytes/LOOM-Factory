@@ -27,8 +27,17 @@ import unittest
 from pathlib import Path
 
 _HERE = Path(__file__).resolve()
-sys.path.insert(0, str(_HERE.parents[1]))          # infra/discord-review
-sys.path.insert(0, str(_HERE.parents[2] / "acquisition"))
+# SAME bootstrap as the other discord-review test modules. Order matters: each
+# insert(0, ...) leaves `infra/acquisition` at index 0, so `import acquisition`
+# inside approved_lane resolves to the MODULE infra/acquisition/acquisition.py
+# (which defines DESTINATION_PERSONAL_REACTION_LIBRARY) rather than to the
+# package __init__.py, which does not. Putting `infra` first shadowed the module
+# and broke this file's standalone import.
+_REPO = _HERE.parents[3]
+for _p in (str(_REPO / "infra" / "discord-review"), str(_REPO / "infra"),
+           str(_REPO / "infra" / "acquisition")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import manual_media_intake as mmi  # noqa: E402
 import ytdlp_adapter as ya  # noqa: E402

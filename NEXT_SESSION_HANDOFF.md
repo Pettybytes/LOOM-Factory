@@ -4,7 +4,136 @@
 
 **Timeline Editor Phase 2A: LIVE PASS (2026-09-26 ~22:11 EDT). CLOSED — do not redesign or further polish.** Bryan drove the visual timeline on the real editor surface (measured source ~33.30s; START ~3.37s; END ~30.70s; selected ~27.34s). Full evidence, provenance and preserved invariants: **`INCREMENT — TIMELINE EDITOR PHASE 2A`** below.
 
-Read-only seam proof, before this change: the accepted TikTok candidate (`platform_content_id` `7671018311492193567`, tenant `dreemzy`) has lineage media and window `0.0–11.166667`, and **zero** `loom_media` rows. Existing bootstrap keys only `loom_media`, so that hop was FAIL (`no_versions`). OpenShorts `127.0.0.1:8000` was up. Token table `loom_editor_session_tokens` was readable. No GHL browse.
+## INCREMENT — 2026-09-27 — MANUAL INTAKE: BOUNDED SOURCE + SHARED VALIDATION + PLATFORM ROUTING
+
+**Two commits, in this order. `eeff60c` is deliberately its own commit.**
+
+| Commit | Subject |
+|---|---|
+| **`eeff60c`** | `fix(intake): fail-closed acquisition + media integrity gate` |
+| **`a9df6f3`** | `feat(intake): bounded source windows + shared validation + platform routing` |
+
+`source_window.MS_MAX = 300_000` is **UNCHANGED**.
+
+---
+
+### 1. Media integrity fix (`eeff60c`)
+
+**Root cause** (measured on the retained forensic artifact): a truncated video download that
+never finalized, after which the old result selector's *"newest non-zero file wins"* fallback
+returned the **audio-only half** — surfacing as the misleading *"supplied file has no video
+stream"*. `ffprobe` passed the truncated file cleanly (`has_video=True`, 1920x1080, 466.6 s) while
+it was **19,611 bytes short**, so metadata alone was never proof.
+
+**Fix:** `--no-part` removed, bounded retries **3/3** (was 0), fail-closed artifact selection,
+integrity gate = **tail decode** (`ffmpeg -v error -xerror -sseof -2 … -f null -`).
+**Cost:** 0.06 s healthy / 0.10 s truncated on a 7:46 1080p file. **The 100 MiB ceiling is
+unchanged.** Note `--max-filesize` applies **per stream**, which is exactly why a post-download
+ceiling check must exist.
+
+**Representation choice is two-stage:** pre-flight (free metadata estimate) picks the **starting**
+rung so an obviously oversized representation is never fetched; the **verified ladder** stays the
+safety net and still decides. On the incident source the estimate skipped 1080p (245 MB reported)
+and 720p (144 MB) and settled at 480p — the exact rung that succeeded.
+
+### 2. Shared validation contract — `infra/acquisition/media_validation.py` (NEW)
+
+ONE platform-independent post-acquisition contract. Normalized checks, in order:
+**exists → non-zero → within ceiling → video-bearing → positive duration → integrity valid →
+eligible**. Reason codes: `MISSING_FILE`, `ZERO_BYTES`, `MEDIA_EXCEEDS_LIMIT`, `NO_VIDEO_STREAM`,
+`BAD_DURATION`, `MEDIA_INTEGRITY_FAILED`. It also owns the probe and the integrity gate;
+`ytdlp_adapter` and `manual_media_intake` now **delegate** to it (their public names survive as
+thin aliases). It contains no yt-dlp, platform or network knowledge, so a future OBS/provider/
+FFmpeg mechanism can be gated identically.
+
+### 3. Platform routing + identity policy
+
+Manual Intake no longer assumes "every platform = generic yt-dlp".
+`resolve_platform_capability()` resolves **adapter_id / implemented / runtime_proven / proven
+modes / long-form + window requirements / capability state** from `source_adapters` +
+`platform_capabilities`. Identity is cross-checked by the **platform's own rule**
+(`source_adapters.reconcile_identity`).
+
+**Identity policy — four distinct verdicts, only ONE may block:**
+
+| Verdict | Meaning | Effect |
+|---|---|---|
+| `reconciled` | authoritative and consistent | proceed |
+| **`mismatch`** | **authoritative AND positively conflicting** | **FAIL CLOSED** |
+| `unverified` | adapter exists, but no usable identity signal / undecidable | proceed, record |
+| `not_applicable` | no adapter registered for the platform | proceed, record |
+
+Absence of proof is **never** manufactured into a conflict, so a platform without authoritative
+identity resolution stays usable. Focused tests cover all four states.
+
+### 4. Bounded source windows (URL **and** local upload)
+
+Optional START/END on **both** ingress modes, validated through ONE helper
+(`build_operator_window` → `source_window.validate_window`, origin `operator_adjusted`).
+
+* **URL:** bounded retrieval via `--download-sections` + `--force-keyframes-at-cuts`; then
+  `validate_resulting_duration` — a mismatch **rejects that representation**.
+* **Local upload:** FFmpeg extraction becomes the working source; **fails closed**, never
+downgraded to the whole file.
+
+**A bounded extraction is never stored as if it were the source** — it is always identified as an
+extracted window in provenance and in the durable filename.
+
+### 5. Dual-coordinate provenance (`media_reference.acquisition`)
+
+TWO coordinate systems, kept explicitly distinct so neither is ever inferred from the other:
+
+* **ORIGINAL source coordinates** — `original_start_s`, `original_end_s` (what the operator asked for)
+* **WORKING source coordinates** — `working_source_duration_s`, `working_timebase_origin_s` (the
+  durable asset's own 0-based timeline; working `t=0` is that origin in the source)
+
+plus `acquisition_mode`, `acquisition_mechanism`, `window_seconds`, `range_fingerprint`,
+`platform_capability_state`, `platform_proven_modes`, `identity_reconciliation`.
+
+### 6. PLATFORM TRUTH TABLE — do NOT upgrade these claims
+
+| Platform | Full source | Bounded | Exact outstanding proof |
+|---|---|---|---|
+| **YouTube** | ✅ proven | ✅ **LIVE PROVEN through Manual Intake** (120–180 s → exactly 60.0 s working source, integrity OK, durable-placed) | — |
+| **Twitch** | ✅ proven | ✅ proven **via the adapter lane** (2026-09-18); through **Manual Intake = WIRED / LIVE ACCEPTANCE OUTSTANDING** | a reachable Twitch **VOD** URL + one Manual Intake bounded run |
+| **Kick** | ✅ **CLIP only** | ❌ **NOT PROVEN** | a reachable Kick VOD (`01a02be6-…` is **externally 404**); then a bounded Kick VOD proof |
+| **Reddit / TikTok / Instagram** | — | ❌ **NOT CLAIMED** — no adapter registered (`not_applicable`) | no bounded claim is made |
+
+**Kick ranged-VOD: does NOT work / NOT PROVEN.** Do not manufacture URLs to change this.
+
+### 7. OBS / local long-form master — FOUNDATION vs FUTURE
+
+**Architectural foundation (documented, NOT new work):**
+`local long-form master → bounded FFmpeg extraction → validated working source →
+downstream LOOM-compatible media`. This is the foundation for future OBS ingestion.
+
+**Explicitly NOT proven (future proofs, do not claim):** multi-hour OBS performance · multitrack
+synchronization · camera/audio alignment · multiple-source splicing · automatic moment discovery
+across an OBS master. **Do not redesign bounded extraction.**
+
+### 8. 300-second limit — classified
+
+**`source_window.MS_MAX = 300_000` is a CURRENT SAFETY LIMIT — NOT a permanent LOOM architectural
+invariant.** It applies to the current bounded acquisition/intake contract. Future OBS/editing
+workflows may require longer working windows. **Do not increase it now.** It is enforced from ONE
+place: both ingress modes route through `build_operator_window` → `source_window.validate_window`.
+
+### 9. Bryan-only Discord acceptance — the ONLY remaining live step
+
+Submit the long YouTube source through Discord Manual Intake **with a bounded window**:
+
+* URL: `https://www.youtube.com/watch?v=59xxeJCbzaM`
+* `START: 120`
+* `END: 180`
+
+Expected: long source → **only the ~60-second working source** acquired → validated → stored in the
+**LOOM** GHL folder → normal review card → **no full 7:46 durable asset** → **Edit** opens the
+already LIVE-PASS **Phase 2A** editor → the editor has the **whole ~60-second working source**
+available. (The initial CI-selected clip may be smaller — that is correct.)
+
+---
+
+ the accepted TikTok candidate (`platform_content_id` `7671018311492193567`, tenant `dreemzy`) has lineage media and window `0.0–11.166667`, and **zero** `loom_media` rows. Existing bootstrap keys only `loom_media`, so that hop was FAIL (`no_versions`). OpenShorts `127.0.0.1:8000` was up. Token table `loom_editor_session_tokens` was readable. No GHL browse.
 
 What changed: source-review cards now include **Edit** (`se_<fingerprint>`). Edit is not a decision. It mints the existing editor session as `src-<fingerprint>:0` / `source-1.0`, sends an ephemeral `/edit?token=` link, and restores the same card. Bootstrap for `src-` clip ids reads `moment_evidence.lineage.media_reference` plus `boundary_plan`. Rendered-clip rehydration is unchanged.
 

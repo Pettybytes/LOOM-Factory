@@ -8,6 +8,54 @@
 
 ---
 
+## INCREMENT — 2026-09-27 — MANUAL INTAKE: BOUNDED SOURCE + SHARED VALIDATION + PLATFORM ROUTING
+
+**Two commits (in order; `eeff60c` is deliberately its own commit):**
+
+| Commit | Subject |
+|---|---|
+| `eeff60c` | `fix(intake): fail-closed acquisition + media integrity gate` |
+| `a9df6f3` | `feat(intake): bounded source windows + shared validation + platform routing` |
+
+**Authoritative detail lives in `NEXT_SESSION_HANDOFF.md` → `INCREMENT — 2026-09-27`** (read that
+section only; no repo-wide archaeology needed). Summary:
+
+* **Integrity fix.** A truncated download was accepted far enough to reach the probe stage and the
+  old selector returned the **audio-only half** (shown as the misleading *"supplied file has no video
+  stream"*). `ffprobe` metadata passed the truncated file, so the gate is now a **tail decode**.
+  `--no-part` removed, bounded retries **3/3**, 100 MiB ceiling **unchanged**, fail-closed artifact
+  selection.
+* **Shared validation contract** — NEW `infra/acquisition/media_validation.py`,
+  `validate_finalized_media()` with normalized checks (exists → non-zero → within ceiling →
+  video-bearing → positive duration → integrity valid). Platform-neutral; no yt-dlp knowledge.
+* **Platform routing** — capability/mechanism/proven-modes now resolved from
+  `source_adapters` + `platform_capabilities` instead of assuming yt-dlp. Identity verdicts are
+  **`reconciled` / `mismatch` / `unverified` / `not_applicable`**, and **only an authoritative
+  positive conflict (`mismatch`) fails closed** — absence of proof is never manufactured into
+  conflict.
+* **Bounded source windows** on **both** ingress modes (URL via `--download-sections`, local upload
+  via FFmpeg extraction), validated through ONE helper → `source_window.validate_window`. A bounded
+  extraction is **never** stored as if it were the source.
+* **Dual-coordinate provenance** (`media_reference.acquisition`): ORIGINAL (`original_start_s`,
+  `original_end_s`) vs WORKING (`working_source_duration_s`, `working_timebase_origin_s`), plus mode,
+  mechanism, capability state, proven modes, window, range fingerprint, identity verdict.
+* **300 s limit:** `source_window.MS_MAX = 300_000` is **UNCHANGED** and is a **CURRENT SAFETY LIMIT,
+  NOT a permanent LOOM architectural invariant** (future OBS/editing may need longer working windows;
+  do not increase now).
+* **Platform truth table:** YouTube bounded **LIVE PROVEN through Manual Intake** · Twitch bounded
+  adapter lane previously proven, **through Manual Intake WIRED / LIVE ACCEPTANCE OUTSTANDING** ·
+  Kick **clip proven, VOD/ranged VOD NOT PROVEN** · Reddit/TikTok/Instagram bounded **NOT CLAIMED**.
+* **OBS:** documented foundation (`local long-form master → bounded FFmpeg extraction → validated
+  working source → LOOM-compatible media`). **Not proven / not claimed:** multi-hour OBS performance,
+  multitrack sync, camera/audio alignment, multi-source splicing, automatic moment discovery.
+* **Suites:** acquisition **596 OK** · discord-review **375 OK** · content_intelligence **477 OK**.
+* **Remaining live step is Bryan-only:** Discord Manual Intake with
+  `https://www.youtube.com/watch?v=59xxeJCbzaM`, `START: 120`, `END: 180` → expect only the ~60 s
+  working source, LOOM folder storage, normal review card, no full 7:46 durable asset, and **Edit**
+  opening the Phase 2A editor with the whole ~60 s working source available.
+
+---
+
 ## INCREMENT — 2026-09-26 (later) — TIMELINE EDITOR PHASE 2A — **LIVE PASS**
 
 **`PHASE 2A — LIVE PASS` (2026-09-26 ~22:11 EDT). CLOSED.** Full detail, the §1A reuse audit, and the
