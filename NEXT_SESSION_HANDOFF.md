@@ -1,6 +1,6 @@
 # LOOM — NEXT SESSION HANDOFF
 
-**Editor launch seam: 2026-09-26 ~21:20 EDT. CODE READY / LIVE ACCEPTANCE REQUIRED. Not a LIVE PASS.**
+**Editor launch seam: 2026-09-26 ~21:36 EDT. LIVE PASS.** Bryan drove a fresh post-reload Manual Intake card. Not a timeline-UI pass. Next editor phase is not started.
 
 Read-only seam proof, before this change: the accepted TikTok candidate (`platform_content_id` `7671018311492193567`, tenant `dreemzy`) has lineage media and window `0.0–11.166667`, and **zero** `loom_media` rows. Existing bootstrap keys only `loom_media`, so that hop was FAIL (`no_versions`). OpenShorts `127.0.0.1:8000` was up. Token table `loom_editor_session_tokens` was readable. No GHL browse.
 
@@ -8,9 +8,9 @@ What changed: source-review cards now include **Edit** (`se_<fingerprint>`). Edi
 
 Tests: `python3 -m unittest discover -s infra/discord-review/tests` — **350 OK**. `038` still untracked, SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0`.
 
-**Bryan live acceptance:** restart is required before a click. An already-posted card does not grow an Edit button; use a card posted after the restart. Click Edit. Expect an ephemeral Open Editor link, the same review card still undecided, no second card, no acquisition. Then stop. Do not treat that as timeline-UI acceptance.
+**Bryan live acceptance — LIVE PASS (2026-09-26 ~21:36 EDT):** fresh post-reload `#clip-review` card showed `Approve Clip | Edit | Reject | Hold | Open Source`. Edit returned the private Open Editor action. The original card stayed present and undecided. Open Editor opened `app.loomz.stream/edit`. The correct source loaded at `0.0 → 20.897959s`, matching the card's `00:00 → 00:20.89`. No approval, rejection, or hold. No second card. No acquisition.
 
-**Next editor phase, only after that acceptance:** trim start/end and ±1s on the existing OpenShorts edit/rerender path. Keep future events in `loom_edit_corrections.edl_metadata`. Do not build a second renderer or a full timeline UI in that step.
+**Next editor phase is authorized to wait, not to start.** When Bryan says go: trim start/end and ±1s on the existing OpenShorts edit/rerender path. Keep future events in `loom_edit_corrections.edl_metadata`. Do not build a second renderer or a full timeline UI in that step.
 
 ---
 

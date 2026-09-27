@@ -2,7 +2,7 @@
 
 > **This file is the execution authority.** If `HANDOFF.md` disagrees, this file wins.
 
-**2026-09-26 editor launch:** `EDITOR LAUNCH — CODE READY / LIVE ACCEPTANCE REQUIRED`. Not LIVE PASS. Source-review Edit opens the existing editor from candidate lineage (`src-<fingerprint>:0`, `source-1.0`). It does not approve, acquire, re-download, or mint a second card. Discord-review suite 350 OK. `038` untouched. Next phase after Bryan's click: trim ±1s on the existing render path.
+**2026-09-26 editor launch: LIVE PASS.** Bryan drove a fresh post-reload Manual Intake card: Edit opened `app.loomz.stream/edit`, the source loaded, and the window `0.0 → 20.897959s` matched the card's `00:00 → 00:20.89`. The original card stayed undecided. No approval, rejection, hold, second card, or acquisition. This is the launch seam only. Next phase (trim ±1s) is not started. `038` untouched.
 
 ---
 
