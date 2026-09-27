@@ -7,12 +7,164 @@ and carries the long-form history.
 
 ---
 
+# START HERE — TIMELINE EDITOR
+
+**Read this section only, then open the handful of files it names. Do not search the repo.**
+
+### 1. Current HEAD
+
+Code HEAD **`253d503b000925f8561a0c6ea340395266c3e8c9`** (`fix(media): route LOOM uploads into the
+existing GHL LOOM folder, verified`), plus this documentation commit. The documentation commit that
+introduced this section is the live HEAD — **verify, never assume**:
+
+```
+git rev-parse HEAD && git rev-parse origin/master && git status --porcelain
+git log --oneline -6
+```
+
+### 2. Stage / segment
+
+Stage 2 · **Segment 5 — Multi-Source Moment Mining** (active). Segment 6 not started. RECUT on hold.
+`Segment 5 is NOT closed`: the real authenticated long-form YouTube run, the FIRE-APPROVE →
+n8n/OpenShorts bridge verification, and remaining six-platform / FIRE-path proofs are still open.
+**Segment 5 remains OPEN.**
+
+### 3. LIVE ACCEPTED — do NOT reopen (see §11 closed list)
+
+Manual Intake operator-driven, real Discord, all **nine** paths: Reddit URL + file, Twitch URL +
+file, Kick URL + file, Instagram URL, TikTok URL, **YouTube URL**. Engagement metadata capture is
+live accepted (YouTube: 2,010,656 views / 13,411 likes / 645 comments / Market 100/100 / coverage
+3/5). **GHL FOLDER ROUTING — LIVE PASS** (see §13a). Full lifecycle, decisions and terminology: §3,
+§4, §10, §11, §13.
+
+### 4. Exact next task
+
+Build the **missing timeline-editor capability** — the only item between Manual Intake finalization
+and the already-authorized launch spine / Segment 6. **This is a NEW capability; do not resurrect
+the old Discord Activity editor or any abandoned approach** (see §5C below and §7).
+
+### 5. The gap (authoritative, from `EDITOR_IMPLEMENTATION_PLAN.md`)
+
+**OpenShorts has NO manual timeline editor today.** Its "editor" is LLM-driven
+(`VideoEditor` → Gemini → FFmpeg filter/EDL). A lightweight **manual correction interface must be
+ADDED**, reusing the existing transcript / scenes / EDL / Remotion-preview / reframe / subtitle /
+rerender infrastructure. The plan above is **APPROVED (2026-09-13)** and is the schema + exact-files
+plan — start there, do not re-plan it.
+
+### 6. Files to inspect FIRST (small, explicit set)
+
+| Purpose | File |
+|---|---|
+| Approved editor plan (schema + files) | `EDITOR_IMPLEMENTATION_PLAN.md` |
+| Editor gateway, sessions, render/return seams | `infra/discord-review/adapter.py` |
+| Review card + decisions (Discord seam) | `infra/discord-review/source_review.py` |
+| Durable manual lineage | `infra/discord-review/manual_intake_intelligence.py` |
+| Durable media + folder upload | `infra/discord-review/manual_media_intake.py` |
+| Edit-session schema | `infra/supabase/012_loom_edit_sessions.sql`, `013_register_edited_asset.sql`, `014_loom_editor_session_token.sql`, `015_loom_editor_launch_context.sql`, `016_loom_editor_draft.sql`, `037_loom_edited_asset_storage_status.sql` |
+| OpenShorts backend + render | `openshorts/app.py`, `openshorts/clip_selection.py`, `openshorts/dashboard/` |
+
+### 7. Exact symbols / routes likely involved (`infra/discord-review/adapter.py`)
+
+* **Editor gateway:** `_handle_editor_api(method)`, `_authorize_editor_path(...)` (strict endpoint
+  allow-list + job/clip ownership), `_forward_to_backend(...)`, `_backend_request(...)` — the backend
+  is the **loopback OpenShorts server `http://127.0.0.1:8000`**, and the adapter translates the
+  durable job identity to the rehydrated `temp_job_id` (clip index collapses to `0`).
+* **Allow-listed editor endpoints:** `GET /api/status/{job}`, `GET /api/source/{job}`,
+  `GET /api/clip/{job}/{idx}/{transcript|edl|scenes}`, `GET /api/render/{id}`,
+  `POST /api/{subtitle|clip/rerender|clip/reframe|hook|edit|header}`.
+* **Session / launch:** `/discord/editor/bootstrap` (durable bootstrap — resolves the review asset
+  from LOOM media/version records, **not** transient `/api/status`), `/discord/editor/exchange`,
+  `/discord/editor/oauth`, `/discord/editor/pending`, `/discord/editor/draft`;
+  `mint_session_token_diag`, `resolve_editor_session_token_diag`, `register_editor_token`,
+  `consume_editor_token`, `resolve_edit_session`, `fetch_session_by_id`,
+  `EDITOR_TOKEN_TABLE = "loom_editor_session_tokens"`.
+* **Edit completion / render:** `_handle_editor_complete`, `register_edited_asset_rpc(payload)`,
+  `register_clip_media(...)`.
+* **Review card + decisions:** `_post_source_card(...)`, `_handle_interaction()`, and in
+  `source_review.py`: `format_source_embed`, `format_source_buttons`, `make_source_custom_id`,
+  `parse_source_custom_id`, `persist_decision`, `decided_embed`.
+
+### 8. Editor source-resolution contract (MANDATORY)
+
+Resolve media through LOOM's **durable identity/lineage**. Never locate media by browsing GHL,
+searching folders, guessing or fuzzy-matching filenames, scraping Discord attachments, or
+re-discovering the platform URL when durable media already exists.
+
+Conceptual chain: `Discord review card → candidate/review identity → tenant_id → durable
+source/media reference → exact GHL asset / durable media URL → selected source window → editor
+session → edit instructions → render → review`.
+
+Where those identities live TODAY:
+
+| Identity | Where it lives |
+|---|---|
+| Candidate / review identity | `loom_source_candidates.duplicate_fingerprint` (+ `tenant_id`, `profile_id`, `platform`, `platform_content_id`) |
+| Review card ↔ candidate | `loom_source_candidates.moment_evidence.lineage.card_message_id` |
+| Human decision | `loom_source_reviews` (keyed by `duplicate_fingerprint`, first terminal decision wins) |
+| Durable manual media | `loom_manual_submissions.media_reference` (`url`, `file_id`, `folder_id`, `sha256`, `size_bytes`, `placement_*`) and `moment_evidence.lineage.media_reference` |
+| Source window | `loom_source_candidates.boundary_plan` (+ `moment_evidence.lineage.boundary_provenance`) |
+| Clip/burned + clean pre-hook source | `loom_media` (`canonical_url`, `clean_source_url`, `ghl_media_id`, `ghl_folder_id`, `previous_asset_version`) |
+
+Shortest existing path: **candidate row → `moment_evidence.lineage.media_reference` (GHL filesafe
+URL) → that asset**. For rendered clips: `loom_media.canonical_url` + `clean_source_url`.
+
+### 9. Discord integration seam
+
+`#clip-review` cards are built by `source_review.format_source_embed` with buttons from
+`format_source_buttons`; custom_ids are `make_source_custom_id(decision, fingerprint)` =
+`<code>_<sha256>` and parsed by `parse_source_custom_id`. Clicks arrive at
+`adapter.Handler._handle_interaction` and are dispatched by that parsed custom_id; decisions persist
+via `source_review.persist_decision`, and the same card is then edited in place. **An `Edit` /
+`Open Editor` action should be ADDED as another button on this existing machinery — reuse it, do not
+replace it.**
+
+### 10. Existing editor seam / render seam / return-to-review seam
+
+* **Existing editor seam:** there is no manual timeline editor (see §5). What exists and is reusable:
+  edit sessions (`loom_edit_sessions`), single-use hashed session tokens, the durable bootstrap, the
+  `/api/*` allow-list gateway to OpenShorts 127.0.0.1:8000, and `loom_editor_draft`.
+* **Render seam:** OpenShorts is the ONLY rendering engine — reuse it, never build a second one.
+  Render/export is reached through the gateway (`POST /api/edit`, `/api/clip/rerender`,
+  `/api/subtitle`, `/api/clip/reframe`, `/api/hook`, `/api/header`; `GET /api/render/{id}` for
+  status), and `register_edited_asset_rpc` atomically allocates the next `asset_version`
+  (`render-<major>.<minor>`, `previous_asset_version` = lineage) and marks the session completed.
+* **Return-to-review seam:** `register_clip_media(...)` persists the durable artifacts to
+  `loom_media`, and `send_review_card(payload)` + `check_existing_card(tenant_id, clip_id,
+  asset_version)` + `submission_fingerprint(body)` keep **exactly one active review object per
+  asset**. A new version is `final_review_pending` — never approved, never promoted, never
+  distributed. Reuse the same one-active-review principle; never mint a duplicate card.
+
+### 11. Known constraints (hard)
+
+* **Editor acceptance is LOCKED** — do not re-audit, re-test, or add Editor feature work, and do not
+  resurrect the Discord Activity editor architecture or abandoned approaches.
+* **Preserved migration `038_loom_editor_session_tokens.sql`**: untracked, **do not add, do not
+  commit, do not modify, do not execute** (SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0`).
+* **Do NOT restructure GHL folders.** The LOOM folder now also contains pre-existing subfolders
+  `Intake Reviews` and `dreemzy`; leave them alone.
+* **The editor must not depend on browsing GHL folders.** Folder targeting is a proven storage
+  primitive; the eventual durable organization must stay **tenant-aware**
+  (`LOOM → tenant_id → lifecycle assets`) but the exact hierarchy is **NOT locked**.
+* No Manual Intake acceptance re-runs, no paid acquisition, no RECUT, no Segment 6, and no
+  age/adult gate (`infra/content_intelligence/tests/test_age_gate_removed.py` is the guard).
+
+### 12. What requires Bryan's live acceptance
+
+Any editor launch from a real Discord card, and any new-asset acceptance, must be Bryan driving the
+real Discord surface. Tests prove wiring, never acceptance.
+
+### 13. What NOT to investigate
+
+See the closed list in §14. If a fact is closed there, do not spend tokens re-deriving it.
+
+---
+
 ## 1. Repository state (verified, not assumed)
 
 | Item | Value |
 |---|---|
 | Branch | `master` |
-| Final pushed commit | **`c7eaedd0acf74f991d510d0ad54cb85f073c6c53`** (engagement-metadata increment, §10) |
+| Final pushed commit | **`c7eaedd0acf74f991d510d0ad54cb85f073c6c53`** (engagement-metadata increment, §10) → later `253d503` (GHL folder routing, §13); see `git log` |
 | Previous code commit | `925a8343062e382b540ef20795fa2e2d8805bef9` |
 | `origin/master` | identical to HEAD — `HEAD == origin/master` proven |
 | Ahead / behind | `0 / 0` |
@@ -456,5 +608,86 @@ environment.
      lists it, i.e. its `parentId` equals `6aa61446df2d015553434919`.
 
 If the card or logs show `ROUTING FAILURE`, the placement guard worked — report it rather than
-retrying blindly. Until Bryan completes this, the status stays `CODE READY — LIVE ACCEPTANCE REQUIRED`
-and must not be called live-passed.
+retrying blindly.
+
+---
+
+## 13a. GHL FOLDER ROUTING — LIVE PASS (2026-09-26, operator-driven)
+
+Bryan submitted a fresh TikTok source through the real Discord Manual Intake flow and confirmed the
+asset appears inside `GHL Media Storage → LOOM`. Verified independently from read-only evidence —
+not from the visual confirmation alone:
+
+| Check | Evidence |
+|---|---|
+| Asset exists | `tiktok_comountainmarine_7671018311492193567.mp4`, GHL `_id 6ab860781f3be2be1bd92a0d`, 4,653,539 B, created 2026-09-27T00:16:56Z |
+| Inside the LOOM folder | stored `parentId = 6aa61446df2d015553434919` |
+| Durable record matches | `GET /medias/files?…&type=file&parentId=6aa61446…` lists it |
+| No routing failure | `ROUTING FAILURE` count in `adapter.log` = **0**; instead `folder placement verified … parentId=6aa61446…` |
+| Durable placement evidence | `loom_manual_submissions.media_reference`: `folder_id`, `placement_verified: true`, `placement_expected = placement_actual = 6aa61446…`, `placement_reason: in_target_folder` |
+| No duplicate acquisition/redownload | `moment_evidence.lineage.media_already_acquired: true`; **0** acquisition jobs created; reuse guard hit once |
+| Root untouched | root still **64** files; LOOM folder holds exactly the one accepted asset |
+
+Bonus confirmation: this same asset also live-proves the §10 engagement capture —
+`source_metadata.metrics = {views: 3,500,000, likes: 209,100, comments: 866, shares: 34,300,
+saves: 30,782}`, candidate `market_score = 100`, `market_evidence.views = 3,500,000`,
+`evidence_available: true`, `coverage: 1.0`, real publication timestamp retained.
+
+**Status: `GHL FOLDER ROUTING — LIVE PASS`.** Do not re-run a live intake to "confirm" this.
+
+---
+
+## 14. CLOSED MILESTONES + DO-NOT-REOPEN LIST
+
+Unless **new runtime evidence directly contradicts** them, these are CLOSED and must not be
+rediscovered, re-tested, or reopened:
+
+**Manual Intake** — operator-driven live-proven for Reddit (URL + file), Twitch (URL + file),
+Kick (URL + file), Instagram (URL), TikTok (URL), **YouTube (URL)**. Lifecycle accepted end to end:
+operator source → `#manual-intake` → `intake-media` → durable GHL media → CI advisory analysis →
+durable candidate → exactly one active review card → human decision → durable `loom_source_reviews`
+row → same card visibly updated → no unnecessary redownload.
+
+**Engagement metadata** — captured where platforms expose it; publication timestamp retained when
+available; **unknown ≠ measured zero**; evidence coverage reported honestly; market evidence survives
+durable persistence; YouTube exposes no share/save counters and they are **not fabricated**.
+
+**GHL folder routing** — `POST /medias/upload-file` targets a folder with the multipart field
+**`parentId`**; **`folderId` does NOT work** (HTTP 201, silently ignored, stored at root) and neither
+does a query-string folder parameter; **HTTP 201 alone is NOT placement proof**; LOOM reads the
+durable record back and compares `parentId`; wrong/root placement **fails loudly**; existing root
+assets are untouched; the LOOM folder id is `6aa61446df2d015553434919`; folder listing is
+`GET /medias/files?locationId=<loc>&type=folder` and folder contents are listed with
+`…&type=file&parentId=<folder>`.
+
+**Also closed:** CI advisory semantics for Manual Intake (a low score, `FIRE FAIL`,
+`filtered_media`, `video_type_unproven`, `no qualifying moment`, missing market evidence, or
+unsupported classification must **never** prevent an operator-supplied asset reaching human review —
+LOOM informs, Bryan decides); the age/adult gate removal; no-redownload-after-approval;
+one-active-review-card behaviour; automated-discovery ranking/filtering policy (unchanged, and CI
+rejections must **not** silently become sourcing policy); the old Cloudinary architecture; and that
+**GHL is canonical durable storage**.
+
+### Tenant architecture requirement (record, do not build now)
+
+Bryan observed the existing GHL `LOOM` folder already contains subfolders `Intake Reviews` and
+`dreemzy`. **Do not restructure, rename, move, delete, or create tenant folders during this work.**
+
+GHL folder targeting is now a **proven storage primitive**. The eventual durable organization must
+stay **tenant-aware**, conceptually `LOOM → tenant_id → lifecycle assets`. The exact hierarchy is
+**NOT yet locked**. Critically: **the editor must not depend on browsing GHL folders** — it resolves
+media through durable identity/lineage (§8 above).
+
+### Future edit-event extensibility (requirement, do not build now)
+
+Editor V1 is **not** Premiere/CapCut. No SFX, transitions, overlays, or commentary audio are
+authorized yet. But the session/timeline representation must stay extensible for future **typed edit
+events** (`trim`, `split`, `remove`, `reorder`, `sfx`, `transition`, `overlay`, `commentary`,
+captions, hook text).
+
+**Honest state of today's representation:** `loom_edit_corrections` has first-class columns for
+`trim_start`/`trim_end` plus `caption_changes` (jsonb) and `crop_reframe_changes` (jsonb), and a
+free-form `edl_metadata` (jsonb) — so additional op types can ride in `edl_metadata` and/or additive
+columns **without replacing the editor**. The plan's requirement is therefore satisfiable, but only
+if V1 extends that representation instead of hard-coding it around trim alone. This is a design
+constraint on the next task, not a claim that the capability already exists.

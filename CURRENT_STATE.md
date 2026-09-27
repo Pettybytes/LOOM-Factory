@@ -6,10 +6,20 @@
 
 # START HERE NEXT SESSION
 
-**Snapshot: 2026-09-26 (Manual Intake closeout).** Branch `master` · HEAD
-`c7eaedd0acf74f991d510d0ad54cb85f073c6c53` == `origin/master` · worktree clean except
-`?? infra/supabase/038_loom_editor_session_tokens.sql` (preserved, SHA1
+**Snapshot: 2026-09-26 (Manual Intake + engagement metadata + GHL routing complete).** Branch
+`master` · code HEAD `253d503b000925f8561a0c6ea340395266c3e8c9` == `origin/master` · worktree clean
+except `?? infra/supabase/038_loom_editor_session_tokens.sql` (preserved, SHA1
 `3da12826ef96dd05ce089b490ee490e66baf01c0`).
+
+**NEXT TASK: the missing timeline-editor capability.** The authoritative low-token resume point is
+**`NEXT_SESSION_HANDOFF.md` → `START HERE — TIMELINE EDITOR`** (current HEAD, stage, locked
+milestones, the 7 files to inspect, exact symbols/routes, the durable-media resolution path, the
+Discord/editor/render/return seams, and the do-not-reopen list §14). Read that section first; do not
+search the repo.
+
+**GHL FOLDER ROUTING — LIVE PASS** (operator-driven; see below). **Manual Intake** is live accepted
+across all nine paths (Reddit/Twitch/Kick URL+file, Instagram/TikTok/YouTube URL). **Engagement
+metadata** is live accepted. Nothing above is to be reopened without contradicting runtime evidence.
 
 **MANUAL INTAKE IS LIVE ACCEPTED** (Bryan drove the real Discord interactions): Reddit URL + file,
 Twitch URL + file, Kick URL + file, Instagram URL, TikTok URL. See `NEXT_SESSION_HANDOFF.md` §3-§4.
@@ -48,6 +58,49 @@ veto, ambiguous-age rejection, or age-based suppression. Regression guard:
 
 **After Manual Intake is finalized:** the missing **timeline-editor capability** — requires
 Bryan's explicit authorization. Then the launch spine / Segment 6.
+
+---
+
+## INCREMENT — 2026-09-26 (close) — GHL FOLDER ROUTING LIVE PASS + EDITOR HANDOFF
+
+**`GHL FOLDER ROUTING — LIVE PASS`** (Bryan drove the real Discord Manual Intake; verified
+independently, not from the visual confirmation alone): the new asset
+`tiktok_comountainmarine_7671018311492193567.mp4` (`_id 6ab860781f3be2be1bd92a0d`, 4,653,539 B) is
+stored with **`parentId = 6aa61446df2d015553434919`** inside the existing GHL `LOOM` folder;
+`ROUTING FAILURE` count in `adapter.log` = **0** (`folder placement verified` instead);
+`loom_manual_submissions.media_reference` carries `placement_verified: true`,
+`placement_expected = placement_actual = 6aa61446…`, `placement_reason: in_target_folder`;
+`lineage.media_already_acquired: true` with **0** acquisition jobs (no duplicate redownload); root
+still **64** files and the LOOM folder holds exactly the one accepted asset. Same asset also
+re-proves engagement capture (3.5M views captured, market 100, coverage 1.0). Full evidence in
+`NEXT_SESSION_HANDOFF.md` §13a.
+
+**Milestones LOCKED** (do not reopen without contradicting runtime evidence): Manual Intake nine
+paths · engagement-metadata semantics (unknown ≠ zero) · GHL upload contract (`parentId`, **not**
+`folderId`; HTTP 201 is not placement proof) · CI advisory semantics for Manual Intake ·
+no-redownload · one-active-review-card · automated-discovery policy unchanged · GHL canonical
+storage · age-gate removal. Consolidated list: `NEXT_SESSION_HANDOFF.md` §14.
+
+**Editor handoff written.** `NEXT_SESSION_HANDOFF.md` now opens with `START HERE — TIMELINE EDITOR`
+(HEAD, stage, locked milestones, first files to inspect, exact symbols/routes, durable-media
+resolution path, Discord/editor/render/return-to-review seams, hard constraints, preserved `038`,
+what needs Bryan's live acceptance, and the do-not-reopen list). Authoritative gap + plan:
+`EDITOR_IMPLEMENTATION_PLAN.md` (**APPROVED 2026-09-13**) — **OpenShorts has no manual timeline
+editor**; its editor is LLM-driven (`VideoEditor` → Gemini → FFmpeg filter/EDL), so a lightweight
+manual correction interface must be **added** on the existing transcript/scenes/EDL/Remotion-preview/
+reframe/subtitle/rerender infrastructure. Do not resurrect the old Discord Activity editor.
+
+**Tenant architecture requirement recorded (NOT built):** the GHL `LOOM` folder already contains
+subfolders `Intake Reviews` and `dreemzy` — **do not restructure/rename/move/delete/create tenant
+folders**. Folder targeting is a proven primitive; durable organization must stay tenant-aware
+(`LOOM → tenant_id → lifecycle assets`), hierarchy NOT locked, and the editor must **not** depend on
+browsing GHL folders (it resolves via durable identity/lineage).
+
+**Future extensibility recorded (NOT built):** Editor V1 stays trim-focused; SFX/transitions/
+ov overlays/commentary are not authorized yet, but the representation must remain extensible for
+typed edit events. Today `loom_edit_corrections` exposes `trim_start`/`trim_end` first-class plus
+`caption_changes`/`crop_reframe_changes`/`edl_metadata` jsonb — sufficient **only if V1 extends it**
+rather than hard-coding trim. **Segment 5 remains OPEN. No timeline-editor code was started.**
 
 ---
 
