@@ -319,6 +319,65 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------------
+# Manual Intake — segment choice (WHOLE VIDEO / SELECT SEGMENT)
+#
+# A long-form source must not be silently acquired whole, so the moment LOOM knows a
+# window is required it offers the operator an explicit choice instead of failing or
+# guessing. The button/modal interactions that follow carry NO source context of
+# their own, so the context is remembered under a short opaque ref and only that ref
+# travels in the custom_id — never the URL, never a local path, so no source identity
+# (and no filesystem detail) is exposed in a Discord identifier.
+# ---------------------------------------------------------------------------
+MI_CHOICE_PREFIX = "MI"
+MI_ACT_SEGMENT = "seg"
+MI_ACT_WHOLE = "whole"
+_MI_PENDING: dict[str, dict] = {}
+_MI_PENDING_TTL = 15 * 60
+_MI_PENDING_LOCK = threading.Lock()
+
+
+def parse_manual_choice_custom_id(custom_id: str) -> tuple[str, str] | None:
+    """(action, ref) for a Manual Intake choice button, else None."""
+    parts = (custom_id or "").split(":")
+    if len(parts) == 3 and parts[0] == MI_CHOICE_PREFIX and parts[1] and parts[2]:
+        return parts[1], parts[2]
+    return None
+
+
+def _mi_remember_pending(*, url: str, tenant: str, submitter: str,
+                         channel_id: str,
+                         attachment: dict | None = None) -> str:
+    """Remember the operator's source so a later button/modal can resume it."""
+    ref = secrets.token_urlsafe(8).replace("-", "").replace("_", "")[:10]
+    now = time.time()
+    with _MI_PENDING_LOCK:
+        for stale in [r for r, v in _MI_PENDING.items()
+                      if now - v.get("created_at", 0) > _MI_PENDING_TTL]:
+            _MI_PENDING.pop(stale, None)
+        _MI_PENDING[ref] = {"url": url, "tenant": tenant, "submitter": submitter,
+                            "channel_id": channel_id,
+                            "attachment": dict(attachment or {}),
+                            "created_at": now}
+    return ref
+
+
+def _mi_pending(ref: str) -> dict | None:
+    with _MI_PENDING_LOCK:
+        entry = _MI_PENDING.get(ref)
+        if not entry:
+            return None
+        if time.time() - entry.get("created_at", 0) > _MI_PENDING_TTL:
+            _MI_PENDING.pop(ref, None)
+            return None
+        return dict(entry)
+
+
+def _mi_forget_pending(ref: str) -> None:
+    with _MI_PENDING_LOCK:
+        _MI_PENDING.pop(ref, None)
+
+
 def allowed_cors_origin(request_origin: str):
     """Exact-origin CORS allowlist. Returns the request Origin if (and only if)
     it exactly matches a configured origin; otherwise None (no CORS header is
@@ -2620,6 +2679,93 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json(200, {"type": 4, "data": {"content": "Unknown command.", "flags": 64}})
 
+    def _mi_present_choice(self, application_id, interaction_token, *, ref,
+                           requires_window: bool,
+                           source_duration_s: float | None = None):
+        """Offer WHOLE VIDEO / SELECT SEGMENT instead of failing or guessing.
+
+        WHOLE VIDEO is DISABLED — not merely explained — when the source requires a
+        segment, so the surface never implies an option the authoritative gate will
+        refuse.
+        """
+        try:
+            limit_s = int(manual_media_intake._acq("source_window").MS_MAX // 1000)
+        except Exception:  # noqa: BLE001 — the prompt must not depend on the import
+            limit_s = 300
+        if isinstance(source_duration_s, (int, float)) and source_duration_s > 0:
+            length = (f"~{int(source_duration_s // 60)}m {int(source_duration_s % 60)}s"
+                      if source_duration_s >= 60 else f"~{source_duration_s:.0f}s")
+        else:
+            length = "length unknown"
+        lines = [f"🎬 **Long-form source** ({length}) — longer than the {limit_s}s "
+                 f"working-window limit."]
+        if requires_window:
+            lines.append("**Whole video is not available for this source.** Choose "
+                         "**Select segment** and give a start and an end time.")
+        else:
+            lines.append("Choose **Whole video**, or **Select segment** to bound it.")
+        components = [{"type": 1, "components": [
+            {"type": 2, "style": 1, "label": "Whole video",
+             "custom_id": f"{MI_CHOICE_PREFIX}:{MI_ACT_WHOLE}:{ref}",
+             "disabled": bool(requires_window)},
+            {"type": 2, "style": 3, "label": "Select segment",
+             "custom_id": f"{MI_CHOICE_PREFIX}:{MI_ACT_SEGMENT}:{ref}"},
+        ]}]
+        self._patch_original(application_id, interaction_token,
+                             content="\n".join(lines), components=components)
+
+    def _mi_choice_worker(self, interaction, action, ref):
+        """Resume a Manual Intake choice: WHOLE VIDEO, or a modal-supplied segment.
+
+        Both outcomes converge on the SAME intake execution the text syntax uses, so
+        there is exactly one acquisition path. Nothing is acquired until the operator
+        has chosen, and a malformed range never reaches acquisition.
+        """
+        application_id = str(interaction.get("application_id") or "")
+        interaction_token = str(interaction.get("token") or "")
+        try:
+            pending = _mi_pending(ref)
+            if not pending:
+                self._patch_original(application_id, interaction_token, content=(
+                    "⌛ This choice expired or was already used. Re-post the source URL "
+                    "in #manual-intake and run `Apps → intake-media` again."))
+                return
+            parsed = {"url": pending["url"], "tenant": pending.get("tenant", ""),
+                      "start_s": None, "end_s": None,
+                      "window_intent": False, "window_problem": ""}
+            if action == MI_ACT_SEGMENT:
+                values: dict[str, str] = {}
+                for row in ((interaction.get("data") or {}).get("components") or []):
+                    for comp in (row.get("components") or []):
+                        values[str(comp.get("custom_id") or "")] = comp.get("value", "")
+                # The CANONICAL parser (the same one text intake uses). A range it
+                # cannot read is refused HERE, before any acquisition, never coerced.
+                try:
+                    start_ms, end_ms = acquisition_ops.parse_window_values(values)
+                except Exception as exc:  # noqa: BLE001 — a bad range is refused early
+                    self._patch_original(application_id, interaction_token, content=(
+                        "❌ That segment was not understood. Use SS, MM:SS or HH:MM:SS "
+                        "for BOTH times (e.g. `02:00` / `03:00`). "
+                        f"[{getattr(exc, 'code', '') or 'BAD_TIMESTAMP'}]"))
+                    return
+                parsed["start_s"] = start_ms / 1000.0
+                parsed["end_s"] = end_ms / 1000.0
+                parsed["window_intent"] = True
+            _mi_forget_pending(ref)
+            self._manual_intake_execute(interaction, parsed,
+                                        dict(pending.get("attachment") or {}))
+        except Exception as e:  # noqa: BLE001 — the ACK is not success
+            frames = ";".join(f"{Path(f.filename).name}:{f.lineno}:{f.name}"
+                              for f in traceback.extract_tb(e.__traceback__))
+            print(f"[manual-intake] choice worker failed error={type(e).__name__} "
+                  f"detail={str(e)[:200]!r} frames={frames}", flush=True)
+            try:
+                self._patch_original(application_id, interaction_token, content=(
+                    "❌ The segment intake failed. Nothing was silently dropped — "
+                    "re-running the command is safe."))
+            except Exception:  # noqa: BLE001
+                pass
+
     def _handle_manual_media_intake(self, interaction):
         """MESSAGE context-menu ingress for operator-supplied media.
 
@@ -2669,7 +2815,11 @@ class Handler(BaseHTTPRequestHandler):
                          daemon=True).start()
 
     def _manual_media_worker(self, interaction, parsed, attachment):
-        """Post-ACK work for supplied media. Never raises; ACK is not success.
+        """Entry point for the MESSAGE context-menu command (modes A and B)."""
+        self._manual_intake_execute(interaction, parsed, attachment)
+
+    def _manual_intake_execute(self, interaction, parsed, attachment):
+        """Post-ACK work for the Manual Intake contract. Never raises; ACK is not success.
 
         Durable-first ordering: probe -> GHL durable copy -> submission row ->
         Content Intelligence -> review card. Failures name the exact stage and
@@ -2774,6 +2924,41 @@ class Handler(BaseHTTPRequestHandler):
                 # Mode B — URL only. EXISTING resolver + EXISTING bounded local
                 # downloader ($0). Deliberately creates NO library row and NO
                 # acquisition job: the durable copy is GHL's.
+                #
+                # LONG-FORM WITHOUT A WINDOW IS A CHOICE, NOT A DOWNLOAD. The shared
+                # gate is the ONE authority on whether a whole-source acquisition is
+                # allowed; when it refuses for lack of a window, the operator is
+                # offered WHOLE VIDEO / SELECT SEGMENT instead of LOOM downloading a
+                # long source and failing later on the size ceiling. Nothing is
+                # acquired until the operator has chosen.
+                if (parsed.get("start_s") is None and parsed.get("end_s") is None):
+                    _res_choice = manual_media_intake.resolve_source_url(parsed["url"])
+                    _cap_choice = manual_media_intake.resolve_platform_capability(
+                        _res_choice.get("platform", ""))
+                    _dur_choice = manual_media_intake.probe_source_duration(
+                        _res_choice.get("canonical_url") or parsed["url"])
+                    if manual_media_intake.window_is_required(
+                            platform=_cap_choice["platform"]
+                            or _res_choice.get("platform", ""),
+                            content_id=str(_res_choice.get("content_id") or ""),
+                            canonical_url=_res_choice["canonical_url"],
+                            item_kind=str(_res_choice.get("kind") or ""),
+                            source_duration_s=_dur_choice,
+                            requires_window_for_long_source=bool(
+                                _cap_choice.get("requires_window_for_long_source"))):
+                        _ref = _mi_remember_pending(
+                            url=parsed["url"], tenant=tenant, submitter=submitter,
+                            channel_id=channel_id)
+                        # Nothing was acquired, so the transient working dir is not
+                        # retained: an offered choice is not a failure.
+                        manual_media_intake.cleanup(temp_dir)
+                        temp_dir = ""
+                        self._mi_present_choice(
+                            application_id, interaction_token, ref=_ref,
+                            requires_window=True, source_duration_s=_dur_choice)
+                        print(f"[manual-intake] window required — choice offered "
+                              f"ref={_ref} duration={_dur_choice}", flush=True)
+                        return
                 local_path, _resolved = manual_media_intake.acquire_url_media(
                     parsed["url"], out_dir=temp_dir,
                     start_s=parsed.get("start_s"), end_s=parsed.get("end_s"))
@@ -3400,10 +3585,18 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _patch_original(self, application_id, interaction_token, *,
-                        content=None, embed=None, preserve_controls=False):
+                        content=None, embed=None, preserve_controls=False,
+                        components=None):
         """PATCH the deferred interaction's original message. Outbound only —
-        the interaction token (NOT the bot token) authorizes this endpoint."""
+        the interaction token (NOT the bot token) authorizes this endpoint.
+
+        ``components`` carries interactive controls (the WHOLE VIDEO / SELECT SEGMENT
+        choice). Without it the default clears components, so an existing control row
+        is never left stale on a message that no longer accepts it.
+        """
         data = {} if preserve_controls else {"components": []}
+        if components is not None:
+            data["components"] = components
         if embed is not None:
             data["embeds"] = [embed]
         if content is not None:
@@ -3421,6 +3614,28 @@ class Handler(BaseHTTPRequestHandler):
         data = interaction.get("data", {})
         custom_id = data.get("custom_id", "")
         component_type = data.get("component_type", 2)
+
+        # Manual Intake segment choice (distinct MI: prefix). No store read and no
+        # network work before the acknowledgement / modal response.
+        mi_choice = parse_manual_choice_custom_id(custom_id)
+        if mi_choice is not None:
+            action, ref = mi_choice
+            if action == MI_ACT_SEGMENT:
+                # The modal is returned IMMEDIATELY, inside Discord's 3-second
+                # deadline. Reuses the SAME modal builder the acquisition lane uses.
+                message_id = str((interaction.get("message") or {}).get("id") or "")
+                self._send_json(200, acquisition_ops.manual_window_modal_payload(
+                    ref, message_id=message_id))
+                return
+            if action == MI_ACT_WHOLE:
+                self._send_json(200, {"type": 6})
+                threading.Thread(target=self._mi_choice_worker,
+                                 args=(interaction, MI_ACT_WHOLE, ref),
+                                 daemon=True).start()
+                return
+            self._send_json(200, {"type": 4, "data": {
+                "content": "Unknown intake action.", "flags": 64}})
+            return
 
         # Manual Source Intake wizard (select menus + buttons) — distinct prefix.
         intake = intake_card.parse_cid(custom_id)
@@ -4412,6 +4627,18 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_modal_submit(self, interaction):
         data = interaction.get("data", {})
         custom_id = data.get("custom_id", "")
+
+        # Manual Intake SELECT SEGMENT modal — its OWN namespace, so a manual submit
+        # is never routed into the acquisition lane. ACK first (type 6), then the
+        # SAME manual-intake execution runs on a worker.
+        mi_window = acquisition_ops.parse_window_modal_custom_id(
+            custom_id, prefix=acquisition_ops.MANUAL_WINDOW_MODAL_CUSTOM_ID)
+        if mi_window is not None:
+            self._send_json(200, {"type": 6})
+            threading.Thread(target=self._mi_choice_worker,
+                             args=(interaction, MI_ACT_SEGMENT, mi_window[0]),
+                             daemon=True).start()
+            return
 
         # Adjust Window: the message id travelled in the custom_id, so the SAME
         # card can be updated in place after the slow work.

@@ -1059,6 +1059,10 @@ def _view_text(action: str, ctx: LaneContext) -> str:
 # Shared Adjust Window modal (platform-neutral: no platform name appears here)
 # ---------------------------------------------------------------------------
 WINDOW_MODAL_CUSTOM_ID = "AQW"
+#: Manual Intake's segment modal reuses the SAME modal shape and the SAME canonical
+#: timestamp parser, but needs its own custom_id namespace so a submit is routed to
+#: the Manual Intake path rather than the acquisition lane.
+MANUAL_WINDOW_MODAL_CUSTOM_ID = "MIW"
 WINDOW_MODAL_START = "window_start"
 WINDOW_MODAL_END = "window_end"
 _TIMESTAMP_HINT = "SS / MM:SS / HH:MM:SS"
@@ -1066,12 +1070,19 @@ _TIMESTAMP_HINT = "SS / MM:SS / HH:MM:SS"
 
 def window_modal_payload(ref: str, *, message_id: str = "",
                          start_hint: str = "",
-                         end_hint: str = "") -> dict:
+                         end_hint: str = "",
+                         prefix: str = WINDOW_MODAL_CUSTOM_ID,
+                         title: str = "Adjust acquisition window") -> dict:
     """Discord MODAL (type 9). Pure and I/O-free, so the adapter can return it as
-    the immediate interaction response — before any database or network work."""
+    the immediate interaction response — before any database or network work.
+
+    ONE modal builder for both lanes: the caller supplies the custom_id ``prefix``
+    (the acquisition lane default, or Manual Intake's ``MIW``) so the shape, the
+    field ids and the parsing stay identical. There is deliberately no second modal.
+    """
     return {"type": 9, "data": {
-        "custom_id": f"{WINDOW_MODAL_CUSTOM_ID}:{ref}:{message_id}",
-        "title": "Adjust acquisition window"[:45],
+        "custom_id": f"{prefix}:{ref}:{message_id}",
+        "title": title[:45],
         "components": [
             {"type": 1, "components": [{
                 "type": 4, "custom_id": WINDOW_MODAL_START,
@@ -1086,10 +1097,22 @@ def window_modal_payload(ref: str, *, message_id: str = "",
         ]}}
 
 
-def parse_window_modal_custom_id(custom_id: str) -> tuple[str, str] | None:
+def manual_window_modal_payload(ref: str, *, message_id: str = "",
+                                start_hint: str = "",
+                                end_hint: str = "") -> dict:
+    """The Manual Intake SELECT SEGMENT modal — the same builder, MIW namespace."""
+    return window_modal_payload(ref, message_id=message_id,
+                                start_hint=start_hint, end_hint=end_hint,
+                                prefix=MANUAL_WINDOW_MODAL_CUSTOM_ID,
+                                title="Select segment")
+
+
+def parse_window_modal_custom_id(custom_id: str,
+                                 *, prefix: str = WINDOW_MODAL_CUSTOM_ID
+                                 ) -> tuple[str, str] | None:
     """(ref, message_id) for a window modal, else None."""
     parts = (custom_id or "").split(":")
-    if len(parts) == 3 and parts[0] == WINDOW_MODAL_CUSTOM_ID and parts[1]:
+    if len(parts) == 3 and parts[0] == prefix and parts[1]:
         return parts[1], parts[2]
     return None
 

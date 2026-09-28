@@ -280,6 +280,49 @@ def resolve_source_url(url: str) -> dict[str, Any]:
     return resolved
 
 
+def probe_source_duration(url: str) -> float | None:
+    """FREE metadata-only source duration, through the EXISTING bounded probe.
+
+    Used to decide whether a window is REQUIRED before any download is attempted —
+    the same ``--skip-download`` probe the ladder's pre-flight already runs (no
+    cookies, no auth, no paid provider, $0). Returns None when the duration is not
+    exposed, and the caller must then treat the length as UNKNOWN, never as short.
+    """
+    ya = _acq("ytdlp_adapter")
+    try:
+        meta = json.loads(
+            ya.run_ytdlp_command(ya.build_probe_command(url), timeout=120.0) or "{}")
+        if isinstance(meta, dict) and meta.get("_type") in ("playlist", "multi_video"):
+            entries = [e for e in (meta.get("entries") or []) if isinstance(e, dict)]
+            if len(entries) == 1:
+                meta = entries[0]
+        if isinstance(meta, dict) and isinstance(meta.get("duration"), (int, float)):
+            return float(meta["duration"])
+    except Exception as exc:  # noqa: BLE001 — a probe failure is not a source failure
+        print(f"[intake] duration probe unavailable ({type(exc).__name__})", flush=True)
+    return None
+
+
+def window_is_required(*, platform: str, content_id: str, canonical_url: str,
+                       item_kind: str = "", source_duration_s: float | None = None,
+                       requires_window_for_long_source: bool = False) -> bool:
+    """Would the SHARED gate refuse a whole-source acquisition for lack of a window?
+
+    ONE authority: this does not re-implement the rule, it ASKS it. The adapter uses
+    the answer to offer the operator an explicit segment choice instead of attempting
+    a download the gate would (correctly) refuse.
+    """
+    try:
+        swc = _acq("source_window")
+        swc.validate_acquisition_mode(
+            platform=platform, content_id=content_id, canonical_url=canonical_url,
+            source_duration_s=source_duration_s, window=None, item_kind=item_kind,
+            requires_window_for_long_source=requires_window_for_long_source)
+        return False
+    except Exception as exc:  # noqa: BLE001 — any OTHER refusal is not this question
+        return getattr(exc, "code", "") == "LONG_FORM_REQUIRES_WINDOW"
+
+
 # Canonical metric -> (extractor field, key written into observed_metrics). The
 # written key is the name `content_intelligence.platform_metrics` actually reads for
 # that platform, so the existing market policy consumes the capture unchanged.
