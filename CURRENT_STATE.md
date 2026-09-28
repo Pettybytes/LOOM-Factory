@@ -8,6 +8,97 @@
 
 ---
 
+## INCREMENT — 2026-09-28 — LONG-FORM HARDENING (RUNTIME + CONTRACT) — *NOT LIVE ACCEPTED*
+
+**Two commits, pushed:** `2f1f04e` → `c690137` (`origin/master` == `c690137`). Worktree clean
+except the preserved untracked `038`.
+
+**Status: CODE + CONTRACT VERIFIED · LIVE PROCESS RELOADED · OPERATOR-LEVEL LIVE
+ACCEPTANCE NOT YET PERFORMED.** Do not read this as LIVE PASS.
+
+### The real 2026-09-28 failure (`durable_store_ghl`) — root cause, from logs not the card
+
+Bryan's retry reached `durable_store_ghl` and reported `UNKNOWN`. The log shows three
+distinct facts, and the Discord card alone would have misled:
+
+1. **No window was applied.** `adapter.log` has **zero** `[intake] bounded window` lines
+ever, and this attempt's pre-flight sized a *whole-source* rung
+(`start_height=480 estimate=65070258 reason=estimate_fits`).
+2. **The artifact was the whole 467 s source**, not a 60 s window: retained local
+   `/var/folders/…/loom-manual-intake-wdn37et7/59xxeJCbzaM.mp4` = **64,187,641 B**
+   (Sep 28 17:27). The mission's "only the requested 120–180s working source" described
+   the *diagnosis* download, not the live Discord run.
+3. **The upload failed on transport, not contract:** attempt 1/3 and 2/3
+   `<urlopen error [Errno 32] Broken pipe>`, attempt 3 `[Errno 54] Connection reset by
+   peer` → `store_durable_media` raised the old generic `RuntimeError`.
+
+The stale process made this worse: the running adapter (PID 10074, started
+`Sep 26 22:58:52`) **predated `b8771e4`** (committed `23:12:04`), so live acceptance had
+been running pre-repair code. Attempt-1 broken pipe is routine on this endpoint —
+successful uploads land on attempt 2/3 — so the class is "too few attempts to absorb a
+flaky transport on a large body", made reachable by the whole-source download.
+
+### Fixed (code + contract verified)
+
+* **Deterministic import.** `adapter.py` used `Any` in three annotations with no `typing`
+  import and loaded **only** on Python 3.14 (PEP 649 deferred evaluation). Under the repo
+  venv (3.11) it raised `NameError` and **12 discord-review test files failed to collect**.
+  Fixed; collection is now clean and the suite genuinely runs: **389 OK**. Two venv
+  dependencies the suite also needs (`cryptography`, `Pillow`) were installed.
+* **ONE authoritative acquisition-mode gate** — `source_window.validate_acquisition_mode()`,
+  called by both ingress modes. A source longer than the 300 s clip limit is refused with
+  **`LONG_FORM_REQUIRES_WINDOW` BEFORE any bytes are fetched**. This alone prevents the
+  61 MiB whole-source class. Preserved: a window is always accepted; a source ≤ 300 s may
+  still be acquired whole; a **short item (clip/reel) stays a whole-item acquisition** even
+  with unknown duration, so the proven whole-clip lane is untouched (`resolve_source_url`
+  now carries the adapter's existing clip-vs-VOD `kind` for that decision).
+* **Honest failure classes.** `DURABLE_STORE_FAILED` (retry-safe, working source kept) plus
+  `LONG_FORM_REQUIRES_WINDOW`; the transport reason is carried per-thread from
+  `ghl_upload_file` **without changing its documented `None on failure` contract**. Bounded
+  upload attempts 3 → 5 (`LOOM_GHL_UPLOAD_ATTEMPTS`). GHL was not bypassed and validation
+  was not weakened.
+* **Capability truth reconciled.** `platform_capabilities` contradicted `source_adapters`
+  and, because `can_acquire()` gates the approved lane, the stale entry was **downgrading a
+  proven lane**. Twitch → `runtime_proven` (whole clip + bounded VOD window proven
+  2026-09-18, $0; Manual Intake acceptance still stated as OUTSTANDING). Kick stays
+  mode-scoped (`proven_modes ("clip",)`) so clip support cannot imply VOD support.
+  YouTube reason extended with the 2026-09-28 bounded proof.
+* **Runtime provenance.** `/health` now reports `build.source_sha256` (the digest of the
+  source the process loaded), so "is live == HEAD?" is checkable from outside.
+
+### Live process reloaded — proven
+
+Old PID 10074 (Sep 26 22:58:52) killed through the existing supervisor (`supervise.sh`,
+PID 15812). New **PID 94786, started 2026-09-28 17:41:14**, and `/health` reports
+`source_sha256 = 7d460572e40ab60ef807113576fdd736aba81f90839a3565a3bfb0ba3bd80158`, which is
+**byte-identical to `shasum -a 256 adapter.py` on disk at HEAD `c690137`**. Live code == HEAD.
+
+### Suites
+
+acquisition **596 OK** · discord-review **389 OK** · 985 total, 27 subtests, under the repo
+venv. Test update: `test_only_instagram_acquirable` pinned the stale matrix and was rewritten
+to the corrected mode-scoped truth (still asserting kick/reddit are not fully acquirable).
+
+### STILL OPEN — the next block (do not claim these)
+
+1. **Discord operator UX for windows (§5).** No `[ WHOLE VIDEO ] / [ SELECT SEGMENT ]` +
+   modal exists yet. Because the §4 gate is now LIVE, a windowless long source is refused
+   with a clear message and the operator must still use the text syntax
+   (`START: 120` / `END: 180`). **Build the modal next.**
+2. **OBS local-path ingress (§6).** `extract_local_window()` exists and is correct, but its
+   only ingress is still a Discord attachment, so a multi-GB master cannot reach LOOM at
+   all. No local-filesystem path ingress was built in this pass.
+3. **Seam tests for the new contracts** (gate, classification, capability) — not yet added.
+4. **Live acceptance** (YouTube via the operator path, OBS fixture, Twitch VOD if a reachable
+   one exists). **Nothing operator-facing was exercised in this pass**; the adapter was
+   reloaded but no Discord submission was driven.
+
+Unchanged/locked: 300 s limit · Phase 2A · editor · SourceWindow semantics · coordinate
+system · age-gate policy · GHL folder semantics · nested OpenShorts repo · `038`
+(SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0`, still untracked and untouched).
+
+---
+
 ## INCREMENT — 2026-09-27 (later) — BOUNDED-INTAKE SEAM REPAIR
 
 **`CODE/SEAM VERIFIED — LIVE ACCEPTANCE EXTERNALLY BLOCKED`** (the live Discord run has not
