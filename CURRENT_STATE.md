@@ -8,6 +8,36 @@
 
 ---
 
+## INCREMENT — 2026-09-28 (later still #2) — KICK VOD START-HINT SEAM — *ACCEPTANCE PREPARED, NOT CLAIMED*
+
+**Kick VOD acquisition is still NOT live-proven and this is NOT a LIVE PASS.** The previously
+supplied Kick VOD (`01a0a884-…`) is **no longer retained by Kick**: `yt-dlp kick:vod` returns
+HTTP 404, and the channel's own VOD list (HTTP 200, 28 VODs, `vod_enabled: true`, channel not
+banned) does **not** contain it. External availability, not a LOOM defect. Failure seam reached:
+**D (metadata/probe) → E (VOD manifest resolution)**.
+
+**One real LOOM gap found by the trace and closed:** `KickAdapter` never implemented the shared
+`start_hint_ms` adapter hook, so a Kick `?t=` was parsed by `kick_url` but never surfaced — the
+operator would get **no Start prefill**. Fixed by implementing the hook in terms of the existing
+`kick_url.parse` (no second parser, no Kick-specific modal or SourceWindow logic). It changes hint
+*surfacing* only — no acquisition behaviour.
+
+**Also confirmed by the trace:** canonical identity strips `?t=` and dedup fingerprints are
+identical with and without it (the platform-neutral `_TRACKING_PARAMS` fix covers Kick); the
+canonical VOD identity is `kick.com/<channel>/videos/<uuid>`; `original_url` keeps the hint verbatim.
+
+**Prepared acceptance (a RETAINED VOD, verified reachable just now):**
+`05e14bff-67ca-492a-ba79-3f3248ca41a5` — `KickVOD`, **28,860 s (8.02 h)**, not live,
+`m3u8_native` (the HLS class that makes sectioned fetching viable). Timestamped form
+`…?t=1800` yields Start **30:00**, Whole video disabled (`LONG_FORM_REQUIRES_WINDOW`), modal
+Start pre-filled `30:00` with End required and empty, and window 30:00–31:00 → section arg
+`*1800.000-1860.000`. Post-VOD file listing also re-checked (28 VODs).
+
+Suites: discord-review **479 OK** · acquisition **596 OK** · content_intelligence **476 passed**
+(1 pre-existing pytest-substring guard failure). Tests added: `test_kick_vod_start_hint.py` (16).
+
+---
+
 ## INCREMENT — 2026-09-28 (later still) — TWITCH VOD MANUAL INTAKE — **LIVE PASS**
 
 **`TWITCH VOD MANUAL INTAKE — LIVE PASS`** (operator-driven, 2026-09-28 ~18:47 EDT). Bryan

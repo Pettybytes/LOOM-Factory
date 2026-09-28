@@ -325,6 +325,18 @@ class KickAdapter:
                 "content_id": parsed["content_id"],
                 "kind": parsed["kind"]}
 
+    def start_hint_ms(self, url: str) -> int | None:
+        """The URL's `?t=<seconds>` start hint, in ms. NON-IDENTITY by contract.
+
+        Delegates to the SAME `kick_url.parse` that already owns Kick timestamp
+        parsing — this only SURFACES the value through the shared adapter contract so
+        Manual Intake can pre-fill Start. No second parser, no Kick-specific modal or
+        SourceWindow logic. A malformed/absent value yields no hint rather than a
+        guessed one, and the hint never enters the canonical URL or the fingerprint.
+        """
+        import kick_url as ku
+        return int(ku.parse(url).get("start_hint_ms") or 0)
+
     def reconcile_identity(self, expected_content_id: str, meta: dict) -> bool:
         """Kick reports the same immutable id, so this is a straight comparison.
 
