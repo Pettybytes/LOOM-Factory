@@ -8,6 +8,64 @@
 
 ---
 
+## INCREMENT — 2026-09-28 (later) — SEGMENT CHOICE UX + SEAM TESTS — *NOT LIVE ACCEPTED*
+
+**Commit `c166bff`** (+ seam tests). Live process reloaded; `/health`
+`source_sha256 4625b0d13fe9…` == the file on disk.
+
+* **WHOLE VIDEO / SELECT SEGMENT is live.** A long-form URL submitted with no window is
+  no longer an error: the message is patched with the choice, and **Whole video is
+  DISABLED** whenever the source requires a segment, so the surface cannot imply an
+  option the gate refuses.
+* **SELECT SEGMENT reuses the EXISTING modal** (`acquisition_ops.window_modal_payload`,
+  parameterised with a `MIW` namespace + "Select segment" title) and the **canonical
+  parser** (`parse_window_values` → `source_window.parse_clock`), so `120`, `02:00` and
+  `01:42:00` normalise identically. No second modal, no second parser, no second path:
+  modal and text both converge on `_manual_intake_execute`, and `START:`/`END:` text
+  syntax still works.
+* **One authority.** `window_is_required()` ASKS `validate_acquisition_mode` instead of
+  restating the rule, so the UI and the refusal cannot disagree.
+* **No acquisition before the choice.** The prompt comes from the free metadata probe
+  (`probe_source_duration`, the existing `--skip-download` path) and the transient dir is
+  released — an offered choice is not a failure. Nothing is downloaded until the operator
+  chooses.
+* **Malformed ranges** are refused in the modal handler with a clear message and never
+  reach acquisition. Button/modal interactions ACK inside Discord's 3-second deadline.
+* **No source identity in identifiers:** only an opaque expiring ref travels in the
+  custom_id (no URL, and — for the future OBS mode — no local path).
+
+**Seam tests:** `tests/test_manual_segment_choice.py` — 21 tests / 5 subtests driving the
+real handoffs (gate → choice → modal → canonical parse → identical SourceWindow to the
+text syntax; namespace isolation between the manual and acquisition modals; disabled
+Whole Video; no-artifact-before-choice; retry-safe store failure).
+
+### §6 OBS LOCAL-MASTER INGRESS — BLOCKED ON ONE IDENTITY DECISION (not built)
+
+`build_submission()` calls `validate_and_canonicalize()`, which **rejects any non-http(s)
+scheme** (`BAD_SCHEME`) and requires a platform host. A local master therefore has **no
+identity path** through the existing submission contract, and the canonical URL is what
+the dedup fingerprint is built from. Closing OBS ingress is NOT "add an ffmpeg branch" —
+it needs one of:
+
+1. **A registered `local` acquisition/ingest platform** (adapter owns canonicalisation → a
+   `local://` identity, plus `PLATFORMS`, the capability matrix and submission status) —
+   architecturally correct ("adding a platform is a registration"), but it changes
+   identity/persistence contracts; or
+2. **A separate local-origin submission branch** — rejected: it would be exactly the
+   "another acquisition path" the brief forbids.
+
+`extract_local_window()` already exists, is correct, and would be reused unchanged; the
+master would never be uploaded or copied (only the bounded window becomes the working
+source). **Recommendation: option 1, as its own reviewed change.** Do not improvise it.
+
+### STILL NOT LIVE PROVEN
+
+No operator-facing action was driven this pass: YouTube-through-Discord (modal),
+OBS ingress (blocked above), Twitch Manual Intake (needs a reachable VOD), Kick VOD
+(not live proven). See the block above for details.
+
+---
+
 ## INCREMENT — 2026-09-28 — LONG-FORM HARDENING (RUNTIME + CONTRACT) — *NOT LIVE ACCEPTED*
 
 **Two commits, pushed:** `2f1f04e` → `c690137` (`origin/master` == `c690137`). Worktree clean
