@@ -260,8 +260,24 @@ def resolve_source_url(url: str) -> dict[str, Any]:
 
     Raises manual_intake.SubmissionError with a classified code on any refusal
     (unsupported host, credentials, malformed id, non-media path).
+
+    ``kind`` (clip vs VOD) is carried through when the platform's own adapter
+    reports one, because the long-source window rule depends on it: a clip is short
+    by contract and may be acquired whole, while a VOD must be bounded. This only
+    surfaces information the adapter already computes -- it is not a second
+    identity model, and identity itself still comes from the intake contract.
     """
-    return manual_intake.validate_and_canonicalize(url)
+    resolved = manual_intake.validate_and_canonicalize(url)
+    if isinstance(resolved, dict) and not resolved.get("kind"):
+        try:
+            sa = _acq("source_adapters")
+            adapter = sa.adapter_for(resolved.get("platform", ""))
+            parsed = adapter.canonicalize(url) if adapter is not None else None
+            if isinstance(parsed, dict) and parsed.get("kind"):
+                resolved = {**resolved, "kind": parsed["kind"]}
+        except Exception:  # noqa: BLE001 — kind is advisory; identity is already proven
+            pass
+    return resolved
 
 
 # Canonical metric -> (extractor field, key written into observed_metrics). The
@@ -665,30 +681,56 @@ def acquire_url_media(url: str, *, out_dir: str,
               f"{capability['platform']} (not authoritatively verifiable) — proceeding",
               flush=True)
 
-    # ---- OPTIONAL SOURCE WINDOW (the SHARED source_window contract) ----------
-    # No start/end => the whole source, exactly as before. A bounded request is
-    # validated HERE and fails closed; it is NEVER silently downgraded to the
-    # whole source, and a resulting artifact that does not match the approved
-    # window is rejected below.
+    # ---- ACQUISITION MODE (the SHARED source_window contract) ---------------
+    # No start/end => the whole source. A bounded request is validated HERE and
+    # fails closed; it is NEVER silently downgraded to the whole source, and a
+    # resulting artifact that does not match the approved window is rejected below.
+    #
+    # ONE authoritative gate (``validate_acquisition_mode``) decides whether a
+    # WHOLE-SOURCE acquisition is allowed at all. A source longer than the clip
+    # limit -- or a platform whose sources are long-form with no duration proof --
+    # is refused with ``LONG_FORM_REQUIRES_WINDOW`` BEFORE any bytes are fetched,
+    # instead of downloading a multi-hour source and failing later on the size
+    # ceiling. Legitimate short/full-item sources are unaffected.
+    swc = _acq("source_window")
     window: dict[str, Any] | None = None
+    source_duration_s: float | None = None
+    if isinstance(meta, dict) and isinstance(meta.get("duration"), (int, float)):
+        source_duration_s = float(meta["duration"])
     if start_s is not None or end_s is not None:
         if start_s is None or end_s is None:
             raise MediaIntakeError(
                 "WINDOW_INCOMPLETE",
                 "a bounded acquisition needs BOTH a start and an end")
-        source_duration_s = None
-        if isinstance(meta, dict) and isinstance(meta.get("duration"), (int, float)):
-            source_duration_s = float(meta["duration"])
         window = build_operator_window(
             platform=capability["platform"] or resolved.get("platform", ""),
             canonical_url=resolved["canonical_url"],
             content_id=str(resolved.get("content_id") or ""),
             start_s=float(start_s), end_s=float(end_s),
             source_duration_s=source_duration_s)
+    try:
+        mode = swc.validate_acquisition_mode(
+            platform=capability["platform"] or resolved.get("platform", ""),
+            content_id=str(resolved.get("content_id") or ""),
+            canonical_url=resolved["canonical_url"],
+            source_duration_s=source_duration_s, window=window,
+            item_kind=str(resolved.get("kind") or ""),
+            requires_window_for_long_source=bool(
+                capability.get("requires_window_for_long_source")))
+    except Exception as exc:  # noqa: BLE001 — a refusal is a refusal
+        raise MediaIntakeError(
+            getattr(exc, "code", "") or "WINDOW_REJECTED",
+            "the acquisition mode was refused",
+            detail=f"{getattr(exc, 'code', '') or type(exc).__name__}: "
+                   f"{str(exc)[:180]}") from None
+    if window is not None:
         print(f"[intake] bounded window "
-              f"{_acq('source_window').human_range(window['start_ms'], window['end_ms'])} "
+              f"{swc.human_range(window['start_ms'], window['end_ms'])} "
               f"({window['clip_duration_ms'] / 1000:.3f}s) "
               f"range={str(window['range_fingerprint'])[:12]}", flush=True)
+    elif mode.get("mode") == "full_item":
+        print(f"[intake] whole-source acquisition allowed "
+              f"(source={source_duration_s}s)", flush=True)
     resolved["window"] = window
     resolved["acquisition_mode"] = "bounded_segment" if window else "full_item"
 
@@ -803,7 +845,20 @@ def store_durable_media(path: str, name: str, folder_id: str | None = None) -> d
     # silently-ignored folder target cannot be mistaken for success.
     result = adapter.ghl_upload_file(path, name, parent_id=folder_id)
     if not isinstance(result, dict) or not result.get("url"):
-        raise RuntimeError("GHL media upload failed (no durable url returned)")
+        # The class of failure is KNOWN here, so it is never reported as UNKNOWN.
+        # The working source is deliberately kept, so a retry is always safe.
+        reason = ""
+        getter = getattr(adapter, "ghl_last_upload_error", None)
+        if callable(getter):
+            try:
+                reason = str(getter() or "")
+            except Exception:  # noqa: BLE001 — diagnostics must never mask the failure
+                reason = ""
+        raise MediaIntakeError(
+            "DURABLE_STORE_FAILED",
+            "the durable copy could not be stored (the working source was kept, so "
+            "retrying is safe)",
+            detail=f"ghl_upload_failed reason={reason[:200]}")
     placement = {
         "placement_verified": bool(result.get("placement_verified")),
         "placement_expected": result.get("placement_expected", folder_id or ""),

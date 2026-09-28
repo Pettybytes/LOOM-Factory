@@ -31,6 +31,11 @@ ORIGINS = frozenset({"automated_source_engine", "manual_submit_source",
 MODE_FULL = "full_item"
 MODE_RANGED = "bounded_segment"
 
+#: Item kinds that are SHORT BY CONTRACT. A platform clip/reel is a short,
+#: immutable item, so acquiring it whole is correct and needs no window -- unlike a
+#: VOD, whose length is unbounded and therefore must be bounded by the operator.
+SHORT_ITEM_KINDS = frozenset({"clip", "clips", "short", "shorts", "reel", "reels"})
+
 DEFAULT_PROOF_WINDOW_MS = (30_000, 60_000)     # 00:30–01:00
 
 
@@ -253,6 +258,68 @@ def require_full_item_allowed(*, platform: str, content_id: str,
         "clip_duration_ms": duration_ms, "mode": MODE_FULL,
         "identity": dedup_identity(platform, content_id, None),
     }
+
+
+def validate_acquisition_mode(*, platform: str, content_id: str,
+                             canonical_url: str,
+                             source_duration_s: float | None,
+                             window: dict | None,
+                             requires_window_for_long_source: bool = False,
+                             item_kind: str = "") -> dict:
+    """ONE authoritative gate deciding WHOLE-SOURCE vs BOUNDED acquisition.
+
+    Both ingress modes call this, so "a long source may not be silently acquired
+    whole" is enforced in exactly one place instead of per-platform branches.
+
+    Rules, in order:
+      * a validated window is always acceptable (bounded acquisition);
+      * with a KNOWN duration, the shared clip limit decides (<= 300 s may be
+        acquired whole, anything longer must be bounded) -- the legitimate
+        short/full-item path is preserved unchanged;
+      * a SHORT ITEM (``item_kind`` clip/short/reel -- a platform clip is short and
+        immutable by contract) stays a legitimate whole-item acquisition even when
+        its duration is not known yet, so the proven whole-clip path is preserved;
+      * with an UNKNOWN duration, a LONG-FORM item on a platform whose contract
+        requires a window (a VOD) fails closed rather than guessing;
+      * otherwise the previous behaviour stands.
+
+    Refusal is a stable ``LONG_FORM_REQUIRES_WINDOW`` so the operator is told to
+    choose a segment BEFORE any download starts.
+    """
+    if window is not None:
+        return {"mode": MODE_RANGED, "window": window,
+                "source_duration_ms": window.get("source_duration_ms")}
+
+    if source_duration_s is not None:
+        try:
+            return {"mode": MODE_FULL, "window": None,
+                    **require_full_item_allowed(
+                        platform=platform, content_id=content_id,
+                        canonical_url=canonical_url,
+                        source_duration_s=source_duration_s)}
+        except WindowError as exc:
+            if exc.code == "LONG_FORM_REQUIRES_RANGE":
+                _reject("LONG_FORM_REQUIRES_WINDOW",
+                        "this source is longer than the "
+                        f"{MS_MAX // 1000}s clip limit, so a start/end segment is "
+                        "required — the whole source will not be downloaded")
+            raise
+
+    if str(item_kind or "").lower() in SHORT_ITEM_KINDS:
+        # A clip/reel is short by contract: whole-item is the correct mode.
+        return {"mode": MODE_FULL, "window": None, "source_duration_ms": None,
+                "clip_duration_ms": None,
+                "identity": dedup_identity(platform, content_id, None)}
+
+    if requires_window_for_long_source:
+        _reject("LONG_FORM_REQUIRES_WINDOW",
+                "this platform's long-form sources are unbounded in length, so a "
+                "start/end segment is required — the whole source will not be "
+                "downloaded")
+
+    return {"mode": MODE_FULL, "window": None, "source_duration_ms": None,
+            "clip_duration_ms": None,
+            "identity": dedup_identity(platform, content_id, None)}
 
 
 def validate_resulting_duration(*, approved: dict, measured_ms: int,

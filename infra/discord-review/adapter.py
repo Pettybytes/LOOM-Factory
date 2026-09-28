@@ -51,6 +51,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 import discord_media  # tier-aware upload limit + poster fallback (shared with the acquisition path)
 from urllib.request import Request, urlopen
@@ -258,6 +259,12 @@ _INTAKE_FAILURE_REASONS: dict[str, str] = {
         "the source identity conflictually differs from the identity submitted.",
     "MEDIA_EXCEEDS_LIMIT":
         "the media exceeds the intake size limit, even at the lowest quality tried.",
+    "LONG_FORM_REQUIRES_WINDOW":
+        "this source is longer than the clip limit, so choose SELECT SEGMENT and give "
+        "a start/end window — the whole source is never downloaded.",
+    "DURABLE_STORE_FAILED":
+        "the durable copy could not be stored (storage transport failed). The working "
+        "source was kept, so re-running the command is safe.",
     "PROBE_FAILED":
         "the media could not be inspected.",
     "UNKNOWN":
@@ -1598,7 +1605,7 @@ def _strip_clean_filename(filename: str) -> str:
 # otherwise healthy link, and because register_clip_media() is all-or-nothing
 # a single flake loses the clean source — which silently disables Edit for that
 # clip. Retry with bounded exponential backoff instead.
-GHL_UPLOAD_ATTEMPTS = int(_env("LOOM_GHL_UPLOAD_ATTEMPTS", "3"))
+GHL_UPLOAD_ATTEMPTS = int(_env("LOOM_GHL_UPLOAD_ATTEMPTS", "5"))
 
 
 def _ghl_list_media_files(*, parent_id: str | None = None, limit: int = 200) -> list[dict]:
@@ -1653,6 +1660,22 @@ def ghl_verify_placement(file_id: str, expected_parent_id: str | None) -> dict:
             "reason": "root_by_configuration"}
 
 
+# Diagnostic-only: the reason for the most recent upload failure ON THIS THREAD.
+# The documented return contract stays `dict on success / None on failure` (callers
+# and tests depend on it), but a caller that needs to CLASSIFY the failure honestly
+# (instead of reporting UNKNOWN) can read the reason that belongs to its own call.
+_GHL_UPLOAD_DIAG = threading.local()
+
+
+def ghl_last_upload_error() -> str:
+    """Why did this thread's last `ghl_upload_file` call fail? "" when it did not."""
+    return str(getattr(_GHL_UPLOAD_DIAG, "error", "") or "")
+
+
+def _set_ghl_upload_error(reason: str) -> None:
+    _GHL_UPLOAD_DIAG.error = str(reason or "")
+
+
 def ghl_upload_file(path: str, name: str, parent_id: str | None = None):
     """Upload a local file to GHL Media Storage (filesafe CDN). Returns
     {'fileId': ..., 'url': ..., placement fields} or None on failure (never raises).
@@ -1672,6 +1695,7 @@ def ghl_upload_file(path: str, name: str, parent_id: str | None = None):
     is surfaced loudly and never represented as folder success.
     """
     if not GHL_TOKEN or not os.path.exists(path):
+        _set_ghl_upload_error("NO_TOKEN" if not GHL_TOKEN else "MISSING_FILE")
         return None
 
     target_parent = GHL_MEDIA_PARENT_ID if parent_id is None else parent_id
@@ -1739,6 +1763,7 @@ def ghl_upload_file(path: str, name: str, parent_id: str | None = None):
         except Exception as e:
             last_error = e
 
+        _set_ghl_upload_error(str(last_error))
         if attempt < attempts - 1:
             backoff = min(8.0, 1.5 ** attempt)
             print(f"[media] GHL upload attempt {attempt + 1}/{attempts} failed for {name}: "
@@ -1746,6 +1771,7 @@ def ghl_upload_file(path: str, name: str, parent_id: str | None = None):
             time.sleep(backoff)
 
     print(f"[media] GHL upload gave up for {name} after {attempts} attempts: {last_error}", flush=True)
+    _set_ghl_upload_error(str(last_error))
     return None
 
 
