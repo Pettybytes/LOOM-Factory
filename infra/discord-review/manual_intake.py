@@ -143,6 +143,12 @@ _TRACKING_PARAMS: frozenset[str] = frozenset({
     "utm_campaign", "utm_term", "utm_content", "utm_id", "si", "feature",
     "embeds_referring_euri", "sharing", "share", "mibextid", "sc_channel",
     "srsltid", "hmac", "wbraid", "gbraid", "twclid", "campaign_id",
+    # START-POSITION HINTS (Twitch `?t=1h2m3s`, YouTube `?t=`). A timestamp is never
+    # part of a source's IDENTITY: keeping it in the canonical URL made the same VOD
+    # submitted with and without a timestamp produce TWO different dedup fingerprints.
+    # The hint is still preserved — as a NON-IDENTITY value on the resolved source and
+    # on the submission's `original_url`.
+    "t", "start_time",
 })
 
 _YOUTUBE_ID = re.compile(r"(?:^|[/?=&])(?P<id>[A-Za-z0-9_-]{11})(?:[/?&#]|$)")

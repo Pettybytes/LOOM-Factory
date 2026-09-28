@@ -1071,6 +1071,8 @@ _TIMESTAMP_HINT = "SS / MM:SS / HH:MM:SS"
 def window_modal_payload(ref: str, *, message_id: str = "",
                          start_hint: str = "",
                          end_hint: str = "",
+                         start_value: str = "",
+                         end_value: str = "",
                          prefix: str = WINDOW_MODAL_CUSTOM_ID,
                          title: str = "Adjust acquisition window") -> dict:
     """Discord MODAL (type 9). Pure and I/O-free, so the adapter can return it as
@@ -1079,30 +1081,42 @@ def window_modal_payload(ref: str, *, message_id: str = "",
     ONE modal builder for both lanes: the caller supplies the custom_id ``prefix``
     (the acquisition lane default, or Manual Intake's ``MIW``) so the shape, the
     field ids and the parsing stay identical. There is deliberately no second modal.
+
+    ``start_value``/``end_value`` PRE-FILL a field (the operator can still edit it);
+    ``start_hint``/``end_hint`` stay placeholders. A prefill is used only for a value
+    LOOM genuinely knows from the source URL (e.g. Twitch's ``?t=``). Nothing is
+    prefilled into End, so an end boundary is never invented — the operator supplies
+    it. With no values supplied the payload is byte-identical to before.
     """
+    def _field(custom_id: str, label: str, placeholder: str, value: str) -> dict:
+        field = {"type": 4, "custom_id": custom_id, "label": label, "style": 1,
+                 "required": True, "max_length": 12, "placeholder": placeholder}
+        if value:
+            field["value"] = value
+        return field
+
     return {"type": 9, "data": {
         "custom_id": f"{prefix}:{ref}:{message_id}",
         "title": title[:45],
         "components": [
-            {"type": 1, "components": [{
-                "type": 4, "custom_id": WINDOW_MODAL_START,
-                "label": f"Start ({_TIMESTAMP_HINT})", "style": 1,
-                "required": True, "max_length": 12,
-                "placeholder": start_hint or "01:00"}]},
-            {"type": 1, "components": [{
-                "type": 4, "custom_id": WINDOW_MODAL_END,
-                "label": f"End ({_TIMESTAMP_HINT})", "style": 1,
-                "required": True, "max_length": 12,
-                "placeholder": end_hint or "01:30"}]},
+            {"type": 1, "components": [
+                _field(WINDOW_MODAL_START, f"Start ({_TIMESTAMP_HINT})",
+                       start_hint or "01:00", start_value)]},
+            {"type": 1, "components": [
+                _field(WINDOW_MODAL_END, f"End ({_TIMESTAMP_HINT})",
+                       end_hint or "01:30", end_value)]},
         ]}}
 
 
 def manual_window_modal_payload(ref: str, *, message_id: str = "",
                                 start_hint: str = "",
-                                end_hint: str = "") -> dict:
+                                end_hint: str = "",
+                                start_value: str = "",
+                                end_value: str = "") -> dict:
     """The Manual Intake SELECT SEGMENT modal — the same builder, MIW namespace."""
     return window_modal_payload(ref, message_id=message_id,
                                 start_hint=start_hint, end_hint=end_hint,
+                                start_value=start_value, end_value=end_value,
                                 prefix=MANUAL_WINDOW_MODAL_CUSTOM_ID,
                                 title="Select segment")
 

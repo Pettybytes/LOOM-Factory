@@ -99,6 +99,26 @@ def infer_platform(meta: dict[str, Any] | None) -> str:
     return ""
 
 
+def source_start_hint_ms(platform: str, url: str) -> int | None:
+    """The URL's NON-IDENTITY start hint for this platform, or None.
+
+    Generic entry point: the platform adapter owns the parsing (Twitch's
+    ``?t=1h2m3s``, YouTube's ``?t=``), so shared code never branches on a platform
+    name. Returns None when there is no usable hint — never 0 — because "no hint" and
+    "start at zero" are different statements.
+    """
+    adapter = adapter_for(platform)
+    hook = getattr(adapter, "start_hint_ms", None) if adapter else None
+    if not callable(hook):
+        return None
+    try:
+        value = hook(url)
+        ms = int(value or 0)
+    except Exception:  # noqa: BLE001 — a hint is never worth failing a submission
+        return None
+    return ms if ms > 0 else None
+
+
 def reconcile_identity(platform: str, expected_content_id: str,
                        meta: dict[str, Any] | None) -> bool:
     """Does this metadata belong to the expected immutable identity?
@@ -215,6 +235,17 @@ class TwitchAdapter:
                 "canonical_url": parsed["canonical_url"],
                 "content_id": parsed["content_id"],
                 "kind": parsed["kind"]}
+
+    def start_hint_ms(self, url: str) -> int | None:
+        """The URL's `?t=` start hint, in ms. NON-IDENTITY by contract.
+
+        Twitch timestamps are unit-form (`1h2m3s`, `90s`); anything else yields no
+        hint rather than a guessed one, so a malformed value can never corrupt a
+        coordinate. The hint never participates in the canonical URL or the
+        fingerprint.
+        """
+        import twitch_url as tu
+        return int(tu.parse(url).get("start_hint_ms") or 0)
 
     def reconcile_identity(self, expected_content_id: str, meta: dict) -> bool:
         """Twitch identity reconciliation.

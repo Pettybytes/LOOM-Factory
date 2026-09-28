@@ -268,14 +268,25 @@ def resolve_source_url(url: str) -> dict[str, Any]:
     identity model, and identity itself still comes from the intake contract.
     """
     resolved = manual_intake.validate_and_canonicalize(url)
-    if isinstance(resolved, dict) and not resolved.get("kind"):
+    if isinstance(resolved, dict):
+        platform = resolved.get("platform", "")
         try:
             sa = _acq("source_adapters")
-            adapter = sa.adapter_for(resolved.get("platform", ""))
-            parsed = adapter.canonicalize(url) if adapter is not None else None
-            if isinstance(parsed, dict) and parsed.get("kind"):
-                resolved = {**resolved, "kind": parsed["kind"]}
+            adapter = sa.adapter_for(platform)
+            if adapter is not None and not resolved.get("kind"):
+                parsed = adapter.canonicalize(url)
+                if isinstance(parsed, dict) and parsed.get("kind"):
+                    resolved = {**resolved, "kind": parsed["kind"]}
         except Exception:  # noqa: BLE001 — kind is advisory; identity is already proven
+            pass
+        try:
+            # A URL timestamp is a HINT, never identity. It is surfaced for the
+            # operator (Start prefill) through the platform's own adapter, and it
+            # cannot change the canonical URL or the dedup fingerprint.
+            hint = _acq("source_adapters").source_start_hint_ms(platform, url)
+            if hint:
+                resolved = {**resolved, "start_hint_ms": int(hint)}
+        except Exception:  # noqa: BLE001 — a hint must never fail a submission
             pass
     return resolved
 

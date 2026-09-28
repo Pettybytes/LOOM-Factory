@@ -376,12 +376,17 @@ def _mi_range_text(parsed: dict) -> str:
 def _mi_remember_pending(*, url: str, tenant: str, submitter: str,
                          channel_id: str,
                          attachment: dict | None = None,
-                         local_path: str = "") -> str:
+                         local_path: str = "",
+                         start_hint_ms: int = 0) -> str:
     """Remember the operator's source so a later button/modal can resume it.
 
     ``local_path`` lets a SUPPLIED file resume without re-downloading it: the file is
     already the operator's own material, so it is kept until the choice resolves and
     the transient copy is released when the entry expires.
+
+    ``start_hint_ms`` is the source URL's NON-IDENTITY start timestamp (Twitch's
+    ``?t=``), carried so the segment modal can PRE-FILL Start. It is a default the
+    operator can overwrite, never an approved boundary and never part of identity.
     """
     ref = secrets.token_urlsafe(8).replace("-", "").replace("_", "")[:10]
     now = time.time()
@@ -394,6 +399,7 @@ def _mi_remember_pending(*, url: str, tenant: str, submitter: str,
                             "channel_id": channel_id,
                             "attachment": dict(attachment or {}),
                             "local_path": local_path,
+                            "start_hint_ms": int(start_hint_ms or 0),
                             "created_at": now}
     return ref
 
@@ -2750,7 +2756,8 @@ class Handler(BaseHTTPRequestHandler):
     def _mi_present_choice(self, application_id, interaction_token, *, ref,
                            whole_allowed: bool, refusal: str = "",
                            source_duration_s: float | None = None,
-                           origin_label: str = "source"):
+                           origin_label: str = "source",
+                           start_hint_ms: int = 0):
         """Offer WHOLE VIDEO / SELECT SEGMENT for ANY manual media.
 
         An operator-INTENT layer above the shared working-source contract: it decides
@@ -2772,6 +2779,17 @@ class Handler(BaseHTTPRequestHandler):
             why = _MI_REFUSAL_REASONS.get(refusal, _MI_REFUSAL_DEFAULT)
             lines.append(f"**Whole video is not available** — {why}. Choose "
                          "**Select segment** and give a start and an end time.")
+        if start_hint_ms and int(start_hint_ms) > 0:
+            # The URL's own timestamp is a DEFAULT, stated as such: it pre-fills Start
+            # and the operator still chooses the End. Never an approved boundary.
+            try:
+                _clock = manual_media_intake._acq("source_window").human_clock(
+                    int(start_hint_ms))
+            except Exception:  # noqa: BLE001 — a hint must never break the prompt
+                _clock = ""
+            if _clock:
+                lines.append(f"The link's timestamp (**{_clock}**) will pre-fill Start; "
+                             "you still choose the End.")
         components = [{"type": 1, "components": [
             {"type": 2, "style": 1, "label": "Whole video",
              "custom_id": f"{MI_CHOICE_PREFIX}:{MI_ACT_WHOLE}:{ref}",
@@ -3031,11 +3049,13 @@ class Handler(BaseHTTPRequestHandler):
                     _ref_a = _mi_remember_pending(
                         url=parsed["url"], tenant=tenant, submitter=submitter,
                         channel_id=channel_id, attachment=attachment,
-                        local_path=local_path)
+                        local_path=local_path,
+                        start_hint_ms=int(_res_a.get("start_hint_ms") or 0))
                     self._mi_present_choice(
                         application_id, interaction_token, ref=_ref_a,
                         whole_allowed=_allowed_a, refusal=_refuse_a,
-                        source_duration_s=_dur_a, origin_label="supplied file")
+                        source_duration_s=_dur_a, origin_label="supplied file",
+                        start_hint_ms=int(_res_a.get("start_hint_ms") or 0))
                     print(f"[manual-intake] operator choice offered (supplied file) "
                           f"ref={_ref_a} duration={_dur_a} "
                           f"whole_allowed={_allowed_a} refusal={_refuse_a}", flush=True)
@@ -3072,7 +3092,8 @@ class Handler(BaseHTTPRequestHandler):
                             _cap_choice.get("requires_window_for_long_source")))
                     _ref = _mi_remember_pending(
                         url=parsed["url"], tenant=tenant, submitter=submitter,
-                        channel_id=channel_id)
+                        channel_id=channel_id,
+                        start_hint_ms=int(_res_choice.get("start_hint_ms") or 0))
                     # Nothing was acquired, so the transient working dir is not
                     # retained: an offered choice is not a failure.
                     manual_media_intake.cleanup(temp_dir)
@@ -3080,7 +3101,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._mi_present_choice(
                         application_id, interaction_token, ref=_ref,
                         whole_allowed=_allowed, refusal=_refuse,
-                        source_duration_s=_dur_choice)
+                        source_duration_s=_dur_choice,
+                        start_hint_ms=int(_res_choice.get("start_hint_ms") or 0))
                     print(f"[manual-intake] operator choice offered ref={_ref} "
                           f"duration={_dur_choice} whole_allowed={_allowed} "
                           f"refusal={_refuse}", flush=True)
@@ -3820,9 +3842,20 @@ class Handler(BaseHTTPRequestHandler):
             if action == MI_ACT_SEGMENT:
                 # The modal is returned IMMEDIATELY, inside Discord's 3-second
                 # deadline. Reuses the SAME modal builder the acquisition lane uses.
+                # The pending entry is IN-PROCESS memory (no store, no network), so
+                # reading it here costs nothing and lets a source URL's own timestamp
+                # PRE-FILL Start. End is never invented — the operator supplies it.
                 message_id = str((interaction.get("message") or {}).get("id") or "")
+                prefill = ""
+                hint_ms = int((_mi_pending(ref) or {}).get("start_hint_ms") or 0)
+                if hint_ms > 0:
+                    try:
+                        prefill = manual_media_intake._acq(
+                            "source_window").human_clock(hint_ms)
+                    except Exception:  # noqa: BLE001 — a prefill must never break it
+                        prefill = ""
                 self._send_json(200, acquisition_ops.manual_window_modal_payload(
-                    ref, message_id=message_id))
+                    ref, message_id=message_id, start_value=prefill))
                 return
             if action == MI_ACT_WHOLE:
                 self._send_json(200, {"type": 6})

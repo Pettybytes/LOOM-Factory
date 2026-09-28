@@ -114,14 +114,22 @@ def classify(url: str) -> dict[str, str]:
 
 
 def _time_hint_ms(query: dict[str, list[str]]) -> int:
-    """`?t=1h2m3s` / `?t=90s` as a NON-IDENTITY start hint (0 when absent)."""
-    raw = (query.get("t") or [""])[0]
+    """`?t=1h2m3s` / `?t=90s` as a NON-IDENTITY start hint (0 when absent).
+
+    Only a COMPLETE unit sequence is honoured. A partially-matching value (e.g. the
+    truncated `26m10`, which Twitch never emits) yields NO hint rather than an
+    approximation: silently reading that as 26:00 would corrupt the very start
+    coordinate the operator is about to approve. Twitch's own share URLs always carry
+    complete units.
+    """
+    raw = (query.get("t") or [""])[0].strip().lower()
     if not raw:
         return 0
-    total = 0
-    for value, unit in re.findall(r"(\d+)([hms])", raw.lower()):
-        total += int(value) * {"h": 3_600_000, "m": 60_000, "s": 1_000}[unit]
-    return total
+    parts = re.findall(r"(\d+)([hms])", raw)
+    if not parts or "".join(f"{value}{unit}" for value, unit in parts) != raw:
+        return 0
+    return sum(int(value) * {"h": 3_600_000, "m": 60_000, "s": 1_000}[unit]
+               for value, unit in parts)
 
 
 def parse(url: str, *, expected_content_id: str = "") -> dict[str, str]:
