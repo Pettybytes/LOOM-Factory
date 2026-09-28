@@ -66,6 +66,26 @@ import intake_card  # noqa: E402  (same-dir module; card-based intake wizard)
 import acquisition_ops  # noqa: E402
 import library_root as _library_root  # noqa: E402  (approved acquisition lane operator surface)
 
+
+def _source_digest() -> str:
+    """SHA-256 of THIS file as the running process loaded it.
+
+    Runtime provenance: a claim that the live service is serving CURRENT HEAD is
+    otherwise only inferable from a PID's age. Reported by /health, it is checkable
+    from outside — compare it with `shasum -a 256 adapter.py` on disk and equality
+    proves the running process loaded exactly that file.
+    """
+    try:
+        import hashlib as _hashlib
+        with open(__file__, "rb") as _fh:
+            return _hashlib.sha256(_fh.read()).hexdigest()
+    except Exception:  # noqa: BLE001 — provenance must never break startup
+        return ""
+
+
+SOURCE_SHA256 = _source_digest()
+LOADED_AT = datetime.now(timezone.utc).isoformat()
+
 # ---------------------------------------------------------------------------
 # Config (from env)
 # ---------------------------------------------------------------------------
@@ -2467,6 +2487,8 @@ class Handler(BaseHTTPRequestHandler):
         self._log_request()
         if self.path == "/health":
             self._send_json(200, {"status": "ok",
+                                  "build": {"source_sha256": SOURCE_SHA256,
+                                            "loaded_at": LOADED_AT},
                                   "acquisition": acquisition_health(),
                                   "source_review": source_review_health()})
             return
@@ -4553,7 +4575,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
-    print(f"LOOM Discord Review Adapter listening on {LISTEN_HOST}:{LISTEN_PORT}")
+    print(f"LOOM Discord Review Adapter listening on {LISTEN_HOST}:{LISTEN_PORT} "
+          f"source_sha256={SOURCE_SHA256[:12]} loaded_at={LOADED_AT}", flush=True)
     server.serve_forever()
 
 

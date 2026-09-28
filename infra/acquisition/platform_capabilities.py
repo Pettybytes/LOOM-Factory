@@ -49,7 +49,12 @@ _CAPABILITY: dict[str, dict] = {
                    "youtube.com/watch?v=h3Q_tAFWY5g acquired in one attempt "
                    "(40.64 s, 16,407,149 B, sha256 d8990649b8e3…), no cookies/auth, "
                    "$0 provider cost, Apify ceiling untouched. A >300 s source "
-                   "(ClhBXVygWbc, 302 s) was refused at metadata with no download."),
+                   "(ClhBXVygWbc, 302 s) was refused at metadata with no download. "
+                   "BOUNDED WINDOW re-proven 2026-09-28: watch?v=59xxeJCbzaM (467 s) "
+                   "yielded ONLY the requested 02:00-03:00 working source (60.0 s, "
+                   "1920x1080 H.264/AAC, integrity OK, sha256 09f403a5b172…, "
+                   "29,279,708 B) — the full source was never retained."),
+        "proven_modes": ("full_item", "bounded_segment"),
         "candidates": ["yt-dlp", "cobalt"],
     },
     "reddit": {
@@ -58,13 +63,37 @@ _CAPABILITY: dict[str, dict] = {
         "candidates": ["yt-dlp", "cobalt", "gallery-dl"],
     },
     "twitch": {
-        "state": CAP_IMPLEMENTED_NOT_PROVEN,
-        "reason": "yt-dlp twitch:clips/vod installed; streamlink (live) not installed. No bounded acquisition proof yet.",
+        # The adapter lane IS genuinely proven (bounded VOD window + whole clip,
+        # 2026-09-18, $0 local). The stale matrix previously reported
+        # implemented_not_proven and, because `can_acquire()` gates the approved
+        # lane, that DOWNGRADED a proven lane. Corrected to match the adapter.
+        "state": CAP_RUNTIME_PROVEN,
+        "reason": ("Bounded Twitch acquisition PROVEN 2026-09-18 through the shared "
+                   "local lane ($0, local:yt-dlp): a whole 34.333 s clip "
+                   "(25,546,606 B) and a bounded VOD window 00:30-01:00 "
+                   "(12,230,775 B, 30.000 s) were both acquired, hashes verified "
+                   "against their library rows, H.264/AAC/yuv420p/fast-start. "
+                   "streamlink (live) is not installed and is not needed for VOD/clip. "
+                   "MANUAL INTAKE live acceptance for Twitch remains OUTSTANDING — the "
+                   "adapter lane is proven, the Manual Intake path through it is not."),
+        "proven_modes": ("full_item", "bounded_segment"),
         "candidates": ["yt-dlp", "streamlink", "cobalt"],
     },
     "kick": {
+        # MODE-SCOPED ON PURPOSE. A Kick CLIP is proven; a Kick VOD / ranged VOD is
+        # NOT live proven (the previous proof source became externally unavailable,
+        # HTTP 404 in every canonical form). The state therefore stays short of full
+        # readiness so that clip support can never be read as VOD support.
         "state": CAP_IMPLEMENTED_NOT_PROVEN,
-        "reason": "yt-dlp kick:clips/vod/live installed; no bounded acquisition proof yet.",
+        "reason": ("CLIP PROVEN 2026-09-18 through the shared local lane ($0, "
+                   "local:yt-dlp): one Kick clip acquired, H.264/AAC/yuv420p/"
+                   "fast-start, hash verified against its library row. VOD / RANGED "
+                   "VOD NOT LIVE PROVEN — the supplied proof VOD "
+                   "01a02be6-62d0-76a1-b338-0a9c3f3b8175 is externally unavailable "
+                   "(yt-dlp kick:vod and Kick public metadata both return HTTP 404). "
+                   "Clip capability does NOT imply VOD capability. Manual Intake live "
+                   "acceptance for Kick VOD remains OUTSTANDING."),
+        "proven_modes": ("clip",),
         "candidates": ["yt-dlp", "streamlink"],
     },
     "tiktok": {
@@ -121,6 +150,16 @@ def candidates(platform: str) -> list[str]:
 def capability_map() -> dict[str, str]:
     """{platform: state} summary."""
     return {p: _CAPABILITY[p]["state"] for p in sorted(_CAPABILITY)}
+
+
+def proven_modes(platform: str) -> tuple[str, ...]:
+    """Which acquisition MODES are actually proven for this platform.
+
+    Mode-scoped truth, so a partially proven platform (Kick: clip only) can never be
+    read as fully proven. Read-only view of the same matrix — not another registry.
+    """
+    entry = _CAPABILITY.get(platform)
+    return tuple(entry.get("proven_modes", ())) if entry else ()
 
 
 # ---------------------------------------------------------------------------

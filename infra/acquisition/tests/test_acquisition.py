@@ -107,14 +107,25 @@ class TestPlan(unittest.TestCase):
 
 
 class TestCapabilities(unittest.TestCase):
-    def test_only_instagram_acquirable(self):
+    def test_only_proven_platforms_acquirable(self):
         self.assertTrue(caps.can_acquire("instagram"))
         # YouTube joined the proven set on 2026-09-18 (bounded local yt-dlp proof).
         self.assertTrue(caps.can_acquire("youtube"))
         # TikTok joined on 2026-09-18 via a paid provider actor proof
         # (apidojo~tiktok-scraper: real video acquired end-to-end).
         self.assertTrue(caps.can_acquire("tiktok"))
-        self.assertFalse(any(caps.can_acquire(p) for p in ("reddit", "twitch", "kick")))
+        # Twitch joined the proven set on 2026-09-18: the adapter lane acquired both
+        # a whole 34.3 s clip AND a bounded VOD window (00:30-01:00) for $0 local.
+        # The matrix previously said implemented_not_proven, and because
+        # `can_acquire()` gates the approved lane that DOWNGRADED a genuinely proven
+        # lane; corrected 2026-09-28. Manual Intake live acceptance is still
+        # outstanding and is tracked separately from adapter readiness.
+        self.assertTrue(caps.can_acquire("twitch"))
+        # Kick stays short of full readiness ON PURPOSE: CLIP proven, VOD / ranged VOD
+        # NOT live proven. Mode-scoped so clip support can never imply VOD support.
+        self.assertFalse(caps.can_acquire("kick"))
+        self.assertEqual(caps.proven_modes("kick"), ("clip",))
+        self.assertFalse(caps.can_acquire("reddit"))
 
     def test_youtube_runtime_proven_after_the_bounded_proof(self):
         self.assertEqual(caps.capability("youtube"), caps.CAP_RUNTIME_PROVEN)
