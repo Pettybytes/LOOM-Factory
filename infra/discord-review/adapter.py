@@ -332,6 +332,25 @@ def now_iso() -> str:
 MI_CHOICE_PREFIX = "MI"
 MI_ACT_SEGMENT = "seg"
 MI_ACT_WHOLE = "whole"
+
+# The gate's OWN refusal vocabulary, rendered for an operator. The choice surface never
+# invents a second reason: it explains the refusal the contract actually produced.
+_MI_REFUSAL_REASONS = {
+    "LONG_FORM_REQUIRES_WINDOW":
+        "it is longer than the working-window limit, so only a bounded segment "
+        "can be taken",
+    "UNKNOWN_SOURCE_DURATION":
+        "its length could not be proven, so it cannot be taken whole",
+}
+_MI_REFUSAL_DEFAULT = "the safety contract does not allow this source whole"
+
+# Stages that are genuinely TRANSIENT to re-run, so "Retry safe: yes" is honest. A
+# refusal whose cause is the input itself needs the input changed first, not a retry.
+_MI_RETRY_SAFE_CODES = frozenset({
+    "DURABLE_STORE_FAILED", "DOWNLOAD_FAILED", "PROBE_FAILED", "UNKNOWN",
+    "MEDIA_INTEGRITY_FAILED", "REVIEW_CARD_FAILED",
+})
+
 _MI_PENDING: dict[str, dict] = {}
 _MI_PENDING_TTL = 15 * 60
 _MI_PENDING_LOCK = threading.Lock()
@@ -345,21 +364,53 @@ def parse_manual_choice_custom_id(custom_id: str) -> tuple[str, str] | None:
     return None
 
 
+def _mi_range_text(parsed: dict) -> str:
+    """The operator's ORIGINAL range, for a status line. Empty when whole-source."""
+    start_s, end_s = parsed.get("start_s"), parsed.get("end_s")
+    if isinstance(start_s, (int, float)) and isinstance(end_s, (int, float)):
+        return (f" {int(start_s) // 60:02d}:{int(start_s) % 60:02d}"
+                f"–{int(end_s) // 60:02d}:{int(end_s) % 60:02d}")
+    return ""
+
+
 def _mi_remember_pending(*, url: str, tenant: str, submitter: str,
                          channel_id: str,
-                         attachment: dict | None = None) -> str:
-    """Remember the operator's source so a later button/modal can resume it."""
+                         attachment: dict | None = None,
+                         local_path: str = "") -> str:
+    """Remember the operator's source so a later button/modal can resume it.
+
+    ``local_path`` lets a SUPPLIED file resume without re-downloading it: the file is
+    already the operator's own material, so it is kept until the choice resolves and
+    the transient copy is released when the entry expires.
+    """
     ref = secrets.token_urlsafe(8).replace("-", "").replace("_", "")[:10]
     now = time.time()
     with _MI_PENDING_LOCK:
         for stale in [r for r, v in _MI_PENDING.items()
                       if now - v.get("created_at", 0) > _MI_PENDING_TTL]:
-            _MI_PENDING.pop(stale, None)
+            entry = _MI_PENDING.pop(stale, None)
+            _mi_release_local(entry)
         _MI_PENDING[ref] = {"url": url, "tenant": tenant, "submitter": submitter,
                             "channel_id": channel_id,
                             "attachment": dict(attachment or {}),
+                            "local_path": local_path,
                             "created_at": now}
     return ref
+
+
+def _mi_release_local(entry: dict | None) -> None:
+    """Release a retained supplied-file copy. Never raises, never touches the master."""
+    path = (entry or {}).get("local_path") or ""
+    if not path:
+        return
+    try:
+        parent = os.path.dirname(path)
+        if parent and os.path.basename(parent).startswith("loom-manual-intake-"):
+            manual_media_intake.cleanup(parent)
+        else:
+            manual_media_intake.cleanup(path)
+    except Exception:  # noqa: BLE001 — cleanup is best-effort
+        pass
 
 
 def _mi_pending(ref: str) -> dict | None:
@@ -369,13 +420,16 @@ def _mi_pending(ref: str) -> dict | None:
             return None
         if time.time() - entry.get("created_at", 0) > _MI_PENDING_TTL:
             _MI_PENDING.pop(ref, None)
+            _mi_release_local(entry)
             return None
         return dict(entry)
 
 
-def _mi_forget_pending(ref: str) -> None:
+def _mi_forget_pending(ref: str, *, release: bool = False) -> None:
     with _MI_PENDING_LOCK:
-        _MI_PENDING.pop(ref, None)
+        entry = _MI_PENDING.pop(ref, None)
+    if release:
+        _mi_release_local(entry)
 
 
 def allowed_cors_origin(request_origin: str):
@@ -2679,35 +2733,49 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json(200, {"type": 4, "data": {"content": "Unknown command.", "flags": 64}})
 
-    def _mi_present_choice(self, application_id, interaction_token, *, ref,
-                           requires_window: bool,
-                           source_duration_s: float | None = None):
-        """Offer WHOLE VIDEO / SELECT SEGMENT instead of failing or guessing.
+    def _mi_status(self, application_id, interaction_token, text, *, stage=""):
+        """Publish ONE truthful coarse stage on the SAME deferred message.
 
-        WHOLE VIDEO is DISABLED — not merely explained — when the source requires a
-        segment, so the surface never implies an option the authoritative gate will
-        refuse.
+        Called only once a stage has actually BEGUN, so the operator can tell
+        processing from stalled, crashed or timed out. Deliberately coarse: no
+        invented percentages and no status spam, but no silent processing window.
+        A status failure must never abort the work it is reporting on.
         """
         try:
-            limit_s = int(manual_media_intake._acq("source_window").MS_MAX // 1000)
-        except Exception:  # noqa: BLE001 — the prompt must not depend on the import
-            limit_s = 300
+            self._patch_original(application_id, interaction_token, content=text)
+        except Exception as e:  # noqa: BLE001 — reporting must not break the work
+            print(f"[manual-intake] status update failed stage={stage} "
+                  f"error={type(e).__name__}", flush=True)
+
+    def _mi_present_choice(self, application_id, interaction_token, *, ref,
+                           whole_allowed: bool, refusal: str = "",
+                           source_duration_s: float | None = None,
+                           origin_label: str = "source"):
+        """Offer WHOLE VIDEO / SELECT SEGMENT for ANY manual media.
+
+        An operator-INTENT layer above the shared working-source contract: it decides
+        nothing itself. It asks the gate (through ``whole_source_verdict``) whether
+        taking the source whole is legal, DISABLES the control when it is not, and
+        explains the refusal in the gate's own vocabulary rather than inventing a
+        second reason. Shared by every platform and by supplied/local media.
+        """
         if isinstance(source_duration_s, (int, float)) and source_duration_s > 0:
             length = (f"~{int(source_duration_s // 60)}m {int(source_duration_s % 60)}s"
                       if source_duration_s >= 60 else f"~{source_duration_s:.0f}s")
         else:
-            length = "length unknown"
-        lines = [f"🎬 **Long-form source** ({length}) — longer than the {limit_s}s "
-                 f"working-window limit."]
-        if requires_window:
-            lines.append("**Whole video is not available for this source.** Choose "
-                         "**Select segment** and give a start and an end time.")
+            length = "length not proven"
+        lines = [f"🎬 **Choose how to ingest this {origin_label}** — {length}."]
+        if whole_allowed:
+            lines.append("**Whole video** takes the source as it is. "
+                         "**Select segment** bounds it to a start/end window.")
         else:
-            lines.append("Choose **Whole video**, or **Select segment** to bound it.")
+            why = _MI_REFUSAL_REASONS.get(refusal, _MI_REFUSAL_DEFAULT)
+            lines.append(f"**Whole video is not available** — {why}. Choose "
+                         "**Select segment** and give a start and an end time.")
         components = [{"type": 1, "components": [
             {"type": 2, "style": 1, "label": "Whole video",
              "custom_id": f"{MI_CHOICE_PREFIX}:{MI_ACT_WHOLE}:{ref}",
-             "disabled": bool(requires_window)},
+             "disabled": not whole_allowed},
             {"type": 2, "style": 3, "label": "Select segment",
              "custom_id": f"{MI_CHOICE_PREFIX}:{MI_ACT_SEGMENT}:{ref}"},
         ]}]
@@ -2751,9 +2819,15 @@ class Handler(BaseHTTPRequestHandler):
                 parsed["start_s"] = start_ms / 1000.0
                 parsed["end_s"] = end_ms / 1000.0
                 parsed["window_intent"] = True
-            _mi_forget_pending(ref)
-            self._manual_intake_execute(interaction, parsed,
-                                        dict(pending.get("attachment") or {}))
+            _supplied = pending.get("local_path") or ""
+            try:
+                self._manual_intake_execute(interaction, parsed,
+                                            dict(pending.get("attachment") or {}),
+                                            supplied_path=_supplied)
+            finally:
+                # The choice is consumed: release the retained supplied copy (if any).
+                # A URL-only source retained nothing, so this is a no-op there.
+                _mi_forget_pending(ref, release=True)
         except Exception as e:  # noqa: BLE001 — the ACK is not success
             frames = ";".join(f"{Path(f.filename).name}:{f.lineno}:{f.name}"
                               for f in traceback.extract_tb(e.__traceback__))
@@ -2818,7 +2892,8 @@ class Handler(BaseHTTPRequestHandler):
         """Entry point for the MESSAGE context-menu command (modes A and B)."""
         self._manual_intake_execute(interaction, parsed, attachment)
 
-    def _manual_intake_execute(self, interaction, parsed, attachment):
+    def _manual_intake_execute(self, interaction, parsed, attachment,
+                               supplied_path: str = ""):
         """Post-ACK work for the Manual Intake contract. Never raises; ACK is not success.
 
         Durable-first ordering: probe -> GHL durable copy -> submission row ->
@@ -2867,6 +2942,11 @@ class Handler(BaseHTTPRequestHandler):
                 parsed.get("tenant") or MANUAL_MEDIA_TENANT_DEFAULT, active)
             stage = "acquire_media"
             temp_dir = tempfile.mkdtemp(prefix="loom-manual-intake-")
+            # A stage is published only once it has actually BEGUN, so the operator can
+            # always tell processing from stalled/crashed/timed out.
+            self._mi_status(
+                application_id, interaction_token,
+                f"⏳ Acquiring{_mi_range_text(parsed)}…", stage="acquire_media")
             # Acquisition provenance. Records the MECHANISM and keeps TWO
             # COORDINATE SYSTEMS explicitly distinct so neither is ever inferred
             # from the other: the ORIGINAL source timestamps the operator asked for,
@@ -2885,12 +2965,22 @@ class Handler(BaseHTTPRequestHandler):
                 "platform_proven_modes": None,
                 "identity_reconciliation": None,
             }
-            if attachment:
-                safe_name = re.sub(r"[^A-Za-z0-9._-]", "_",
-                                   attachment.get("filename") or "supplied.mp4")[:120]
-                local_path = os.path.join(temp_dir, safe_name)
-                manual_media_intake.download_attachment(attachment["url"], local_path)
-                acq_prov["acquisition_mechanism"] = "local:file_upload"
+            if attachment or supplied_path:
+                if supplied_path and os.path.exists(supplied_path):
+                    # Resuming a choice for a file the operator ALREADY supplied: reuse
+                    # the retained copy rather than fetching it a second time.
+                    local_path = supplied_path
+                    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_",
+                                       os.path.basename(supplied_path))[:120]
+                    acq_prov["acquisition_mechanism"] = "local:file_upload"
+                    print("[manual-intake] resuming with the retained supplied file",
+                          flush=True)
+                else:
+                    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_",
+                                       attachment.get("filename") or "supplied.mp4")[:120]
+                    local_path = os.path.join(temp_dir, safe_name)
+                    manual_media_intake.download_attachment(attachment["url"], local_path)
+                    acq_prov["acquisition_mechanism"] = "local:file_upload"
                 # OPERATOR WINDOW (local upload): the supplied file may be far longer
                 # than the moment wanted, so the EXTRACTED WINDOW becomes the working
                 # source. Validated through the SHARED window contract, and it fails
@@ -2920,6 +3010,36 @@ class Handler(BaseHTTPRequestHandler):
                     print(f"[manual-intake] local window extracted "
                           f"{_w['clip_duration_ms'] / 1000:.3f}s "
                           f"range={str(_w['range_fingerprint'])[:12]}", flush=True)
+                else:
+                    # NO EXPLICIT INTENT -> the operator chooses. The choice applies to
+                    # SUPPLIED media exactly as it does to a URL: SELECT SEGMENT is not
+                    # a >300 s recovery mechanism, it is how any manual media is scoped.
+                    # Nothing is stored or extracted before the operator answers.
+                    _res_a = manual_media_intake.resolve_source_url(parsed["url"])
+                    _cap_a = manual_media_intake.resolve_platform_capability(
+                        _res_a.get("platform", ""))
+                    _dur_a = (manual_media_intake.probe_media(local_path) or {}).get(
+                        "duration_seconds")
+                    _allowed_a, _refuse_a = manual_media_intake.whole_source_verdict(
+                        platform=_cap_a["platform"] or _res_a.get("platform", ""),
+                        content_id=str(_res_a.get("content_id") or ""),
+                        canonical_url=_res_a["canonical_url"],
+                        item_kind=str(_res_a.get("kind") or ""),
+                        source_duration_s=_dur_a,
+                        requires_window_for_long_source=bool(
+                            _cap_a.get("requires_window_for_long_source")))
+                    _ref_a = _mi_remember_pending(
+                        url=parsed["url"], tenant=tenant, submitter=submitter,
+                        channel_id=channel_id, attachment=attachment,
+                        local_path=local_path)
+                    self._mi_present_choice(
+                        application_id, interaction_token, ref=_ref_a,
+                        whole_allowed=_allowed_a, refusal=_refuse_a,
+                        source_duration_s=_dur_a, origin_label="supplied file")
+                    print(f"[manual-intake] operator choice offered (supplied file) "
+                          f"ref={_ref_a} duration={_dur_a} "
+                          f"whole_allowed={_allowed_a} refusal={_refuse_a}", flush=True)
+                    return
             else:
                 # Mode B — URL only. EXISTING resolver + EXISTING bounded local
                 # downloader ($0). Deliberately creates NO library row and NO
@@ -2932,49 +3052,39 @@ class Handler(BaseHTTPRequestHandler):
                 # long source and failing later on the size ceiling. Nothing is
                 # acquired until the operator has chosen.
                 if (parsed.get("start_s") is None and parsed.get("end_s") is None):
+                    # NO EXPLICIT INTENT -> the operator chooses, for ANY source, short
+                    # or long. Whole video is disabled only when the shared safety
+                    # contract refuses it, and the refusal is explained in the gate's
+                    # own vocabulary. Nothing is downloaded before the answer.
                     _res_choice = manual_media_intake.resolve_source_url(parsed["url"])
                     _cap_choice = manual_media_intake.resolve_platform_capability(
                         _res_choice.get("platform", ""))
                     _dur_choice = manual_media_intake.probe_source_duration(
                         _res_choice.get("canonical_url") or parsed["url"])
-                    if manual_media_intake.window_is_required(
-                            platform=_cap_choice["platform"]
-                            or _res_choice.get("platform", ""),
-                            content_id=str(_res_choice.get("content_id") or ""),
-                            canonical_url=_res_choice["canonical_url"],
-                            item_kind=str(_res_choice.get("kind") or ""),
-                            source_duration_s=_dur_choice,
-                            long_form_capable=bool(_cap_choice.get("long_form")),
-                            requires_window_for_long_source=bool(
-                                _cap_choice.get("requires_window_for_long_source"))):
-                        # Is a segment REQUIRED, or are we merely unable to prove the
-                        # source is short? Only the former may disable Whole video: an
-                        # unproven length (a flaky metadata probe) must still let the
-                        # operator take a legitimately short source whole.
-                        try:
-                            _limit_ms = int(
-                                manual_media_intake._acq("source_window").MS_MAX)
-                        except Exception:  # noqa: BLE001
-                            _limit_ms = 300_000
-                        _seg_required = bool(
-                            _cap_choice.get("requires_window_for_long_source")) or (
-                            isinstance(_dur_choice, (int, float))
-                            and _dur_choice * 1000.0 > _limit_ms)
-                        _ref = _mi_remember_pending(
-                            url=parsed["url"], tenant=tenant, submitter=submitter,
-                            channel_id=channel_id)
-                        # Nothing was acquired, so the transient working dir is not
-                        # retained: an offered choice is not a failure.
-                        manual_media_intake.cleanup(temp_dir)
-                        temp_dir = ""
-                        self._mi_present_choice(
-                            application_id, interaction_token, ref=_ref,
-                            requires_window=_seg_required,
-                            source_duration_s=_dur_choice)
-                        print(f"[manual-intake] operator choice required — offered "
-                              f"ref={_ref} duration={_dur_choice} "
-                              f"segment_required={_seg_required}", flush=True)
-                        return
+                    _allowed, _refuse = manual_media_intake.whole_source_verdict(
+                        platform=_cap_choice["platform"]
+                        or _res_choice.get("platform", ""),
+                        content_id=str(_res_choice.get("content_id") or ""),
+                        canonical_url=_res_choice["canonical_url"],
+                        item_kind=str(_res_choice.get("kind") or ""),
+                        source_duration_s=_dur_choice,
+                        requires_window_for_long_source=bool(
+                            _cap_choice.get("requires_window_for_long_source")))
+                    _ref = _mi_remember_pending(
+                        url=parsed["url"], tenant=tenant, submitter=submitter,
+                        channel_id=channel_id)
+                    # Nothing was acquired, so the transient working dir is not
+                    # retained: an offered choice is not a failure.
+                    manual_media_intake.cleanup(temp_dir)
+                    temp_dir = ""
+                    self._mi_present_choice(
+                        application_id, interaction_token, ref=_ref,
+                        whole_allowed=_allowed, refusal=_refuse,
+                        source_duration_s=_dur_choice)
+                    print(f"[manual-intake] operator choice offered ref={_ref} "
+                          f"duration={_dur_choice} whole_allowed={_allowed} "
+                          f"refusal={_refuse}", flush=True)
+                    return
                 local_path, _resolved = manual_media_intake.acquire_url_media(
                     parsed["url"], out_dir=temp_dir,
                     start_s=parsed.get("start_s"), end_s=parsed.get("end_s"))
@@ -3005,6 +3115,8 @@ class Handler(BaseHTTPRequestHandler):
             if size > MANUAL_MEDIA_MAX_BYTES:
                 raise RuntimeError(f"attachment {size} bytes exceeds cap {MANUAL_MEDIA_MAX_BYTES}")
             stage = "probe_media"
+            self._mi_status(application_id, interaction_token,
+                            "⏳ Validating working source…", stage="probe_media")
             probe = manual_media_intake.probe_media(local_path)
             if not probe.get("has_video"):
                 raise RuntimeError("supplied file has no video stream")
@@ -3036,6 +3148,8 @@ class Handler(BaseHTTPRequestHandler):
                   f"unavailable={source_metadata.get('unavailable')} "
                   f"provenance={source_metadata.get('provenance')}", flush=True)
             stage = "durable_store_ghl"
+            self._mi_status(application_id, interaction_token,
+                            "⏳ Storing working source…", stage="durable_store_ghl")
             reused = manual_media_intake.find_existing_media(
                 SUPABASE_URL, SUPABASE_KEY, _cv["platform"], _cv["canonical_url"],
                 tenant, probe["sha256"])
@@ -3067,6 +3181,9 @@ class Handler(BaseHTTPRequestHandler):
             submission = {**(row if isinstance(row, dict) else payload),
                           "duplicate_fingerprint": payload["duplicate_fingerprint"]}
             stage = "content_intelligence"
+            self._mi_status(application_id, interaction_token,
+                            "⏳ Running Content Intelligence…",
+                            stage="content_intelligence")
             result = manual_intake_intelligence.run_manual_intelligence(
                 submission=submission, media_path=local_path, probe=probe,
                 media_url=durable_url,
@@ -3078,6 +3195,9 @@ class Handler(BaseHTTPRequestHandler):
                      f"durable media {durable_url}"]
             if result.get("ok"):
                 stage = "review_card"
+                self._mi_status(application_id, interaction_token,
+                                "✅ Ready for review → #clip-review",
+                                stage="review_card")
                 # Resolve the durable candidate by the AUTHORITATIVE key Content
                 # Intelligence itself proved (the pipeline assigns its own
                 # candidate fingerprint per materialized moment, so the
@@ -3120,8 +3240,10 @@ class Handler(BaseHTTPRequestHandler):
             if persisted:
                 note.append("submission row persisted — no need to re-upload")
             if temp_dir and not durable_url:
-                note.append(f"local media retained at {temp_dir} (no durable copy yet)")
-            note.append("Nothing was silently dropped: re-running the command is safe.")
+                # Never print a local filesystem path into Discord.
+                note.append("the working copy was kept locally (no durable copy yet)")
+            note.append(f"Retry safe: {'yes' if code in _MI_RETRY_SAFE_CODES else 'no'}")
+            note.append("Nothing was silently dropped.")
             try:
                 self._patch_original(application_id, interaction_token,
                                      content="\n".join(note))

@@ -303,40 +303,32 @@ def probe_source_duration(url: str) -> float | None:
     return None
 
 
-def window_is_required(*, platform: str, content_id: str, canonical_url: str,
-                       item_kind: str = "", source_duration_s: float | None = None,
-                       requires_window_for_long_source: bool = False,
-                       long_form_capable: bool = False) -> bool:
-    """Must the operator make an explicit choice BEFORE any acquisition runs?
+def whole_source_verdict(*, platform: str, content_id: str, canonical_url: str,
+                         item_kind: str = "",
+                         source_duration_s: float | None = None,
+                         requires_window_for_long_source: bool = False
+                         ) -> tuple[bool, str]:
+    """Is a WHOLE-SOURCE acquisition legal under the shared safety contract?
 
-    ONE authority: this does not re-implement the rule, it ASKS it. The answer is
-    True in two distinct situations, both meaning "do not download silently":
+    Returns ``(allowed, refusal_code)``. ONE authority: this ASKS the acquisition-mode
+    gate rather than restating its rule, so an operator surface can never offer an
+    option the gate would refuse — and can explain the refusal in the gate's own
+    vocabulary instead of inventing a second one.
 
-      * the shared gate REFUSES a whole-source acquisition for lack of a window
-        (over the clip limit, or a long-form platform with no duration proof);
-      * the gate ALLOWS it, but the duration is UNKNOWN on a long-form-capable
-        platform, so LOOM cannot prove the source is short. Metadata probes fail
-        intermittently (YouTube anti-bot), and "the probe failed" must not degrade
-        into a silent multi-hour download — the operator is asked instead.
-
-    A SHORT ITEM (clip/reel) is never gated this way: it is short by contract, so the
-    proven whole-clip lane keeps working with no prompt at all.
+    A SHORT ITEM (clip/reel) is short by contract, so it is always legal whole even
+    when its duration was not proven.
     """
     swc = _acq("source_window")
     if str(item_kind or "").lower() in swc.SHORT_ITEM_KINDS:
-        return False
+        return True, ""
     try:
         swc.validate_acquisition_mode(
             platform=platform, content_id=content_id, canonical_url=canonical_url,
             source_duration_s=source_duration_s, window=None, item_kind=item_kind,
             requires_window_for_long_source=requires_window_for_long_source)
-    except Exception as exc:  # noqa: BLE001 — any OTHER refusal is not this question
-        return getattr(exc, "code", "") == "LONG_FORM_REQUIRES_WINDOW"
-    # The gate allowed a whole-source acquisition. Only ask when we cannot prove the
-    # source is short — otherwise the legitimate short path stays prompt-free.
-    if source_duration_s is not None:
-        return False
-    return bool(long_form_capable)
+        return True, ""
+    except Exception as exc:  # noqa: BLE001 — a refusal is a refusal
+        return False, (getattr(exc, "code", "") or type(exc).__name__)
 
 
 # Canonical metric -> (extractor field, key written into observed_metrics). The
