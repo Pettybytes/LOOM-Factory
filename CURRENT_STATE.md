@@ -8,6 +8,69 @@
 
 ---
 
+## INCREMENT — 2026-09-28 (later still #3) — KICK VOD MANUAL INTAKE — **LIVE PASS** (+ gate repair)
+
+**`KICK VOD MANUAL INTAKE — LIVE PASS`** (operator-driven 2026-09-28 ~19:14–19:17 EDT). Bryan
+drove `…/videos/05e14bff-67ca-492a-ba79-3f3248ca41a5?t=1800` and chose ORIGINAL **30:00 → 31:00**.
+Verified independently from logs + runtime + persistence + provider state — not from the report.
+
+### Acquisition evidence
+
+| # | Contract | Evidence |
+|---|---|---|
+| 1 | ORIGINAL 30:00 → 31:00 | `time_start_s/end_s = 1800.0/1860.0`; `acquisition.original_start_s/end_s`; candidate `original_window` |
+| 2 | WORKING ≈00:00 → 01:00 | candidate `recommended_clip_start/end = 0.0/60.0`; `working_source_duration_s = 60.016016` |
+| 3 | ORIGINAL vs WORKING | `working_timebase_origin_s = 1800.0` |
+| 4 | Durable object | provider read: `kick__05e14bff-….mp4` **15,147,726 B**, `parentId 6aa61446df2d015553434919`; matches `size_bytes`; `placement_verified: true` |
+| 5 | Canonical identity hint-free | `source_url = …/videos/05e14bff-…` (no `?t=`) |
+| 6 | Hint preserved, NON-identity | `original_url = …?t=1800` verbatim |
+| 7 | Same asset, no second acquisition | `lineage.media_reference` == durable URL; `media_sha256 e120ca8cbe6b2cfb`; `media_already_acquired: true`; **0** acquisition jobs |
+| 8 | Decision actions | `['Approve Clip','Edit','Reject','Hold','Open Source']` |
+| 9 | **Bounded acquisition** | instrumented: production `acquire_url_media` on the identical URL+window → **25.0 s**, artifact **15,147,726 B / 60.016016 s**, `mode=bounded_segment`, window `1800000→1860000`, ONE file in out dir |
+| 10 | Public interaction | card; Edit opened the existing editor |
+
+**Item 9 detail.** The log shows `[intake] bounded window 30:00–31:00 (60.000s) range=6925935edeaa`,
+and the URL path injects `--download-sections` only when a window exists (no download-then-trim
+exists there). A full 8.02 h fetch (~6.8 GB at that bitrate) cannot complete in 25 s, cannot satisfy
+`--max-filesize 104857600` + `validate_finalized_media`, and would not yield a 15 MB working file;
+no large local residue remains and the whole pipeline finished in <2m19s.
+*Missing instrumentation (future work):* no resolved section arg and no per-attempt transfer size is
+logged, so the exact fetched range rests on exclusion plus the deterministic command.
+
+### Gate repair (approved, narrow scope)
+
+`media_qualification`'s Kick branch was **clip-only** (`kind == "clip" and ("clips/" in path or
+"clip=" in query)`), so **no Kick VOD could ever qualify** — every correctly-ingested Kick VOD was
+persisted `filtered_media` / `video_type_unproven` **before** scoring. Now a `/videos/<id>` path
+qualifies as video (id required, so a bare `/videos` list page or a channel page cannot qualify),
+and clip qualification is preserved. Mirrors the Twitch branch. Nothing else changed: no scoring
+thresholds, CI moment selection, SourceWindow, acquisition, GHL routing, human-override semantics,
+or the 300 s limit. +6 focused regression tests.
+
+### Media parity: poster, NOT playable video (recorded accurately)
+
+The operator reported the working media as playable in Discord. The log disagrees:
+`[source-review] media parity mode=poster playable=False bytes=15147726 limit=10485760` —
+*14.4 MiB exceeds this server's upload limit of 10.0 MiB (premium tier 0)*. The card therefore got a
+**poster preview** (working-media preview ✓, playable video ✗). The graceful fallback worked as
+designed; the gap is that the source-card path has no proxy step (see follow-up B).
+
+### OPEN FOLLOW-UPS — recorded, deliberately NOT fixed
+
+**A. TRANSCRIPT/SUBTITLE RELIABILITY.** The editor did not automatically obtain transcripts/
+subtitles for this Kick working clip; availability appears inconsistent across sources. Diagnose
+transcript acquisition/fallback across YouTube, Twitch, Kick and supplied media separately. **Does
+not block this pass.**
+
+**B. DISCORD REVIEW PROXY.** Oversized working assets fall back to a poster. Later: reuse/adapt the
+existing review-proxy mechanism so an oversized working asset can have a lightweight playable
+review proxy without touching the durable master.
+
+Suites: content_intelligence **482 passed** (+6) · discord-review **479 OK** · acquisition **596 OK**
+(the 1 CI failure is the pre-existing pytest-substring guard).
+
+---
+
 ## INCREMENT — 2026-09-28 (later still #2) — KICK VOD START-HINT SEAM — *ACCEPTANCE PREPARED, NOT CLAIMED*
 
 **Kick VOD acquisition is still NOT live-proven and this is NOT a LIVE PASS.** The previously

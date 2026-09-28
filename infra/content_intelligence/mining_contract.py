@@ -7,6 +7,7 @@ No platform theme, creator, query, or age inference is embedded in shared logic.
 from __future__ import annotations
 
 import math
+import re
 from urllib.parse import urlsplit
 
 
@@ -34,7 +35,15 @@ def media_qualification(record):
     elif platform == "tiktok":
         ok = "/video/" in path and kind not in {"image", "photo"}
     elif platform == "kick":
-        ok = kind == "clip" and ("clips/" in path or "clip=" in url.query)
+        # Kick CLIPS are short-by-contract; a Kick VOD is a `/videos/<id>` item. This
+        # branch previously accepted clips ONLY, so a legitimately-ingested and
+        # correctly-bounded Kick VOD was persisted as `filtered_media` /
+        # `video_type_unproven` BEFORE scoring — a stale capability classification, not
+        # a content verdict. Mirrors the Twitch branch, which already accepts VODs.
+        # An id is required, so a bare `/videos` list page or a channel page cannot
+        # qualify merely for being a Kick URL.
+        ok = (kind == "clip" and ("clips/" in path or "clip=" in url.query)) or bool(
+            re.search(r"/videos/[A-Za-z0-9_-]+", path))
     elif platform == "twitch":
         ok = url.hostname == "clips.twitch.tv" or "/clip/" in path or "/videos/" in path
     else:

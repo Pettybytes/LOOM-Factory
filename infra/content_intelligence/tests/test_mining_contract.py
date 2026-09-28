@@ -119,3 +119,63 @@ class MiningContractTests(unittest.TestCase):
             out, _ = resolve_inspected_moments(p, {'require_timed_payoff': True},
                                               inspected_start=0, inspected_end=12)
             self.assertEqual(out, [], payoff)
+
+    # --- Kick qualification: the stale clip-only rule (VODs were unqualifiable) ----
+    KICK_VOD = "https://kick.com/deenthegreat/videos/05e14bff-67ca-492a-ba79-3f3248ca41a5"
+
+    def media(self, platform, url, media_type="video"):
+        return NS(platform=platform, canonical_url=url,
+                  observed_metrics={"media_type": media_type})
+
+    def test_kick_vod_path_qualifies_as_video(self):
+        # The exact URL of the accepted Kick VOD intake: previously filtered_media /
+        # video_type_unproven BEFORE scoring, purely because the branch was clip-only.
+        self.assertEqual(media_qualification(self.media("kick", self.KICK_VOD)),
+                         (True, "video_qualified"))
+
+    def test_kick_clip_qualification_is_preserved(self):
+        for url in ("https://kick.com/deenthegreat/clips/clip_01M33XASMP29XTQ1QK0EV7TXDC",
+                    "https://kick.com/deenthegreat?clip=clip_01M33XASMP29XTQ1QK0EV7TXDC"):
+            with self.subTest(url=url):
+                self.assertEqual(
+                    media_qualification(self.media("kick", url, media_type="clip")),
+                    (True, "video_qualified"))
+
+    def test_non_video_kick_urls_do_not_qualify_just_by_being_kick(self):
+        for url in ("https://kick.com/deenthegreat",
+                    "https://kick.com/deenthegreat/videos",
+                    "https://kick.com/deenthegreat/videos/",
+                    "https://kick.com/deenthegreat/about",
+                    "https://kick.com/categories/games"):
+            with self.subTest(url=url):
+                self.assertEqual(
+                    media_qualification(self.media("kick", url)),
+                    (False, "video_type_unproven"))
+
+    def test_a_videos_path_on_a_non_kick_host_does_not_qualify(self):
+        self.assertEqual(
+            media_qualification(self.media("kick", "https://notkick.example/videos/abc")),
+            (False, "invalid_canonical_platform_url"))
+
+    def test_kick_image_or_gallery_still_rejected(self):
+        self.assertEqual(
+            media_qualification(self.media("kick", self.KICK_VOD, media_type="image")),
+            (False, "not_video"))
+
+    def test_youtube_and_twitch_qualification_unchanged(self):
+        self.assertEqual(
+            media_qualification(self.media("youtube", "https://www.youtube.com/watch?v=59xxeJCbzaM")),
+            (True, "video_qualified"))
+        self.assertEqual(
+            media_qualification(self.media("youtube", "https://www.youtube.com/shorts/abc")),
+            (True, "video_qualified"))
+        self.assertEqual(
+            media_qualification(self.media("twitch", "https://www.twitch.tv/videos/2880604198")),
+            (True, "video_qualified"))
+        self.assertEqual(
+            media_qualification(self.media("twitch", "https://clips.twitch.tv/SomeSlug", "clip")),
+            (True, "video_qualified"))
+        # ...and a non-video YouTube path is still not qualified.
+        self.assertEqual(
+            media_qualification(self.media("youtube", "https://www.youtube.com/@channel")),
+            (False, "video_type_unproven"))

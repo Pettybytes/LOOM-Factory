@@ -4,6 +4,41 @@
 
 **Timeline Editor Phase 2A: LIVE PASS (2026-09-26 ~22:11 EDT). CLOSED — do not redesign or further polish.** Bryan drove the visual timeline on the real editor surface (measured source ~33.30s; START ~3.37s; END ~30.70s; selected ~27.34s). Full evidence, provenance and preserved invariants: **`INCREMENT — TIMELINE EDITOR PHASE 2A`** below.
 
+## INCREMENT — 2026-09-28 (later still #3) — KICK VOD MANUAL INTAKE — **LIVE PASS**
+
+**`KICK VOD MANUAL INTAKE — LIVE PASS`** (operator-driven 2026-09-28 ~19:14–19:17 EDT).
+`…/videos/05e14bff-67ca-492a-ba79-3f3248ca41a5?t=1800` → ORIGINAL **30:00 → 31:00**.
+
+Independently verified (logs + runtime + persistence + provider, not the operator report):
+**ORIGINAL 1800→1860** · **WORKING 0→60** with `working_timebase_origin_s 1800.0` ·
+**durable object** `kick__05e14bff-….mp4` **15,147,726 B** in the LOOM folder (matches recorded size,
+placement verified) · **canonical identity hint-free** with `original_url` keeping `?t=1800` ·
+**same asset, no second acquisition** (`media_already_acquired: true`, **0** acquisition jobs) ·
+**decision actions intact** (Approve Clip / Edit / Reject / Hold / Open Source).
+
+**Bounded acquisition (item 9) — instrumented, not inferred:** the production `acquire_url_media` on
+the identical URL+window returned in **25.0 s** with an artifact of **15,147,726 B / 60.016016 s**,
+`mode=bounded_segment`, window `1800000→1860000`, one file in the out dir — byte-identical to the
+durable object. A full 8.02 h fetch cannot complete in 25 s nor fit the 100 MiB ceiling. *Gap:* no
+section-arg/transfer-size is logged for the successful attempt (future instrumentation).
+
+**Gate repair (approved, narrow):** `media_qualification`'s Kick branch was clip-only, so **no Kick
+VOD could ever qualify** — every Kick VOD persisted `filtered_media` / `video_type_unproven` before
+scoring. Now `/videos/<id>` qualifies (id required; list/channel pages do not) and clips are
+preserved. No other semantics touched. +6 regression tests.
+
+**Recorded accurately, against the report:** the working media was **not** playable in Discord —
+`mode=poster playable=False` because 14.4 MiB exceeds the tier-0 10 MiB upload limit. The card showed
+a poster preview; the graceful fallback worked.
+
+**OPEN FOLLOW-UPS (not fixed):** A) transcript/subtitle reliability across platforms; B) a review
+proxy so oversized working assets can be playable in Discord without touching the durable master.
+
+Suites: content_intelligence **482** (+6) · discord-review **479** · acquisition **596** (1
+pre-existing pytest-guard failure).
+
+---
+
 ## INCREMENT — 2026-09-28 (later still) — TWITCH VOD MANUAL INTAKE — **LIVE PASS**
 
 **`TWITCH VOD MANUAL INTAKE — LIVE PASS`** (operator-driven 2026-09-28 ~18:47 EDT, HEAD `16a6c86`).
