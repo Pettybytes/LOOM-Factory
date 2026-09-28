@@ -81,10 +81,11 @@ class ChoicePresentationTests(unittest.TestCase):
 
 
 class GateIsTheOneAuthorityTests(unittest.TestCase):
-    def _ask(self, duration):
+    def _ask(self, duration, *, long_form_capable=False):
         return mmi.window_is_required(
             platform="youtube", content_id=YT_ID, canonical_url=YT,
             item_kind="", source_duration_s=duration,
+            long_form_capable=long_form_capable,
             requires_window_for_long_source=False)
 
     def test_long_source_requires_a_window(self):
@@ -93,8 +94,16 @@ class GateIsTheOneAuthorityTests(unittest.TestCase):
     def test_short_source_does_not(self):
         self.assertFalse(self._ask(34.3))
 
-    def test_unknown_duration_on_youtube_is_not_forced(self):
-        self.assertFalse(self._ask(None))
+    def test_unknown_duration_on_a_long_form_platform_requires_a_choice(self):
+        """A failed metadata probe must not degrade into a silent long download."""
+        self.assertTrue(self._ask(None, long_form_capable=True))
+
+    def test_unknown_duration_without_long_form_capability_is_not_forced(self):
+        self.assertFalse(self._ask(None, long_form_capable=False))
+
+    def test_a_known_long_source_never_needs_the_unknown_length_rule(self):
+        # Proven long: the gate itself refuses, so long_form_capable is irrelevant.
+        self.assertTrue(self._ask(LONG_SOURCE_S, long_form_capable=False))
 
     def test_long_form_platform_requires_a_window_even_when_duration_unknown(self):
         self.assertTrue(mmi.window_is_required(
@@ -109,6 +118,15 @@ class GateIsTheOneAuthorityTests(unittest.TestCase):
             platform="kick", content_id="clip_01M33XASMP29XTQ1QK0EV7TXDC",
             canonical_url="https://kick.com/x/clips/clip_01M33XASMP29XTQ1QK0EV7TXDC",
             item_kind="clip", source_duration_s=None,
+            requires_window_for_long_source=True))
+
+    def test_a_clip_is_never_gated_even_on_a_long_form_capable_platform(self):
+        """A short item is short by contract, so it is asked about even when the
+        platform is long-form capable and its duration was not proven."""
+        self.assertFalse(mmi.window_is_required(
+            platform="twitch", content_id="SomeSlug",
+            canonical_url="https://clips.twitch.tv/SomeSlug",
+            item_kind="clip", source_duration_s=None, long_form_capable=True,
             requires_window_for_long_source=True))
 
 

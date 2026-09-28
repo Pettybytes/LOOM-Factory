@@ -305,22 +305,38 @@ def probe_source_duration(url: str) -> float | None:
 
 def window_is_required(*, platform: str, content_id: str, canonical_url: str,
                        item_kind: str = "", source_duration_s: float | None = None,
-                       requires_window_for_long_source: bool = False) -> bool:
-    """Would the SHARED gate refuse a whole-source acquisition for lack of a window?
+                       requires_window_for_long_source: bool = False,
+                       long_form_capable: bool = False) -> bool:
+    """Must the operator make an explicit choice BEFORE any acquisition runs?
 
-    ONE authority: this does not re-implement the rule, it ASKS it. The adapter uses
-    the answer to offer the operator an explicit segment choice instead of attempting
-    a download the gate would (correctly) refuse.
+    ONE authority: this does not re-implement the rule, it ASKS it. The answer is
+    True in two distinct situations, both meaning "do not download silently":
+
+      * the shared gate REFUSES a whole-source acquisition for lack of a window
+        (over the clip limit, or a long-form platform with no duration proof);
+      * the gate ALLOWS it, but the duration is UNKNOWN on a long-form-capable
+        platform, so LOOM cannot prove the source is short. Metadata probes fail
+        intermittently (YouTube anti-bot), and "the probe failed" must not degrade
+        into a silent multi-hour download — the operator is asked instead.
+
+    A SHORT ITEM (clip/reel) is never gated this way: it is short by contract, so the
+    proven whole-clip lane keeps working with no prompt at all.
     """
+    swc = _acq("source_window")
+    if str(item_kind or "").lower() in swc.SHORT_ITEM_KINDS:
+        return False
     try:
-        swc = _acq("source_window")
         swc.validate_acquisition_mode(
             platform=platform, content_id=content_id, canonical_url=canonical_url,
             source_duration_s=source_duration_s, window=None, item_kind=item_kind,
             requires_window_for_long_source=requires_window_for_long_source)
-        return False
     except Exception as exc:  # noqa: BLE001 — any OTHER refusal is not this question
         return getattr(exc, "code", "") == "LONG_FORM_REQUIRES_WINDOW"
+    # The gate allowed a whole-source acquisition. Only ask when we cannot prove the
+    # source is short — otherwise the legitimate short path stays prompt-free.
+    if source_duration_s is not None:
+        return False
+    return bool(long_form_capable)
 
 
 # Canonical metric -> (extractor field, key written into observed_metrics). The

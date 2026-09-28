@@ -2944,8 +2944,22 @@ class Handler(BaseHTTPRequestHandler):
                             canonical_url=_res_choice["canonical_url"],
                             item_kind=str(_res_choice.get("kind") or ""),
                             source_duration_s=_dur_choice,
+                            long_form_capable=bool(_cap_choice.get("long_form")),
                             requires_window_for_long_source=bool(
                                 _cap_choice.get("requires_window_for_long_source"))):
+                        # Is a segment REQUIRED, or are we merely unable to prove the
+                        # source is short? Only the former may disable Whole video: an
+                        # unproven length (a flaky metadata probe) must still let the
+                        # operator take a legitimately short source whole.
+                        try:
+                            _limit_ms = int(
+                                manual_media_intake._acq("source_window").MS_MAX)
+                        except Exception:  # noqa: BLE001
+                            _limit_ms = 300_000
+                        _seg_required = bool(
+                            _cap_choice.get("requires_window_for_long_source")) or (
+                            isinstance(_dur_choice, (int, float))
+                            and _dur_choice * 1000.0 > _limit_ms)
                         _ref = _mi_remember_pending(
                             url=parsed["url"], tenant=tenant, submitter=submitter,
                             channel_id=channel_id)
@@ -2955,9 +2969,11 @@ class Handler(BaseHTTPRequestHandler):
                         temp_dir = ""
                         self._mi_present_choice(
                             application_id, interaction_token, ref=_ref,
-                            requires_window=True, source_duration_s=_dur_choice)
-                        print(f"[manual-intake] window required — choice offered "
-                              f"ref={_ref} duration={_dur_choice}", flush=True)
+                            requires_window=_seg_required,
+                            source_duration_s=_dur_choice)
+                        print(f"[manual-intake] operator choice required — offered "
+                              f"ref={_ref} duration={_dur_choice} "
+                              f"segment_required={_seg_required}", flush=True)
                         return
                 local_path, _resolved = manual_media_intake.acquire_url_media(
                     parsed["url"], out_dir=temp_dir,
