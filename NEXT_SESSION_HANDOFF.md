@@ -4,6 +4,32 @@
 
 **Timeline Editor Phase 2A: LIVE PASS (2026-09-26 ~22:11 EDT). CLOSED — do not redesign or further polish.** Bryan drove the visual timeline on the real editor surface (measured source ~33.30s; START ~3.37s; END ~30.70s; selected ~27.34s). Full evidence, provenance and preserved invariants: **`INCREMENT — TIMELINE EDITOR PHASE 2A`** below.
 
+## INCREMENT — 2026-09-28 (later still) — TWITCH VOD MANUAL INTAKE — **LIVE PASS**
+
+**`TWITCH VOD MANUAL INTAKE — LIVE PASS`** (operator-driven 2026-09-28 ~18:47 EDT, HEAD `16a6c86`).
+Bryan drove `https://www.twitch.tv/videos/2880604198?t=00h26m10s` and chose ORIGINAL 26:10 → 27:10.
+
+Independently verified from logs + runtime + persistence (not from the operator report):
+**ORIGINAL 26:10→27:10** (`time_start_s/time_end_s` 1570/1630, `acquisition.original_*`, candidate
+`original_window`) · **WORKING 00:00→01:00** (candidate `recommended_clip_*` 0.0/60.0,
+`working_timebase_origin_s` 1570.0, `working_source_duration_s` 60.016016) · **durable object is the
+bounded 60 s artifact** (provider read: `twitch__2880604198.mp4` 32,956,932 B,
+`parentId 6aa61446df2d015553434919`, placement verified) · **same asset on the review card, no second
+acquisition** (`lineage.media_sha256` matches, `media_already_acquired: true`, 0 acquisition jobs) ·
+**canonical identity is the VOD without `?t=`** · **hint kept as non-identity `original_url`**.
+
+**Bounded acquisition (the important one):** `[intake] bounded window 26:10–27:10 (60.000s)
+range=8c082452b496` with `--download-sections` present on the only code path used (no download-then-trim
+exists there); a 60.016 s / 33 MB artifact where a full ~6 GB source would have breached the 100 MiB
+ceiling (`--max-filesize` + `validate_finalized_media`) and been refused; **no large local residue**
+(temp dirs empty) and the run finished within seconds of the modal submit. Full detail:
+`CURRENT_STATE.md` → `INCREMENT — 2026-09-28 (later still) — TWITCH VOD MANUAL INTAKE — LIVE PASS`.
+
+Supporting commits: `3f62e86` (#clip-review working media) → `16a6c86` (Twitch VOD contract + the
+identity fix that stopped `?t=` splitting dedup identity). **Not** done and not implied: Kick, OBS.
+
+---
+
 ## INCREMENT — 2026-09-27 (later) — BOUNDED-INTAKE SEAM REPAIR
 
 **Status: `CODE/SEAM VERIFIED — LIVE ACCEPTANCE EXTERNALLY BLOCKED`.**

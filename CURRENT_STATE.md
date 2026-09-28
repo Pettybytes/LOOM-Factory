@@ -8,6 +8,56 @@
 
 ---
 
+## INCREMENT — 2026-09-28 (later still) — TWITCH VOD MANUAL INTAKE — **LIVE PASS**
+
+**`TWITCH VOD MANUAL INTAKE — LIVE PASS`** (operator-driven, 2026-09-28 ~18:47 EDT). Bryan
+drove `https://www.twitch.tv/videos/2880604198?t=00h26m10s`, chose **ORIGINAL 26:10 → 27:10**.
+Verified independently here from logs, runtime **and persistence** — not from the report.
+
+Supporting code (both committed, both reloaded before the run): `3f62e86` (working media on the
+`#clip-review` decision card) → `16a6c86` (Twitch VOD through the same contract + the identity fix).
+
+### Verified
+
+| # | Contract | Evidence |
+|---|---|---|
+| 1 | ORIGINAL provenance 26:10 → 27:10 | submission `time_start_s=1570.0` / `time_end_s=1630.0`; `media_reference.acquisition.original_start_s/end_s = 1570/1630`; candidate `boundary_plan.original_window` |
+| 2 | WORKING 00:00 → 01:00 | candidate `recommended_clip_start=0.0` / `recommended_clip_end=60.0`; `working_timebase_origin_s=1570.0`; `working_source_duration_s=60.016016` |
+| 3 | Durable object = the bounded 60 s artifact | provider read: `twitch__2880604198.mp4`, **32,956,932 B**, `parentId 6aa61446df2d015553434919` (LOOM folder) — byte-identical to our `size_bytes`, and `placement_verified: true` |
+| 4 | `#clip-review` uses THAT working asset, no second acquisition | candidate `lineage.media_reference` == the durable URL; `media_sha256 223c3f65…` == the uploaded working file; `media_already_acquired: true`; **0** `loom_acquisition_jobs` rows for this content id |
+| 5 | Canonical identity = the VOD **without** `?t=` | `source_url = https://www.twitch.tv/videos/2880604198` |
+| 6 | Timestamp hint preserved as NON-identity provenance | `original_url = …?t=00h26m10s` retained verbatim alongside the hint-free canonical |
+| 7 | **Bounded section fetched — not full-then-trim** | see below |
+
+### Item 7 — bounded acquisition, from runtime evidence
+
+The adapter does not log the raw yt-dlp argv, so this is proven by the code path plus three
+independent runtime facts rather than by quoting the command:
+
+* `[intake] bounded window 26:10–27:10 (60.000s) range=8c082452b496` — and the URL path injects
+  `--download-sections` **only** when a window exists; there is no download-then-trim code in that
+  path at all (`extract_local_window` is the *supplied-file* path). The log fingerprint matches
+  persistence exactly (`8c082452b496…`).
+* The delivered working asset is **60.016 s / 32,956,932 B**. At that bitrate the full 11,547 s VOD
+  would be ~6 GB; yt-dlp runs with `--max-filesize 104857600` and `validate_finalized_media`
+  enforces `within_ceiling`, so a whole-source artifact would have aborted or been rejected as
+  `MEDIA_EXCEEDS_LIMIT`. Neither occurred — 1080p settled on the first rung.
+* **No large local residue:** every intake temp dir for this run is empty. The only big leftovers are
+  the older *YouTube* failures (64 MB @17:27, 214 MB @Sep 26). The run also completed within seconds
+  of the modal submit, which a multi-GB fetch could not.
+
+### Notes carried forward
+
+* `duplicate_fingerprint 79793a732dd5…`; `acquisition_mode: bounded_segment`;
+  `acquisition_mechanism: local:yt-dlp`; `identity_reconciliation: reconciled`.
+* Engagement metadata honestly partial for Twitch (`views` only; comments/likes/saves/shares
+  reported as unavailable, not zero).
+* Unchanged: 300 s limit · SourceWindow/range contract · WORKING-vs-ORIGINAL coordinates · GHL
+  routing · capability truth · CI/human-review semantics · `038` · nested OpenShorts.
+* **Not** done and not implied: Kick, OBS local ingress.
+
+---
+
 ## INCREMENT — 2026-09-28 (later) — SEGMENT CHOICE UX + SEAM TESTS — *NOT LIVE ACCEPTED*
 
 **Commit `c166bff`** (+ seam tests). Live process reloaded; `/health`
