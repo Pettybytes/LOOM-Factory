@@ -3210,8 +3210,14 @@ class Handler(BaseHTTPRequestHandler):
                 if cand:
                     plan = result.get("boundary_plan") or {}
                     # Content/candidate review, NOT source-acquisition review.
+                    # The WORKING media travels with the decision card: it already
+                    # exists on disk at this point (the transient copy is released
+                    # only after the durable copy lands), so the card can render it
+                    # without downloading, transcoding or duplicating anything.
                     review_channel = manual_review_channel_id()
-                    self._post_source_card(review_channel, cand)
+                    self._post_source_card(review_channel, cand,
+                                           working_media_path=local_path,
+                                           durable_url=durable_url)
                     lines.append(f"✅ Content Intelligence: window "
                                  f"{plan.get('recommended_clip_start')}–"
                                  f"{plan.get('recommended_clip_end')}s "
@@ -3305,40 +3311,93 @@ class Handler(BaseHTTPRequestHandler):
         for c in candidates:
             self._post_source_card(channel_id, c)
 
-    def _post_source_card(self, channel_id, candidate):
+    def _attach_working_media(self, channel_id, posted, embed, components, *,
+                              working_media_path="", durable_url=""):
+        """Attach the candidate's WORKING media to a decision card, or attach nothing.
+
+        Media parity at the SHARED review-card seam: the same primitive the
+        acquisition path uses (``discord_media.attach_acquired_media``) renders the
+        working source, tier-aware, with its own poster fallback.
+
+        Nothing is downloaded from the source, transcoded, or duplicated, and GHL
+        stays the only durable store — the bytes attached are the working media the
+        candidate already owns. When no preview can be rendered the card is left
+        EXACTLY as posted: decoration must never block a human decision.
+        """
+        if not working_media_path or not os.path.isfile(working_media_path):
+            # No working copy available (e.g. re-analysis long after ingest). The
+            # durable reference is still the source of truth on the card; it is
+            # simply not re-materialised here, which would mean a download.
+            return posted
+        try:
+            message_id = str((posted or {}).get("id") or "")
+            if not message_id:
+                return posted
+            limit_bytes, tier = _card_upload_limit(channel_id)
+            poster_dir = os.path.dirname(working_media_path)
+            upload_name = ("working_"
+                           + re.sub(r"[^A-Za-z0-9._-]", "_",
+                                    os.path.basename(working_media_path)))[:120]
+            outcome = discord_media.attach_acquired_media(
+                token=DISCORD_BOT_TOKEN, channel_id=channel_id,
+                message_id=message_id, asset_path=working_media_path,
+                embed=dict(embed), components=components,
+                limit_bytes=limit_bytes, tier=tier, upload_name=upload_name,
+                poster_dir=poster_dir)
+            print(f"[source-review] media parity mode={outcome.get('mode')} "
+                  f"playable={outcome.get('playable')} "
+                  f"bytes={outcome.get('asset_bytes')} "
+                  f"limit={outcome.get('limit_bytes')} durability=reused", flush=True)
+            if outcome.get("reason"):
+                print(f"[source-review] media not playable: {outcome['reason']}", flush=True)
+        except Exception as e:  # noqa: BLE001 — the decision card must remain usable
+            print(f"[source-review] media parity skipped ({type(e).__name__}: {e})",
+                  flush=True)
+        return posted
+
+    def _post_source_card(self, channel_id, candidate, *, working_media_path="",
+                          durable_url=""):
         lineage = ((candidate.get("moment_evidence") or {}).get("lineage") or {})
         manual_media = lineage.get("origin") == "manual_media_intake"
-        payload = {
-            "embeds": [source_review.format_source_embed(candidate)],
-            "components": source_review.format_source_buttons(
-                candidate["duplicate_fingerprint"],
-                source_url=candidate.get("canonical_url") or "",
-                manual_media=manual_media),
-        }
+        embed = source_review.format_source_embed(candidate)
+        components = source_review.format_source_buttons(
+            candidate["duplicate_fingerprint"],
+            source_url=candidate.get("canonical_url") or "",
+            manual_media=manual_media)
+        payload = {"embeds": [embed], "components": components}
         existing_card = str(lineage.get("card_message_id") or "")
+        posted = None
         try:
             # ONE manual submission -> ONE active card: a re-analysis of the same
             # submission EDITS its existing card instead of minting a second one.
             if existing_card:
-                code, posted = http_json(
+                code, updated = http_json(
                     "PATCH", f"{DISCORD_API}/channels/{channel_id}/messages/{existing_card}",
                     DISCORD_BOT_TOKEN, body=payload, timeout=15)
-                if code in (200, 201) and posted.get("id"):
-                    return posted
-                print(f"[source-review] card update fell back to post (code={code})", flush=True)
-            code, posted = http_json("POST", f"{DISCORD_API}/channels/{channel_id}/messages",
-                                    DISCORD_BOT_TOKEN, body=payload, timeout=15)
-            if code not in (200, 201) or not posted.get("id"):
-                raise RuntimeError("source card post did not return a Discord message ID")
-            if manual_media:
-                # Bookkeeping only: never let it fail a card that already posted.
-                source_review.remember_card_message(
-                    SUPABASE_URL, SUPABASE_KEY,
-                    candidate.get("duplicate_fingerprint", ""), str(posted["id"]))
-            return posted
+                if code in (200, 201) and updated.get("id"):
+                    posted = updated
+                else:
+                    print(f"[source-review] card update fell back to post (code={code})",
+                          flush=True)
+            if posted is None:
+                code, created = http_json(
+                    "POST", f"{DISCORD_API}/channels/{channel_id}/messages",
+                    DISCORD_BOT_TOKEN, body=payload, timeout=15)
+                if code not in (200, 201) or not created.get("id"):
+                    raise RuntimeError("source card post did not return a Discord message ID")
+                posted = created
+                if manual_media:
+                    # Bookkeeping only: never let it fail a card that already posted.
+                    source_review.remember_card_message(
+                        SUPABASE_URL, SUPABASE_KEY,
+                        candidate.get("duplicate_fingerprint", ""), str(posted["id"]))
         except Exception as e:
             print(f"[source-review] card post failed: {type(e).__name__}", flush=True)
             raise
+        # Media parity, AFTER the decision surface exists and is usable.
+        return self._attach_working_media(
+            channel_id, posted, embed, components,
+            working_media_path=working_media_path, durable_url=durable_url)
 
     def _handle_submit_source_command(self, interaction):
         data = interaction.get("data", {})

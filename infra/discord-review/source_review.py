@@ -299,7 +299,11 @@ def format_mining_embed(c, base):
         s,e=p['recommended_clip_start'],p['recommended_clip_end']
         event = p.get('event_timestamp')
         event_label = _fmt_seconds(event) if isinstance(event, (int, float)) else "Unavailable"
-        add("Resolved window", f"Event {event_label}\nStart {_fmt_seconds(s)} · End {_fmt_seconds(e)} · Duration {e-s:g}s")
+        # The two "window"-looking groups on this card are DIFFERENT concepts and are
+        # now labelled as such: THIS one is the CI moment's coordinate range in the
+        # WORKING source's own clock (0-based, after any bounded extraction).
+        add("CI moment · working clock",
+            f"Event {event_label}\nStart {_fmt_seconds(s)} · End {_fmt_seconds(e)} · Duration {e-s:g}s")
     add("Why selected", me.get("why_selected") or ("; ".join(_reasons) if _reasons else None))
     add("First 0–3 second hook", me.get("hook_0_3s") or (
         "Not established — no qualifying moment" if (_analyzed and not _had_moment) else None))
@@ -317,7 +321,15 @@ def format_mining_embed(c, base):
             _lines.append("Dimensions: " + " · ".join(_shown))
         add("Analyzer findings", "\n".join(_lines))
     add("Reaction / commentary angle", me.get("reaction_angle"))
-    add("Completeness & boundary evidence", f"{c.get('completeness_verdict')}\nStart: {p.get('start_reason')}\nEnd: {p.get('end_reason')}")
+    # A VERDICT group, not a coordinate group — it carries CI's completeness verdict
+    # and its boundary REASONS, with no timestamps of its own. An absent reason must
+    # render as "Unavailable" (unknown), never as the literal string "None": the
+    # f-string used to interpolate Python None straight onto the card, which is the
+    # same unknown-as-a-value mistake the rest of this card avoids.
+    add("CI completeness & boundary evidence",
+        f"{c.get('completeness_verdict') or 'Unavailable'}\n"
+        f"Start: {p.get('start_reason') or 'Unavailable'}\n"
+        f"End: {p.get('end_reason') or 'Unavailable'}")
     add("Quality", f"Content {c.get('content_worthiness_score')} · Selection {c.get('source_selection_score')} · Confidence {c.get('source_selection_confidence')} · FIRE {'PASS' if c.get('fire_passed') else 'FAIL'}")
     if context.get("review_mode") == "human_curated":
         add("Review status", "HUMAN REVIEW OPTION — scores are advisory; not automatic Grade-A acceptance.\n"
