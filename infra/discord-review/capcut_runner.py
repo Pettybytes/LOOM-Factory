@@ -78,6 +78,20 @@ import time
 from typing import Any, Callable
 
 import capcut_handoff as ch
+import visual_state as vs
+
+# Canvas a chosen output format implies, used ONLY to check whether a persisted
+# composition already reflects the operator's choice (never to decide the
+# canvas itself — that comes from the persisted block).
+FORMAT_RATIOS = {"vertical": 9.0 / 16.0, "square": 1.0, "horizontal": 16.0 / 9.0}
+
+# Where LOOM's own render path is reachable from here: the same local backend
+# the editor re-renders through. Resolution goes through it rather than
+# re-implementing framing, and an unreachable backend is a truthful refusal,
+# never a guess.
+RENDER_ENDPOINT_ENV = "LOOM_RENDER_ENDPOINT"
+DEFAULT_RENDER_ENDPOINT = "http://127.0.0.1:8000/api/clip/reframe"
+RENDER_TIMEOUT_SECONDS = 1800
 
 # The installed CapCut Pro app looks here for projects (verified on this host:
 # CapCut Pro 9.2.0, 7 existing projects + root_meta_info.json). This is the SAME
@@ -175,6 +189,127 @@ def _discard_created_draft(target: str, store: str) -> bool:
 
 def _unavailable(message: str):
     return ch.CapCutHandoffUnavailable(message)
+
+
+# ---------------------------------------------------------------------------
+# The operator's stated choice, and whether persisted state already reflects it
+# ---------------------------------------------------------------------------
+def requested_choice(bootstrap: dict[str, Any], output_format: str = "") -> dict[str, Any]:
+    """The framing/output choice the operator has actually expressed.
+
+    "auto" is the pipeline's own default rather than a choice, so it is not
+    treated as one: doing so would re-render on every ordinary handoff. A pinned
+    framing (track/wide/split) or a concrete output format is a real choice, and
+    a version that does not carry composition for it must be resolved first.
+    """
+    fmt = str(output_format or bootstrap.get("output_format") or "").strip().lower()
+    framing = str(bootstrap.get("framing") or "").strip().lower()
+    if fmt == "auto":
+        fmt = ""
+    if framing == "auto":
+        framing = ""
+    return {"output_format": fmt, "framing": framing,
+            "expressed": bool(fmt or framing)}
+
+
+def state_matches_format(state: dict[str, Any], output_format: str) -> bool:
+    """Whether a persisted canvas already IS the requested output format."""
+    expected = FORMAT_RATIOS.get(str(output_format or "").lower())
+    if expected is None:
+        return True                      # unknown format: nothing to contradict
+    block = vs.canvas(state) or {}
+    try:
+        ratio = float(block["width"]) / float(block["height"])
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return False
+    return abs(ratio - expected) <= 1e-3
+
+
+def render_endpoint() -> str:
+    return (os.environ.get(RENDER_ENDPOINT_ENV) or "").strip() or DEFAULT_RENDER_ENDPOINT
+
+
+def resolve_via_render(*, bootstrap: dict[str, Any], media_path: str,
+                       requested: dict[str, Any], workspace: str,
+                       timeout: int = RENDER_TIMEOUT_SECONDS) -> dict[str, Any]:
+    """Obtain AUTHORITATIVE resolved state from LOOM's existing render path.
+
+    This deliberately does not frame anything itself. It asks the backend the
+    editor already re-renders through to render this clip with the operator's
+    choice, then reads the resolved composition that render persists beside its
+    output. Every way this can fail — no addressable render identity, backend
+    unreachable, no state produced — raises, so the caller can fail the handoff
+    closed instead of shipping unresolved framing to CapCut.
+    """
+    job_id = str(bootstrap.get("job_id") or "").strip()
+    clip_id = str(bootstrap.get("clip_id") or "").strip()
+    if not job_id and ":" in clip_id:
+        job_id = clip_id.rpartition(":")[0]
+    clip_index = bootstrap.get("clip_index")
+    if not job_id or clip_index is None:
+        raise _unavailable(
+            "the composition for this version was never resolved and cannot be "
+            "resolved now: the edit state carries no render identity "
+            "(job + clip index) to invoke LOOM's render path with")
+    try:
+        clip_index = int(clip_index)
+    except (TypeError, ValueError):
+        raise _unavailable(
+            "the composition for this version cannot be resolved: the edit "
+            f"state's clip index is not a number ({clip_index!r})") from None
+
+    payload = {"job_id": job_id, "clip_index": clip_index,
+               "reapply_captions": False}
+    if requested.get("framing"):
+        payload["framing"] = requested["framing"]
+    if requested.get("output_format"):
+        payload["output_format"] = requested["output_format"]
+
+    from urllib.error import URLError
+    from urllib.request import Request, urlopen
+
+    url = render_endpoint()
+    req = Request(url, data=json.dumps(payload).encode(), method="POST",
+                  headers={"Content-Type": "application/json"})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode() or "{}")
+    except (URLError, OSError, ValueError) as exc:
+        raise _unavailable(
+            "the composition for this version could not be resolved through "
+            f"LOOM's render path ({type(exc).__name__} calling {url}); the "
+            "handoff refuses to hand over unresolved framing") from None
+
+    served = str((body or {}).get("video_url") or "").strip()
+    if not served:
+        raise _unavailable(
+            "LOOM's render path returned no rendered clip, so no authoritative "
+            "composition could be read")
+    local = _served_video_path(served)
+    state = vs.load(local) if local else None
+    if not vs.is_resolved(state):
+        raise _unavailable(
+            "LOOM's render path produced no resolved composition for this "
+            f"version ({served})")
+    return state
+
+
+def _served_video_path(served_url: str) -> str:
+    """Map a `/videos/<job>/<file>` served URL to its local file, or "".
+
+    Read-only: it looks where the backend actually writes (the same root the
+    adapter is configured with). "" is reported as "not on this host" rather
+    than guessed at.
+    """
+    marker = "/videos/"
+    if marker not in served_url:
+        return ""
+    tail = served_url.split(marker, 1)[1]
+    root = os.path.expanduser(os.environ.get(
+        "LOOM_OPENSHORTS_OUTPUT",
+        "/Users/user/Desktop/LOOM-Factory/openshorts/output"))
+    candidate = os.path.join(root, *[p for p in tail.split("/") if p and p != ".."])
+    return candidate if os.path.isfile(candidate) else ""
 
 
 # ---------------------------------------------------------------------------
@@ -584,13 +719,58 @@ def _default_invoke(cmd: list[str], timeout: int) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
+def _apply_lane_operations(operations: list[dict[str, Any]], *, refs: dict[str, str],
+                           target: str, invocation: list[str],
+                           runner: Callable[[list[str], int], tuple[int, str, str]],
+                           timeout: int) -> list[dict[str, Any]]:
+    """Apply the lane's own composition commands to a compiled draft.
+
+    The compile spec carries the canvas, the items and the keyframes; a layered
+    general composition also needs the lane's background-blur capability, which
+    no spec field expresses. It is applied HERE, through the lane's own command,
+    against the segment the spec created (resolved by the ref the item declared)
+    — never by writing draft JSON ourselves.
+
+    Raises on any failure so the caller can discard the half-composed draft
+    rather than leaving a project that opens with the wrong picture.
+    """
+    applied: list[dict[str, Any]] = []
+    for operation in operations or []:
+        kind = str(operation.get("op") or "")
+        ref = str(operation.get("ref") or "")
+        segment_id = refs.get(ref)
+        if not segment_id:
+            raise _unavailable(
+                f"the compiled draft has no segment for '{ref}', so its "
+                f"'{kind}' composition cannot be applied")
+        if kind == "bg-blur":
+            level = int(operation.get("level") or 0)
+            if level not in (1, 2, 3, 4):
+                raise _unavailable(
+                    f"background blur level {level!r} is outside the lane's 1-4 range")
+            command = list(invocation) + ["bg-blur", target, segment_id, str(level)]
+        else:
+            raise _unavailable(
+                f"the lane has no command for the '{kind}' composition operation")
+        code, out, err = runner(command, timeout)
+        if code != 0:
+            raise _unavailable(
+                f"capcut-cli {kind} failed (exit {code}): "
+                f"{(err or out or '').strip()[:300] or 'no output'}")
+        applied.append({"op": kind, "ref": ref, "segment_id": segment_id,
+                        "level": operation.get("level"),
+                        "renderer_blur_sigma": operation.get("renderer_blur_sigma")})
+    return applied
+
+
 def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
                 acquisition: dict[str, Any] | None = None,
                 original_window: dict[str, Any] | None = None,
                 caption_blocks: Any = None,
                 asset_version: str = "",
                 draft_name: str = "",
-                aspect: str = ch.DEFAULT_ASPECT, fps: int = ch.DEFAULT_FPS,
+                aspect: str | None = None, fps: int | None = None,
+                output_format: str = "",
                 renderable: dict[str, Any] | None = None,
                 cli_path: str = "", draft_store: str = "",
                 template: str = "auto",
@@ -598,6 +778,7 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
                 force_write: bool = False,
                 timeout: int = COMPILE_TIMEOUT_SECONDS,
                 invoke: Callable[[list[str], int], tuple[int, str, str]] | None = None,
+                resolve_state: Callable[..., dict[str, Any]] | None = None,
                 ) -> dict[str, Any]:
     """Build the editable CapCut project for the CURRENT version.
 
@@ -605,6 +786,14 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
     ``capcut_handoff.renderable_copy``). It is the ONLY source of on-screen text:
     the bootstrap's own ``title``/``hook`` keys are metadata slots and are never
     read as copy.
+
+    The canvas and the composition come from the RESOLVED visual state LOOM's
+    renderer persisted for this asset (see ``visual_state``). When that state is
+    missing or does not own the asset being handed over, the composition is
+    resolved through LOOM's existing render path first (``resolve_state``, or
+    ``resolve_via_render`` by default) — this lane never sends unresolved or
+    stale framing to CapCut, and never invents a canvas for a choice the
+    operator actually made.
 
     Returns a report on success. Raises ``CapCutHandoffUnavailable`` on any
     failure — including an absent CLI — having changed NO LOOM state.
@@ -642,13 +831,110 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
     os.makedirs(workspace, exist_ok=True)
     staged = stage_working_media(media_path, workspace=workspace)
 
+    # --- authoritative visual state (see visual_state) ---------------------
+    # The block persisted beside the working asset describes the composition the
+    # renderer ACTUALLY used. It is used only while it owns the asset being
+    # handed over; otherwise the composition is resolved through LOOM's existing
+    # render path BEFORE anything is written, because handing CapCut raw or
+    # stale framing is the failure this lane exists to prevent.
+    requested = requested_choice(bootstrap, output_format)
+    persisted = vs.load(media_path)
+    verdict = vs.assess(persisted, digest=staged["sha256"],
+                        asset_version=asset_version)
+    state = persisted if verdict["usable"] else None
+    visual_report: dict[str, Any] = {
+        "ownership": verdict["reason"],
+        "requested": requested,
+        "state_source": "persisted" if state else "none",
+        "resolution": (state or {}).get("resolution"),
+        "output_baked": vs.is_baked(state) if state else None,
+        "canvas_source": None,
+        "scenes": [],
+        "lane_operations": [],
+    }
+    if state is not None and requested["output_format"] and not state_matches_format(
+            state, requested["output_format"]):
+        # The persisted render is a DIFFERENT canvas from the one the operator
+        # asked for, so it is not authoritative for this handoff.
+        visual_report["state_source"] = "not_this_format"
+        visual_report["reason"] = (
+            "the persisted composition is "
+            f"{(vs.canvas(state) or {}).get('ratio') or 'of unknown ratio'} but "
+            f"{requested['output_format']} was requested")
+        state = None
+
+    if state is None and not requested["expressed"]:
+        # Genuinely legacy: no composition was ever resolved AND the operator
+        # expressed no choice to honour, so nothing is invented and nothing is
+        # re-rendered on an ordinary handoff. The mapper's LABELLED fallback
+        # covers it.
+        visual_report["state_source"] = "none"
+    elif state is None:
+        # A real choice exists and no resolved composition reflects it: obtain
+        # authoritative state from LOOM's existing render path first.
+        resolver = resolve_state or resolve_via_render
+        visual_report["state_source"] = "resolved_via_render"
+        try:
+            state = resolver(bootstrap=bootstrap, media_path=media_path,
+                             requested=requested, workspace=workspace)
+        except ch.CapCutHandoffUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise _unavailable(
+                "the composition for this version could not be resolved through "
+                f"LOOM's render path ({type(exc).__name__}: {exc}); refusing to "
+                "hand over unresolved framing") from None
+        if not vs.is_resolved(state):
+            raise _unavailable(
+                "LOOM's render path produced no authoritative composition for "
+                "this version; refusing to hand over unresolved framing")
+
+    canvas_plan = composition = None
+    if state is not None:
+        canvas_plan = vs.canvas(state)
+        if canvas_plan is None:
+            raise _unavailable(
+                "the resolved composition records no canvas, so the operator's "
+                "chosen output format cannot be honoured")
+        # The geometry describes a composition that is ALREADY in this asset's
+        # own pixels only when the block was read from this asset's sidecar and
+        # ownership verified. Otherwise it was resolved against the asset as its
+        # INPUT and must be applied — never both.
+        baked_identity = bool(state is persisted and verdict["usable"]
+                              and vs.is_baked(state))
+        try:
+            composition = vs.plan_composition(
+                state, canvas=canvas_plan, source=state.get("source") or {},
+                clip_start=coords["start"], clip_duration=coords["duration"],
+                baked_identity=baked_identity)
+        except vs.UnrepresentableVisualState as exc:
+            raise _unavailable(
+                f"this composition cannot be handed to CapCut faithfully: {exc}"
+            ) from None
+        except vs.MissingVisualState as exc:
+            raise _unavailable(
+                f"the resolved composition is incomplete: {exc}") from None
+        visual_report.update({
+            "resolution": state.get("resolution"),
+            "output_baked": vs.is_baked(state),
+            "applied": not baked_identity,
+            "canvas_source": ch.CANVAS_SOURCE_PERSISTED,
+            "canvas": canvas_plan,
+            "scenes": composition["scenes"],
+            "lane_operations": composition["lane_ops"],
+        })
+    else:
+        visual_report["canvas_source"] = ch.CANVAS_SOURCE_LEGACY
+
     # The mapper is handed WORKING coordinates, so nothing downstream can see an
     # ORIGINAL timestamp.
     working_bootstrap = {**bootstrap,
                          "source_range": {"start": coords["start"],
                                           "end": coords["end"]}}
     spec = ch.build_capcut_spec(working_bootstrap, media_path=staged["staged_path"],
-                               aspect=aspect, fps=fps, renderable=renderable)
+                               aspect=aspect, fps=fps, renderable=renderable,
+                               canvas=canvas_plan, composition=composition,
+                               visual_state=state, clip_start=coords["start"])
     spec["name"] = safe_draft_name(spec.get("name") or "", store=store)
 
     caption_state: dict[str, Any] = {"included": False,
@@ -712,6 +998,15 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
         if not os.path.isfile(produced):
             raise _unavailable(
                 f"capcut-cli reported success but produced no draft at {produced!r}")
+
+        # Composition the compile spec cannot express (a layered general
+        # composition's background bed). Applied through the lane's own command
+        # against the segment the spec created, INSIDE this transaction so a
+        # failure discards the half-composed draft rather than leaving a project
+        # that opens with the wrong picture.
+        applied_operations = _apply_lane_operations(
+            spec.get("lane_operations") or [], refs=result.get("refs") or {},
+            target=target, invocation=invocation, runner=runner, timeout=timeout)
     except BaseException:
         # A refused or failed compile can leave a half-built project (and an
         # index entry) behind. Undo only what this run created, then re-raise:
@@ -753,6 +1048,11 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
                   "sha256": staged["sha256"],
                   "draft_copy": "copied into the draft by the CLI (self-contained)"},
         "captions": caption_state,
+        # What the composition actually was, and where it came from. The full
+        # block is in the spec (which is what provenance records); this is the
+        # operator-facing summary, and it names a fallback as a fallback.
+        "visual_state": {**visual_report,
+                         "applied_operations": applied_operations},
         "carried": ch.handoff_report(working_bootstrap, renderable)["carried"] + (
             [f"{caption_state['count']} caption block(s)"] if caption_state["included"] else []),
         "unsupported": ch.handoff_report(working_bootstrap, renderable)["unsupported"],

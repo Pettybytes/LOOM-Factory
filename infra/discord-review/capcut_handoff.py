@@ -21,8 +21,9 @@ fps (not held by LOOM)           -> 30 (declared default, see DEFAULT_FPS)
 media_path (local file)          -> tracks[video].items[0].path
 source_range.start               -> tracks[video].items[0].sourceStart   (the TRIM-IN)
 source_range.end - start         -> tracks[video].items[0].duration
-visual state (resolved)          -> tracks[video].items[0] composition fields
-                                    (see visual_state.py; absent -> identity)
+resolved visual state            -> canvas + per-scene items/keyframes, and the
+                                    lane's own background-blur operation for a
+                                    general composition (see visual_state.py)
 renderable_text.hook             -> tracks[text].items[0].text (0 -> min(2s, dur))
 renderable_text.title            -> tracks[text].items[1].text (if present)
 captions / word blocks           -> the compile spec's `captions` operation (an SRT the
@@ -30,6 +31,25 @@ captions / word blocks           -> the compile spec's `captions` operation (an 
                                     build_caption_operation(); timing is never
                                     invented and absence is reported, not faked.
 scenes / framing / social_caption-> NOT REPRESENTABLE (reported)
+
+THE CANVAS IS PERSISTED TRUTH, WITH A LABELLED FALLBACK
+-------------------------------------------------------
+An operator's chosen output format must survive to CapCut. So the canvas comes
+from the RESOLVED visual state the renderer recorded (``canvas=`` below), and
+``DEFAULT_ASPECT``/``DEFAULT_FPS`` are compatibility fallbacks for genuinely
+legacy state — an asset that never went through the renderer. The spec records
+WHICH of the two happened in ``canvas_source`` (``persisted`` vs
+``legacy_default``) so a fallback can never be mistaken for the operator's
+choice, in the spec or in the handoff report.
+
+COMPOSITION IS CARRIED, NOT RE-DERIVED
+--------------------------------------
+``composition`` is the plan ``visual_state.plan_composition`` produced from the
+RESOLVED state: per-scene items (the real crop windows, in source pixels,
+translated onto the working asset's timebase exactly once), the keyframes that
+keep a dynamic TRACK crop MOVING, and the lane operations a layered general
+composition needs. This module does no reframing arithmetic of its own, and it
+never manufactures resolved state from a legacy layout label.
 
 RENDERABLE COPY IS AN EXPLICIT CONTRACT (why it is not `bootstrap["title"]`)
 ---------------------------------------------------------------------------
@@ -55,8 +75,10 @@ import os
 from typing import Any
 
 # "Guaranteed-valid CapCut draft" inputs the compile spec supports.
-SUPPORTED = ("canvas (persisted output format)", "video item with trim-in (sourceStart)",
-             "item duration", "item composition (crop/scale/position)",
+SUPPORTED = ("canvas (persisted output format)",
+             "video items with trim-in (sourceStart) + per-scene composition",
+             "item duration", "item composition (scale/position/keyframes)",
+             "general composition background blur (lane operation)",
              "hook text", "title text", "fps")
 
 #: The ONE key on the bootstrap whose values are renderable copy.
@@ -84,9 +106,17 @@ ASPECT_PRESETS = {  # matches capcut-cli's own canvas presets
     "16:9": {"width": 1920, "height": 1080, "ratio": "16:9"},
     "1:1": {"width": 1080, "height": 1080, "ratio": "1:1"},
 }
+# Compatibility fallbacks ONLY: used when an asset genuinely carries no
+# persisted canvas (legacy state), and always flagged as such in the spec via
+# ``canvas_source``. They must never override a persisted format.
 DEFAULT_ASPECT = "9:16"
 DEFAULT_FPS = 30
 HOOK_MAX_SECONDS = 2.0
+
+#: How the spec's canvas was decided. Reported so a fallback is distinguishable
+#: from the operator's persisted choice at every layer (spec + handoff report).
+CANVAS_SOURCE_PERSISTED = "persisted"
+CANVAS_SOURCE_LEGACY = "legacy_default"
 
 
 class CapCutHandoffUnavailable(RuntimeError):
@@ -156,13 +186,25 @@ def renderable_copy(bootstrap: dict[str, Any],
 
 
 def build_capcut_spec(bootstrap: dict[str, Any], *, media_path: str,
-                      aspect: str = DEFAULT_ASPECT, fps: int = DEFAULT_FPS,
-                      renderable: dict[str, Any] | None = None) -> dict[str, Any]:
+                      aspect: str | None = None, fps: int | None = None,
+                      renderable: dict[str, Any] | None = None,
+                      canvas: dict[str, Any] | None = None,
+                      composition: dict[str, Any] | None = None,
+                      visual_state: dict[str, Any] | None = None,
+                      clip_start: float = 0.0) -> dict[str, Any]:
     """Map LOOM edit state to a `capcut-cli compile` spec (seconds, not µs).
 
     Pure and side-effect free: raises `CapCutHandoffUnavailable` instead of guessing
     when the state is insufficient, so a failed handoff can never damage the
     candidate, its version, or any approval state.
+
+    ``canvas`` is the PERSISTED canvas from the resolved visual state and wins
+    over ``aspect``/``fps``; those are compatibility fallbacks for legacy state
+    and the spec says which one was used (``canvas_source``). ``composition`` is
+    the plan from ``visual_state.plan_composition`` and replaces the single
+    whole-clip item with the scenes the render actually produced. ``visual_state``
+    is the persisted block itself, echoed into the spec so the immutable handoff
+    artifact records the state it was built from.
     """
     if not isinstance(bootstrap, dict):
         raise CapCutHandoffUnavailable("no edit state supplied")
@@ -185,7 +227,20 @@ def build_capcut_spec(bootstrap: dict[str, Any], *, media_path: str,
             f"invalid source_range {start!r}..{end!r}: end must exceed start")
     duration = round(end - start, 3)
 
-    preset = ASPECT_PRESETS.get(aspect) or ASPECT_PRESETS[DEFAULT_ASPECT]
+    persisted = canvas if isinstance(canvas, dict) and canvas.get("width") else None
+    if persisted:
+        canvas_fields = {"width": int(persisted["width"]),
+                         "height": int(persisted["height"]),
+                         "ratio": str(persisted.get("ratio") or ""),
+                         "fps": int(persisted.get("fps") or DEFAULT_FPS)}
+        canvas_source = CANVAS_SOURCE_PERSISTED
+    else:
+        preset = ASPECT_PRESETS.get(aspect or "") or ASPECT_PRESETS[DEFAULT_ASPECT]
+        canvas_fields = {"width": preset["width"], "height": preset["height"],
+                         "ratio": preset["ratio"],
+                         "fps": int(fps or DEFAULT_FPS)}
+        canvas_source = CANVAS_SOURCE_LEGACY
+
     copy = renderable_copy(bootstrap, renderable)
     spec: dict[str, Any] = {
         # The project name is VISIBLE in CapCut. It comes from renderable copy or
@@ -193,19 +248,57 @@ def build_capcut_spec(bootstrap: dict[str, Any], *, media_path: str,
         # base is unprefixed because ``capcut_runner.safe_draft_name`` adds the
         # "LOOM " prefix exactly once.
         "name": (copy["title"] or "handoff")[:80],
-        "width": preset["width"],
-        "height": preset["height"],
-        "ratio": preset["ratio"],
-        "fps": int(fps or DEFAULT_FPS),
-        "tracks": [
-            {"type": "video", "items": [{
-                "path": media_path,
-                "start": 0,
-                "duration": duration,
-                "sourceStart": round(start, 3),   # LOOM's trim-in, in source seconds
-            }]},
-        ],
+        "width": canvas_fields["width"],
+        "height": canvas_fields["height"],
+        "ratio": canvas_fields["ratio"],
+        "fps": canvas_fields["fps"],
+        # Where the canvas came from: the operator's persisted format, or the
+        # compatibility fallback. Never inferred by a consumer.
+        "canvas_source": canvas_source,
+        "tracks": [],
     }
+
+    if composition and composition.get("items"):
+        items = []
+        for planned in composition["items"]:
+            item = {"path": media_path,
+                    "start": planned.get("start", 0),
+                    "duration": planned.get("duration", duration),
+                    "sourceStart": planned.get("sourceStart", start),
+                    "ref": planned["ref"]}
+            for key in ("scale", "x", "y", "rotation", "opacity"):
+                if planned.get(key) is not None:
+                    item[key] = planned[key]
+            items.append(item)
+        spec["tracks"].append({"type": "video", "items": items})
+
+        # The persisted block travels IN the spec: the immutable handoff
+        # artifact must record the actual visual state it was built from.
+        spec["visual_state"] = visual_state or {}
+        spec["composition"] = {"scenes": composition.get("scenes") or [],
+                                "canvas_source": canvas_source}
+        # Lane operations the compile spec itself cannot express (a layered
+        # general composition's background blur). Applied by the runner through
+        # the lane's own commands, never re-derived.
+        if composition.get("lane_ops"):
+            spec["lane_operations"] = list(composition["lane_ops"])
+        operations = []
+        for keyframe in composition.get("keyframes") or []:
+            op = {"op": "keyframe", "target": keyframe["target"],
+                  "property": keyframe["property"],
+                  "time": keyframe["time"], "value": keyframe["value"]}
+            if keyframe.get("easing"):
+                op["easing"] = keyframe["easing"]
+            operations.append(op)
+        if operations:
+            spec["operations"] = operations
+    else:
+        spec["tracks"].append({"type": "video", "items": [{
+            "path": media_path,
+            "start": 0,
+            "duration": duration,
+            "sourceStart": round(start, 3),   # LOOM's trim-in, in source seconds
+        }]})
 
     # Text track: only copy LOOM genuinely intends to render. Absent -> no track.
     texts: list[dict[str, Any]] = []
