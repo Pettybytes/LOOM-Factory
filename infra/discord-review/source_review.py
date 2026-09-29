@@ -509,6 +509,125 @@ def source_lineage_bootstrap(candidate: dict[str, Any],
     }, "ok"
 
 
+def _trim_pair(correction_row: dict[str, Any] | None) -> tuple[float, float] | None:
+    """(trim_start, trim_end) from a correction row, or None when unusable."""
+    if not isinstance(correction_row, dict):
+        return None
+    try:
+        start = float(correction_row.get("trim_start"))
+        end = float(correction_row.get("trim_end"))
+    except (TypeError, ValueError):
+        return None
+    if not (end > start >= 0):
+        return None
+    return start, end
+
+
+def fetch_edited_version_rows(url: str, key: str, tenant_id: str, clip_id: str,
+                              asset_version: str) -> tuple[dict | None, dict | None]:
+    """(media_row, correction_row) for ONE registered edited version.
+
+    Never raises: a store that cannot answer yields (None, None), which the builder
+    turns into a truthful refusal rather than a fabricated payload.
+    """
+    def _one(table: str, filters: str) -> dict | None:
+        try:
+            rows = _get(url, key, f"{table}?{filters}&select=*&limit=1")
+        except Exception:  # noqa: BLE001 — an unanswerable store is not a payload
+            return None
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            return rows[0]
+        return None
+
+    base = (f"tenant_id=eq.{urllib.parse.quote(str(tenant_id))}"
+            f"&clip_id=eq.{urllib.parse.quote(str(clip_id))}")
+    media = _one("loom_media", f"{base}&asset_version=eq.{urllib.parse.quote(str(asset_version))}")
+    correction = _one("loom_edit_corrections",
+                      f"{base}&target_asset_version=eq.{urllib.parse.quote(str(asset_version))}")
+    return media, correction
+
+
+def edited_version_bootstrap(candidate: dict[str, Any],
+                             media_row: dict[str, Any] | None,
+                             correction_row: dict[str, Any] | None,
+                             requested_version: str
+                             ) -> tuple[dict[str, Any] | None, str]:
+    """Editor bootstrap payload for a REGISTERED EDITED version.
+
+    An edited version registers NO new media by contract (037): the render is
+deliberately never promoted to the canonical master, because a later version is
+rebuilt from the durable CLEAN PRE-HOOK SOURCE it came from (043). So the media a
+version can be reopened from is `clean_source_*`, and its `source_range` is the
+correction's recorded trim — which is exactly "the durable media and trim range"
+the editor needs.
+
+    Fails truthfully: an unknown version is `version_not_found` and a version with
+neither media nor a usable trim pair is `missing_durable_fields`. It never falls
+back to the source version and never substitutes a 0:00 range.
+    """
+    if not isinstance(media_row, dict):
+        return None, "version_not_found"
+    media_url = str(media_row.get("clean_source_url") or "")
+    trim = _trim_pair(correction_row)
+    if not media_url and trim is None:
+        return None, "missing_durable_fields"
+    duration = None
+    try:
+        raw_duration = media_row.get("duration_seconds")
+        if raw_duration is not None and float(raw_duration) > 0:
+            duration = float(raw_duration)
+    except (TypeError, ValueError):
+        duration = None
+    if duration is None and trim is not None:
+        duration = trim[1]
+    if duration is None or duration <= 0:
+        return None, "missing_durable_fields"
+    start, end = trim if trim is not None else (0.0, duration)
+    if end > duration:
+        end = duration
+    if not end > start:
+        return None, "missing_durable_fields"
+    size_bytes = media_row.get("clean_source_size_bytes")
+    try:
+        size_bytes = int(size_bytes) if size_bytes is not None else None
+    except (TypeError, ValueError):
+        size_bytes = None
+    return {
+        # The version's own hydratable media: the durable pre-hook source.
+        "media_url": media_url,
+        "media_sha256": str(media_row.get("clean_source_hash") or ""),
+        "media_size_bytes": size_bytes,
+        "clean_source_url": media_url,
+        "duration_seconds": round(float(duration), 2),
+        # THE TRIM RANGE — the operator's own recorded boundaries for this version.
+        "source_range": {"start": start, "end": end},
+        "framing": "auto",
+        "working_timebase_origin_s": 0.0,
+        "original_window": None,
+        # `title` stays empty and metadata travels as `source_title` (exactly as the
+        # source payload does), so platform metadata can never become renderable text.
+        "source_title": candidate.get("title") or "",
+        "title": "",
+        "renderable_text": {"hook": "", "title": ""},
+        "source_filename": media_row.get("clean_source_filename") or "",
+        "hook": "",
+        "has_burned_hook": False,
+        "has_burned_captions": False,
+        "social_caption": "",
+        "caption_text": "",
+        "captions": [],
+        "transcript": [],
+        "scenes": [],
+        "asset_version": requested_version,
+        "version_mode": "edited_version",
+        "previous_asset_version": (media_row.get("previous_asset_version")
+                                   or SOURCE_EDITOR_ASSET_VERSION),
+        "publication_status": media_row.get("publication_status") or "",
+        "tenant_id": candidate.get("tenant_id") or "",
+        "duplicate_fingerprint": candidate.get("duplicate_fingerprint") or "",
+    }, "ok"
+
+
 def format_source_buttons(fingerprint: str, *, disabled: bool = False,
                           source_url: str = "", manual_media: bool = False) -> list[dict[str, Any]]:
     """Buttons: Approve, Edit, Reject, Hold, then Open Source when a page URL exists.

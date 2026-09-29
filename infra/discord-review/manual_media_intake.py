@@ -324,6 +324,40 @@ def probe_source_duration(url: str) -> float | None:
     return None
 
 
+def probe_source_duration_diag(url: str) -> tuple[float | None, str]:
+    """(duration_s, unavailable_reason) from the SAME free metadata probe.
+
+    `probe_source_duration` collapses every failure into "unknown", which is right for
+    a safety decision but wrong for the operator: a source that NO LONGER EXISTS then
+    reads as "length not proven", the chooser is offered anyway, and the operator spends
+    a real decision on something that can never be fetched — only to get a generic
+    DOWNLOAD_FAILED later (observed live 2026-09-29 on a deleted Kick VOD: the platform's
+    own API answers `No query results for model [App\\Models\\Video]` while LOOM offered
+    the whole/segment choice).
+
+    `unavailable_reason` is non-empty ONLY for a definitive "gone" verdict, so a
+    transient probe failure degrades exactly as before.
+    """
+    ya = _acq("ytdlp_adapter")
+    try:
+        meta = json.loads(
+            ya.run_ytdlp_command(ya.build_probe_command(url), timeout=120.0) or "{}")
+        if isinstance(meta, dict) and meta.get("_type") in ("playlist", "multi_video"):
+            entries = [e for e in (meta.get("entries") or []) if isinstance(e, dict)]
+            if len(entries) == 1:
+                meta = entries[0]
+        if isinstance(meta, dict) and isinstance(meta.get("duration"), (int, float)):
+            return float(meta["duration"]), ""
+    except Exception as exc:  # noqa: BLE001 — classify, never raise
+        detail = str(exc)
+        if ya.is_source_unavailable(detail):
+            print(f"[intake] source UNAVAILABLE at the metadata stage: {detail[:160]}",
+                  flush=True)
+            return None, detail[:200]
+        print(f"[intake] duration probe unavailable ({type(exc).__name__})", flush=True)
+    return None, ""
+
+
 def whole_source_verdict(*, platform: str, content_id: str, canonical_url: str,
                          item_kind: str = "",
                          source_duration_s: float | None = None,

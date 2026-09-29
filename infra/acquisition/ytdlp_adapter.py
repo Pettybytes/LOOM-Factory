@@ -627,3 +627,29 @@ def classify_download_failure(stderr: str) -> str:
             or "connection" in text:
         return "DOWNLOAD_INCOMPLETE"
     return "DOWNLOAD_FAILED"
+
+
+# Markers that mean the SOURCE ITSELF no longer exists, as opposed to a transport or
+# extractor problem. Kept deliberately tight: a false positive here would refuse a
+# source that is actually fetchable, so only definitive "gone" phrasings are listed.
+# Observed live: Kick answers a deleted VOD with
+#   `ERROR: [kick:vod] <id>: Unable to download JSON metadata: HTTP Error 404: Not Found`
+# and its own API with `No query results for model [App\Models\Video]`.
+SOURCE_UNAVAILABLE_MARKERS = (
+    "http error 404",
+    "error 404",
+    "no query results",
+    "video unavailable",
+    "has been deleted",
+    "does not exist",
+)
+
+
+def is_source_unavailable(stderr: str) -> bool:
+    """Is this failure a DEFINITIVE 'the source no longer exists' verdict?
+
+    The distinction matters because it is the difference between retrying (transport)
+    and asking the operator for a different source (gone).
+    """
+    text = (stderr or "").lower()
+    return any(marker in text for marker in SOURCE_UNAVAILABLE_MARKERS)

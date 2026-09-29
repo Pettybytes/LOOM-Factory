@@ -256,6 +256,9 @@ _INTAKE_FAILURE_REASONS: dict[str, str] = {
         "the download did not finish — an incomplete transfer was detected.",
     "DOWNLOAD_FAILED":
         "the source could not be downloaded.",
+    "SOURCE_EXTERNALLY_UNAVAILABLE":
+        "the source no longer exists on the platform (deleted or expired), so there is "
+        "nothing to fetch. Retrying cannot help — submit a different link.",
     "SPLIT_STREAM_UNFINISHED":
         "the video and audio streams downloaded but never merged into one file.",
     "NO_FINALIZED_ARTIFACT":
@@ -1479,6 +1482,18 @@ def resolve_source_lineage_bootstrap(tenant_id, clip_id, source_asset_version):
         return None, "missing_durable_fields"
     if (candidate.get("tenant_id") or "") != tenant_id:
         return None, "missing_identity"
+    # A REGISTERED EDITED VERSION is hydrated from its OWN durable records, not from
+    # the source version. Previously any requested version other than the source was
+    # refused outright, so an edited v1.0 that HAD been registered (loom_media row +
+    # immutable trim correction) could never be reopened: the editor got
+    # "No durable media or trim range for this clip version" for a version whose media
+    # and trim were both on disk. The source-version path below is unchanged.
+    requested = str(source_asset_version or "").strip()
+    if requested not in ASSET_VERSION_LATEST_TOKENS + (source_review.SOURCE_EDITOR_ASSET_VERSION,):
+        media_row, correction_row = source_review.fetch_edited_version_rows(
+            SUPABASE_URL, SUPABASE_KEY, tenant_id, clip_id, requested)
+        return source_review.edited_version_bootstrap(
+            candidate, media_row, correction_row, requested)
     return source_review.source_lineage_bootstrap(candidate, source_asset_version)
 
 
@@ -3603,8 +3618,21 @@ class Handler(BaseHTTPRequestHandler):
                     _res_choice = manual_media_intake.resolve_source_url(parsed["url"])
                     _cap_choice = manual_media_intake.resolve_platform_capability(
                         _res_choice.get("platform", ""))
-                    _dur_choice = manual_media_intake.probe_source_duration(
-                        _res_choice.get("canonical_url") or parsed["url"])
+                    _dur_choice, _unavailable = (
+                        manual_media_intake.probe_source_duration_diag(
+                            _res_choice.get("canonical_url") or parsed["url"]))
+                    if _unavailable:
+                        # The metadata stage ALREADY KNOWS the source is gone. Offering the
+                        # choice here costs the operator a decision for something that can
+                        # never be fetched, and then reports it as a generic
+                        # DOWNLOAD_FAILED one round later. Fail closed, truthfully, at the
+                        # stage that found out — before any choice and before any byte.
+                        raise manual_media_intake.MediaIntakeError(
+                            "SOURCE_EXTERNALLY_UNAVAILABLE",
+                            "the source is no longer available on the platform",
+                            detail=f"platform={_res_choice.get('platform')} "
+                                   f"id={_res_choice.get('content_id')} "
+                                   f"probe={_unavailable[:120]}")
                     _allowed, _refuse = manual_media_intake.whole_source_verdict(
                         platform=_cap_choice["platform"]
                         or _res_choice.get("platform", ""),

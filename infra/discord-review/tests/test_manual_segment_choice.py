@@ -257,7 +257,11 @@ class _StubbedIntake:
             mock.patch.object(adapter, "resolve_manual_intake_channel", return_value="chan1"),
             mock.patch.object(adapter.tenant_routing, "list_active_tenants",
                               return_value={"dreemzy"}),
-            mock.patch.object(mmi, "probe_source_duration", side_effect=lambda u: self.duration),
+            # `_manual_intake_execute` now asks the DIAGNOSTIC probe, which can tell a
+            # SOURCE THAT NO LONGER EXISTS apart from an unproven length. The harness
+            # stubs that seam; a known duration keeps every assertion below unchanged.
+            mock.patch.object(mmi, "probe_source_duration_diag",
+                              side_effect=lambda u: (self.duration, "")),
             mock.patch.object(mmi, "acquire_url_media", side_effect=_acquire),
             mock.patch.object(mmi, "probe_media",
                               return_value={"duration_seconds": 35.0, "has_video": True,
