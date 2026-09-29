@@ -677,6 +677,11 @@ def resolve_editor_token(token: str):
         "source_asset_version": row.get("source_asset_version"),
         "launch_guild_id": row.get("launch_guild_id"),
         "launch_channel_id": row.get("launch_channel_id"),
+        # Durable session/version state, so the editor can tell whether this
+        # session already produced a version (and must therefore not start a
+        # second one). Additive: no caller's behaviour depends on their absence.
+        "status": row.get("status"),
+        "target_asset_version": row.get("target_asset_version"),
         "draft": row.get("draft"),
     }
 
@@ -922,6 +927,10 @@ def _session_identity(row):
         "source_asset_version": row.get("source_asset_version"),
         "job_id": job_id,
         "clip_index": clip_index,
+        # Durable version state for the editor's one-time auto-start decision.
+        "status": row.get("status"),
+        "target_asset_version": row.get("target_asset_version"),
+        "draft": row.get("draft"),
     }
 
 
@@ -2287,6 +2296,52 @@ def register_clip_media(tenant_id, clip_id, asset_version, job_id, ready_file, m
     except Exception as e:
         print(f"[media] loom_media upsert failed for {clip_id}: {e}", flush=True)
         return None
+
+
+def derive_clean_source_for_edit(job_id, ready_file):
+    """The clean pre-hook/pre-subtitle sibling for a JUST-FINALIZED edit render.
+
+    Returns the four `register_edited_asset` payload fields (p_clean_source_*)
+    for the artifact the edited render was made from, or {} when no clean
+    sibling genuinely exists in this job's output directory.
+
+    It is the SAME derivation the ingest path already uses
+    (`register_clip_media` -> `_strip_clean_filename`): the clean file is a
+    sibling of the rendered file in `OPENSHORTS_OUTPUT/<job_id>/`, reachable by
+    walking the `subtitled_<ts>_` / `hooked_<ts>_` / `hook_` prefixes back.
+
+    HONESTY: an empty dict (NULL fields) is the correct answer when the sibling
+    is not on disk — the version then stays truthfully replacement-unavailable.
+    Nothing here fabricates a reference, guesses a path, or borrows another
+    version's clean source; existence on disk is the evidence.
+    """
+    base = os.path.basename(str(ready_file or ""))
+    if not (job_id and base):
+        return {}
+    clean_name = _strip_clean_filename(base)
+    if not clean_name:
+        return {}
+    burned_prefix = bool(re.match(r'^(?:subtitled_\d+_|hooked_\d+_|hook_)', base))
+    if clean_name == base and burned_prefix:
+        # A burned derivative we could not walk back to a clean sibling: quite
+        # explicitly NOT the burned bytes presented as clean.
+        print(f"[complete] no clean sibling derivable from {base}", flush=True)
+        return {}
+    clean_path = os.path.join(OPENSHORTS_OUTPUT, job_id, clean_name)
+    if not os.path.exists(clean_path):
+        print(f"[complete] clean sibling absent: {clean_path}", flush=True)
+        return {}
+    up = ghl_upload_file(clean_path, clean_name)
+    if not up or not up.get("url"):
+        print(f"[complete] clean sibling upload failed: {clean_name} "
+              f"({ghl_last_upload_error() or 'unknown'})", flush=True)
+        return {}
+    return {
+        "p_clean_source_url": up.get("url"),
+        "p_clean_source_hash": _sha256_file(clean_path),
+        "p_clean_source_size_bytes": os.path.getsize(clean_path),
+        "p_clean_source_filename": clean_name,
+    }
 
 
 def _url_reachable(url: str, timeout: int = 8) -> bool:
@@ -5096,6 +5151,25 @@ class Handler(BaseHTTPRequestHandler):
         edl_metadata = dict(edl_metadata)
         edl_metadata["submission_fingerprint"] = incoming_fp
 
+        # The clean pre-hook/pre-subtitle sibling for THIS render, so the new
+        # version carries the identity the (unchanged, still-strict) Edit
+        # readiness gate requires. It already exists at finalize time: the same
+        # local-output convention register_clip_media uses. Honest by
+        # construction — {} (NULL fields) when it genuinely cannot be obtained,
+        # so the version stays truthfully replacement-unavailable rather than
+        # receiving a guessed, fabricated or borrowed reference.
+        clean_fields = {}
+        try:
+            cs_job_id, _cs_index = rehydrate_edit_job(
+                edit_session_id, session.get("tenant_id"),
+                session.get("clip_id"), session.get("source_asset_version"))
+            if cs_job_id:
+                clean_fields = derive_clean_source_for_edit(
+                    cs_job_id, normalize_ready_file(body.get("ready_file"), cs_job_id))
+        except Exception as e:  # noqa: BLE001 — never block a registration on this
+            print(f"[complete] clean-source derivation failed (non-fatal): "
+                  f"{type(e).__name__}: {e}", flush=True)
+
         rpc_payload = {
             "p_edit_session_id": edit_session_id,
             "p_content_type": body.get("content_type") or "video/mp4",
@@ -5108,6 +5182,9 @@ class Handler(BaseHTTPRequestHandler):
             "p_instruction": body.get("instruction"),
             "p_llm_assist_used": bool(body.get("llm_assist_used")),
             "p_edl_metadata": edl_metadata,
+            # NULL when genuinely unobtainable — the version is then honestly
+            # replacement-unavailable, and the Edit gate withholds Edit.
+            **clean_fields,
         }
         try:
             status, result = register_edited_asset_rpc(rpc_payload)
