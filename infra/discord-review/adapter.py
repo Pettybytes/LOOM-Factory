@@ -416,7 +416,10 @@ def _mi_remember_pending(*, url: str, tenant: str, submitter: str,
                          channel_id: str,
                          attachment: dict | None = None,
                          local_path: str = "",
-                         start_hint_ms: int = 0) -> str:
+                         start_hint_ms: int = 0,
+                         platform: str = "",
+                         source_id: str = "",
+                         item_kind: str = "") -> str:
     """Remember the operator's source so a later button/modal can resume it.
 
     ``local_path`` lets a SUPPLIED file resume without re-downloading it: the file is
@@ -426,6 +429,11 @@ def _mi_remember_pending(*, url: str, tenant: str, submitter: str,
     ``start_hint_ms`` is the source URL's NON-IDENTITY start timestamp (Twitch's
     ``?t=``), carried so the segment modal can PRE-FILL Start. It is a default the
     operator can overwrite, never an approved boundary and never part of identity.
+
+    ``platform``/``source_id``/``item_kind`` are the source's PUBLIC identity (the same
+    id the durable filename already carries). They are remembered so the later
+    interaction half of the route can log the SAME identity its offer logged — without
+    them, a lost click and an unentered executor look identical in the log.
     """
     ref = secrets.token_urlsafe(8).replace("-", "").replace("_", "")[:10]
     now = time.time()
@@ -439,8 +447,59 @@ def _mi_remember_pending(*, url: str, tenant: str, submitter: str,
                             "attachment": dict(attachment or {}),
                             "local_path": local_path,
                             "start_hint_ms": int(start_hint_ms or 0),
+                            "platform": platform,
+                            "source_id": source_id,
+                            "item_kind": item_kind,
                             "created_at": now}
     return ref
+
+
+def _mi_trace(stage: str, *, platform: str = "", source_id: str = "",
+              **fields: object) -> None:
+    """One `[intake-trace]` line for ONE stage of the Manual Intake route.
+
+    The chooser split the route in two — an offer, then a LATER interaction — and the
+    only link between the halves is an opaque ref. Correlating the halves by hand was
+    impossible, which is why "the click did nothing" could not be told apart from "the
+    executor never ran". This prints the SAME public source identity at every stage, so
+    "where did it stop?" is answerable from the log alone.
+
+    Never logs credentials, API keys, session tokens, auth headers, signed private URLs
+    or the full source URL: the identity is the platform's PUBLIC content id, the same
+    one the durable filename already carries. Never raises — a trace must not break the
+    work it reports on.
+    """
+    try:
+        parts = ["[intake-trace]", f"stage={stage}"]
+        if platform:
+            parts.append(f"platform={platform}")
+        if source_id:
+            parts.append(f"source_id={source_id}")
+        for key, value in fields.items():
+            if value is None or value == "":
+                continue
+            parts.append(f"{key}={value}")
+        print(" ".join(parts), flush=True)
+    except Exception:  # noqa: BLE001 — a trace must never break intake
+        pass
+
+
+def _mi_identity(parsed: dict) -> tuple[str, str]:
+    """(platform, stable public source id) for a submission, else ("", "").
+
+    Diagnostic only: this performs the SAME local canonicalisation the intake contract
+    performs, and it never reports a refusal — the classified error is raised later, by
+    the one authority that owns it. Never raises.
+    """
+    url = str((parsed or {}).get("url") or "")
+    if not url:
+        return "", ""
+    try:
+        resolved = manual_intake.validate_and_canonicalize(url)
+        return (str(resolved.get("platform") or ""),
+                str(resolved.get("content_id") or ""))
+    except Exception:  # noqa: BLE001 — identity is diagnostic; the real error comes later
+        return "", ""
 
 
 def _mi_release_local(entry: dict | None) -> None:
@@ -3205,6 +3264,14 @@ class Handler(BaseHTTPRequestHandler):
         interaction_token = str(interaction.get("token") or "")
         try:
             pending = _mi_pending(ref)
+            # RESUME RESOLVED / RESUME MISS — the second half of the route. A MISS with a
+            # CHOICE CLICK RECEIVED line above is a resume-state problem; a MISS (or
+            # nothing at all) with no click line means the interaction never arrived.
+            _mi_trace("resume_resolved" if pending else "resume_miss",
+                      platform=str((pending or {}).get("platform") or ""),
+                      source_id=str((pending or {}).get("source_id") or ""),
+                      action=action, ref=ref,
+                      reason="" if pending else "resume_state_absent")
             if not pending:
                 self._patch_original(application_id, interaction_token, content=(
                     "⌛ This choice expired or was already used. Re-post the source URL "
@@ -3212,7 +3279,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             parsed = {"url": pending["url"], "tenant": pending.get("tenant", ""),
                       "start_s": None, "end_s": None,
-                      "window_intent": False, "window_problem": ""}
+                      "window_intent": False, "window_problem": "",
+                      # The choice ref travels with the resume so every later stage can
+                      # log the SAME correlation id the offer logged.
+                      "_mi_ref": ref}
             if action == MI_ACT_SEGMENT:
                 values: dict[str, str] = {}
                 for row in ((interaction.get("data") or {}).get("components") or []):
@@ -3302,6 +3372,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _manual_media_worker(self, interaction, parsed, attachment):
         """Entry point for the MESSAGE context-menu command (modes A and B)."""
+        # INTAKE RECEIVED — the ingress point, before any identity is resolved (the
+        # source has not been canonicalised yet, so only the mode and submitter exist).
+        _mi_trace("intake_received", mode="upload" if attachment else "url",
+                  submitter=self._reviewer_name(interaction))
         self._manual_intake_execute(interaction, parsed, attachment)
 
     def _manual_intake_execute(self, interaction, parsed, attachment,
@@ -3321,7 +3395,17 @@ class Handler(BaseHTTPRequestHandler):
         temp_dir = ""
         durable_url = ""
         persisted = False
+        # ONE stable source identity for the whole route, resolved locally (no network)
+        # BEFORE any stage runs, so every later line — including a failure — names the
+        # same source. Never logs the URL itself, only the platform's public id.
+        _mi_platform, _mi_source_id = _mi_identity(parsed)
+        _mi_mode = "upload" if (attachment or supplied_path) else "url"
+        _mi_ref = str(parsed.get("_mi_ref") or "")
         try:
+            # EXECUTOR START — proves the proven executor was ENTERED. Without it, "the
+            # click did nothing" and "the executor never ran" are indistinguishable.
+            _mi_trace("executor_start", platform=_mi_platform, source_id=_mi_source_id,
+                      mode=_mi_mode, resumed="true" if _mi_ref else "false", ref=_mi_ref)
             # Everything below runs AFTER the acknowledgement: the channel guard
             # costs a network lookup and must never precede the defer.
             data_ctx = interaction.get("data", {}) or {}
@@ -3378,6 +3462,15 @@ class Handler(BaseHTTPRequestHandler):
                 "identity_reconciliation": None,
             }
             if attachment or supplied_path:
+                # ACQUISITION START (supplied media) — the mechanism and the mode are
+                # both decided HERE, so the next result line can be read against them.
+                _mi_trace("acquisition_start", platform=_mi_platform,
+                          source_id=_mi_source_id, mode=_mi_mode,
+                          mechanism="local:file_upload",
+                          window_mode=("bounded_segment"
+                                       if (parsed.get("start_s") is not None
+                                           or parsed.get("end_s") is not None)
+                                       else "whole_item"))
                 if supplied_path and os.path.exists(supplied_path):
                     # Resuming a choice for a file the operator ALREADY supplied: reuse
                     # the retained copy rather than fetching it a second time.
@@ -3444,7 +3537,10 @@ class Handler(BaseHTTPRequestHandler):
                         url=parsed["url"], tenant=tenant, submitter=submitter,
                         channel_id=channel_id, attachment=attachment,
                         local_path=local_path,
-                        start_hint_ms=int(_res_a.get("start_hint_ms") or 0))
+                        start_hint_ms=int(_res_a.get("start_hint_ms") or 0),
+                        platform=str(_res_a.get("platform") or ""),
+                        source_id=str(_res_a.get("content_id") or ""),
+                        item_kind=str(_res_a.get("kind") or ""))
                     # The PATCH that carries the choice is an INTERACTION UPDATE, not
                     # an acquisition step: label it truthfully so a delivery failure
                     # is never reported as an acquisition failure.
@@ -3457,6 +3553,13 @@ class Handler(BaseHTTPRequestHandler):
                     print(f"[manual-intake] operator choice offered (supplied file) "
                           f"ref={_ref_a} duration={_dur_a} "
                           f"whole_allowed={_allowed_a} refusal={_refuse_a}", flush=True)
+                    # CHOICE OFFERED — the identity every later CLICK/RESUME line must
+                    # match. Together they locate the seam a lost interaction died at.
+                    _mi_trace("choice_offered", platform=str(_res_a.get("platform") or ""),
+                              source_id=str(_res_a.get("content_id") or ""),
+                              mode="upload", kind=str(_res_a.get("kind") or ""),
+                              duration_s=_dur_a, whole_allowed=_allowed_a,
+                              refusal=_refuse_a, ref=_ref_a)
                     return
             else:
                 # Mode B — URL only. EXISTING resolver + EXISTING bounded local
@@ -3491,7 +3594,10 @@ class Handler(BaseHTTPRequestHandler):
                     _ref = _mi_remember_pending(
                         url=parsed["url"], tenant=tenant, submitter=submitter,
                         channel_id=channel_id,
-                        start_hint_ms=int(_res_choice.get("start_hint_ms") or 0))
+                        start_hint_ms=int(_res_choice.get("start_hint_ms") or 0),
+                        platform=str(_res_choice.get("platform") or ""),
+                        source_id=str(_res_choice.get("content_id") or ""),
+                        item_kind=str(_res_choice.get("kind") or ""))
                     # Nothing was acquired, so the transient working dir is not
                     # retained: an offered choice is not a failure.
                     manual_media_intake.cleanup(temp_dir)
@@ -3508,7 +3614,23 @@ class Handler(BaseHTTPRequestHandler):
                     print(f"[manual-intake] operator choice offered ref={_ref} "
                           f"duration={_dur_choice} whole_allowed={_allowed} "
                           f"refusal={_refuse}", flush=True)
+                    # CHOICE OFFERED — the identity every later CLICK/RESUME line must
+                    # match. Together they locate the seam a lost interaction died at.
+                    _mi_trace("choice_offered",
+                              platform=str(_res_choice.get("platform") or ""),
+                              source_id=str(_res_choice.get("content_id") or ""),
+                              mode="url", kind=str(_res_choice.get("kind") or ""),
+                              duration_s=_dur_choice, whole_allowed=_allowed,
+                              refusal=_refuse, ref=_ref)
                     return
+                # ACQUISITION START — the mode, mechanism and window decision that the
+                # very next result line has to be read against.
+                _mi_trace("acquisition_start", platform=_mi_platform,
+                          source_id=_mi_source_id, mode="url",
+                          mechanism="local:yt-dlp",
+                          window_mode=("bounded_segment"
+                                       if parsed.get("start_s") is not None
+                                       else "whole_item"))
                 local_path, _resolved = manual_media_intake.acquire_url_media(
                     parsed["url"], out_dir=temp_dir,
                     start_s=parsed.get("start_s"), end_s=parsed.get("end_s"))
@@ -3585,6 +3707,9 @@ class Handler(BaseHTTPRequestHandler):
                 durable = manual_media_intake.store_durable_media(
                     local_path, safe_name, folder_id=MANUAL_MEDIA_FOLDER_ID or None)
             durable_url = durable["url"]
+            _mi_trace("durable_store_result", platform=_mi_platform,
+                      source_id=_mi_source_id, result="stored",
+                      reused="true" if reused else "false")
             stage = "persist_submission"
             payload = manual_media_intake.build_media_submission(
                 url=parsed["url"], destination=tenant,
@@ -3617,6 +3742,7 @@ class Handler(BaseHTTPRequestHandler):
                      f"· submission {'created' if created else 'already existed'}",
                      f"source {payload['source_url']}",
                      f"durable media {durable_url}"]
+            _cand_state = "not_produced"
             if result.get("ok"):
                 stage = "review_card"
                 self._mi_status(application_id, interaction_token,
@@ -3632,6 +3758,7 @@ class Handler(BaseHTTPRequestHandler):
                 cand = source_review.fetch_candidate_by_fingerprint(
                     SUPABASE_URL, SUPABASE_KEY, _cand_fp)
                 if cand:
+                    _cand_state = "durable_row_found"
                     plan = result.get("boundary_plan") or {}
                     # Content/candidate review, NOT source-acquisition review.
                     # The WORKING media travels with the decision card: it already
@@ -3648,11 +3775,17 @@ class Handler(BaseHTTPRequestHandler):
                                  f"({result.get('boundary_provenance')}) → review card in "
                                  f"<#{review_channel}>")
                 else:
+                    _cand_state = "durable_row_absent"
                     lines.append("⚠️ CI produced a candidate but its durable row was not found")
             else:
                 lines.append(f"⚠️ Content Intelligence did not complete at "
                              f"`{result.get('stage')}`: {result.get('error')}")
             self._patch_original(application_id, interaction_token, content="\n".join(lines))
+            _mi_trace("candidate_result", platform=_mi_platform,
+                      source_id=_mi_source_id,
+                      result="ok" if result.get("ok") else "declined",
+                      ci_stage=str(result.get("stage") or ""),
+                      candidate=_cand_state)
             print(f"[manual-intake] done fingerprint={payload['duplicate_fingerprint'][:12]} "
                   f"ci_ok={bool(result.get('ok'))}", flush=True)
         except Exception as e:  # noqa: BLE001
@@ -3668,6 +3801,11 @@ class Handler(BaseHTTPRequestHandler):
             # `str(e)` is only the operator-facing message, so surfacing detail here is
             # what makes those codes explain themselves. It never reaches Discord.
             preserved = str(getattr(e, "detail", "") or "")
+            # ROUTE FAILED — the identity plus the exact stage/code, so a failure can be
+            # attributed to a source without reading the surrounding conversation.
+            _mi_trace("route_failed", platform=_mi_platform, source_id=_mi_source_id,
+                      mode=_mi_mode, failed_stage=stage, code=code,
+                      error=type(e).__name__, ref=_mi_ref)
             print(f"[manual-intake] failed stage={stage} code={code} "
                   f"error={type(e).__name__} detail={str(e)[:300]!r}"
                   + (f" reason={preserved[:300]!r}" if preserved else "")
@@ -4249,6 +4387,15 @@ class Handler(BaseHTTPRequestHandler):
         mi_choice = parse_manual_choice_custom_id(custom_id)
         if mi_choice is not None:
             action, ref = mi_choice
+            # CHOICE CLICK RECEIVED — emitted BEFORE any early return, so a click that
+            # reaches the backend is ALWAYS provable, even when its resume state is gone.
+            # A missing line here is positive evidence the interaction never arrived.
+            _click_pending = _mi_pending(ref) or {}
+            _mi_trace("choice_click_received",
+                      platform=str(_click_pending.get("platform") or ""),
+                      source_id=str(_click_pending.get("source_id") or ""),
+                      action=action, ref=ref,
+                      resume_state="present" if _click_pending else "absent")
             if action == MI_ACT_SEGMENT:
                 # The modal is returned IMMEDIATELY, inside Discord's 3-second
                 # deadline. Reuses the SAME modal builder the acquisition lane uses.
