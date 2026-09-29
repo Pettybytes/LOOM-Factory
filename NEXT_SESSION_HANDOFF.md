@@ -1,5 +1,117 @@
 # LOOM — NEXT SESSION HANDOFF
 
+---
+
+# START HERE — NEXT SESSION
+
+## KNOWN-GOOD BASELINE (2026-09-29 closeout)
+
+**Outer `LOOM-Factory`** — branch `master` · HEAD **`d954cecbe44338bb983362e998375783bdcd080c`**
+(`fix(intake): publish short-item kind from the adapter that owns it`) · remote `origin`
+(`github.com/Pettybytes/LOOM-Factory`) **HEAD == origin**. Worktree clean except the
+**deliberately untracked** `infra/supabase/038_loom_editor_session_tokens.sql`.
+
+**Nested OpenShorts** (`openshorts/`, its own repo) — branch `loom/factory-mvp-baseline-fixes` ·
+HEAD **`7e25c6050b16877bc3e670871a3f7b4e0740a716`** (`editor: one-time auto-start of the existing
+Auto Edit flow`) · remote `loom` (`github.com/Pettybytes/loom-openshorts`) **HEAD == loom/branch**.
+Working tree carries **pre-existing unrelated changes that must NOT be swept into a LOOM commit**:
+`.gitignore`, `dashboard/src/components/LoomActivityRoot.jsx`, `dashboard/src/lib/api.js`,
+`tests/test_header_rich_text.py`, plus untracked `aborted-runs/` and
+`security_utils.py.bak-20260908212436`.
+
+**Recovery backup tags (pushed):**
+- outer: **`loom-backup-2026-09-29-manual-intake`** → `b2151ca411ed0138e22e9c7564d72fe73bc913ed`
+- nested: **`loom-backup-2026-09-29-manual-intake-openshorts`** → `d66e06e77f5f86bb1e7b03b4844a7b2af85af567`
+
+**Measured test state (code/test green — NOT live acceptance):** focused Manual Intake repair tests
+**20 passed**; aggregate `infra/discord-review/tests` **682 passed, 54 subtests**. (Re-measure only if
+repository state gives concrete reason to doubt these.)
+
+**`038` invariant:** `infra/supabase/038_loom_editor_session_tokens.sql` =
+`3da12826ef96dd05ce089b490ee490e66baf01c0` — untracked, unchanged. **Do not touch `038`.**
+
+**Runtime:** adapter healthy; live `source_sha256` == on-disk `adapter.py` (`de3f1f221c91109b…`)
+when last checked; process started 2026-09-29 00:06:38 EDT.
+
+**Migrations applied:** `042` (`loom_capcut_handoffs`) and **`043`**
+(`register_edited_asset` clean-source params — authored in `f5cc272`, applied by the operator,
+confirmed by them). `038` remains unapplied/untracked by design.
+
+**Recently landed milestones (outer repo):**
+- CapCut **visual-state producer/consumer** (`3f25685`, nested `30bd7e5`) — resolved canvas/AUTO/FULL/TRACK
+  persisted beside the render and consumed by the handoff.
+- CapCut **durable handoff provenance** (`e44e64e`, migration `042`) and the vendored optional lane (`c52e2fb`).
+- **Clean pre-hook source** for finalized edits (`335041d` + `043`) — the finalize path now persists
+  `clean_source_*` so an edited version stays editable.
+- **One-time editor Auto-Start** (nested `7e25c60`) — reuses the existing Auto Edit flow; idempotent guard.
+- **Manual Intake short-item kind propagation** (`d954cec`) — the platform adapter that owns
+  clip-vs-long now publishes `kind`; Twitch/Kick subscript hardened; the intake path no longer erases it.
+- **Improved Manual Intake diagnostics** (`d954cec`) — `WINDOW_REJECTED` / `DURABLE_STORE_FAILED` now log
+  their preserved underlying reason (log only, never Discord); the Discord interaction update is labelled
+  `stage=interaction_patch` with transient transport as `TRANSPORT_FAILED` (HTTPError excluded).
+
+## LIVE ACCEPTANCE STATUS
+
+**Do not claim live acceptance for anything below — it has NOT passed live acceptance.**
+
+- **Manual Intake (short-item kind propagation + diagnostics): CODE/TEST GREEN, NOT LIVE ACCEPTED.**
+- **Editor Auto-Start (one-time, `7e25c60`): CODE/TEST GREEN, NOT LIVE ACCEPTED.**
+- **Clean pre-hook source / `043` finalize: CODE/TEST GREEN, NOT LIVE ACCEPTED.**
+- **CapCut visual-state parity (AUTO/FULL/TRACK/canvas): NOT LIVE ACCEPTED** — parked.
+
+### Live evidence from the most recent Manual Intake test (2026-09-28/29)
+
+**Kick clip** — `https://kick.com/deenthegreat/clips/clip_01M33XASMP29XTQ1QK0EV7TXDC`
+- **Whole Video** route was attempted; it reached downstream processing but failed:
+  `stage=acquire_media` · `DOWNLOAD_FAILED`.
+- **Select Segment** was ALSO attempted on the same Kick clip and did **not** succeed.
+- **Therefore do NOT reopen the Whole Video eligibility / window-gate investigation first.**
+  Both modes failing points at the **shared downstream Kick acquisition/resolver path**.
+- Exact underlying log detail still needs to be retrieved via the improved diagnostics.
+
+**YouTube Short** — source ID `U0cN4rdLxk4`
+- The chooser recognized **~20s**; the **Whole Video button was ENABLED**; Whole Video was attempted;
+  it did **not** successfully complete intake. Exact downstream failure still to be established from logs.
+
+### IMPORTANT NEXT DIAGNOSTIC (before changing any code)
+
+Retrieve the adapter/runtime logs for the exact Kick and YouTube attempts. Search for:
+`clip_01M33XASMP29XTQ1QK0EV7TXDC` · `U0cN4rdLxk4` · `DOWNLOAD_FAILED` · `manual-intake` · `kick` ·
+`youtube` · `yt-dlp` · resolver/acquisition errors.
+The improved diagnostic seam should now expose the preserved underlying reason.
+**Do not assume Kick and YouTube share one root cause.**
+
+## PARKED ACCEPTANCE (resume in EXACTLY this order, after Manual Intake acquisition is stable)
+
+1. Fresh candidate reaches review.
+2. Click **Edit** exactly once.
+3. Existing OpenShorts/Gemini **Auto Edit must auto-start** without manually pressing Auto Edit.
+4. Existing stages must execute: clean source → rerender/reframe → hook → subtitles → register version →
+   review card → complete.
+5. The new version retains a **verified clean pre-hook source** and remains editable.
+6. **Reopen/refresh must NOT auto-create another version.**
+7. Only after that passes, resume **CapCut AUTO** visual-parity acceptance.
+8. **FULL / TRACK / alternate canvas remain parked until AUTO passes.**
+
+## SCOPE WARNING FOR NEXT SESSION
+
+- Do **not** begin by refactoring LOOM.
+- Do **not** redesign Manual Intake.
+- Do **not** weaken the long-source window gate.
+- Do **not** introduce another downloader/storage provider until the exact failure is proven.
+- Do **not** touch CapCut or visual-state while diagnosing acquisition.
+- Do **not** solve the YouTube bot challenge unless new evidence establishes it as the blocker for the tested source.
+- Do **not** touch `038`.
+
+## NEXT-SESSION STARTING TASK
+
+> READ THIS HANDOFF FIRST. Do not modify code. Retrieve the exact underlying failure evidence for the
+> Kick clip and YouTube Short live Manual Intake attempts. Determine whether each failure is
+> acquisition/resolver, external platform refusal, transport, or durable-storage related. Only then
+> propose the smallest repair.
+
+---
+
 **Editor launch seam: 2026-09-26 ~21:36 EDT. LIVE PASS.** Bryan drove a fresh post-reload Manual Intake card. Not a timeline-UI pass.
 
 **Timeline Editor Phase 2A: LIVE PASS (2026-09-26 ~22:11 EDT). CLOSED — do not redesign or further polish.** Bryan drove the visual timeline on the real editor surface (measured source ~33.30s; START ~3.37s; END ~30.70s; selected ~27.34s). Full evidence, provenance and preserved invariants: **`INCREMENT — TIMELINE EDITOR PHASE 2A`** below.

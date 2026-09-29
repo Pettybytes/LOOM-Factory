@@ -2,6 +2,18 @@
 
 > **This file is the execution authority.** If `HANDOFF.md` disagrees, this file wins.
 
+**2026-09-29 SESSION CLOSEOUT — see `NEXT_SESSION_HANDOFF.md` → "START HERE — NEXT SESSION".**
+Frozen at outer HEAD **`d954cec`** (`master`, == `origin`) and nested OpenShorts HEAD **`7e25c60`**
+(`loom/factory-mvp-baseline-fixes`, == `loom`). Recovery tags pushed:
+`loom-backup-2026-09-29-manual-intake` (`b2151ca`) and
+`loom-backup-2026-09-29-manual-intake-openshorts` (`d66e06e`).
+Measured: focused Manual Intake **20 passed**; aggregate `infra/discord-review/tests`
+**682 passed / 54 subtests**. `038` = `3da12826ef96dd05ce089b490ee490e66baf01c0` (untracked, untouched).
+Migrations `042` and `043` applied. **Code/test green only — Manual Intake, editor Auto-Start,
+clean pre-hook finalize and CapCut visual-state parity are NOT live-accepted.**
+Next session starts read-only: retrieve the exact underlying failure evidence for the Kick clip
+(`clip_01M33XASMP29XTQ1QK0EV7TXDC`) and the YouTube Short (`U0cN4rdLxk4`) before changing any code.
+
 **2026-09-26 editor launch: LIVE PASS.** Bryan drove a fresh post-reload Manual Intake card: Edit opened `app.loomz.stream/edit`, the source loaded, and the window `0.0 → 20.897959s` matched the card's `00:00 → 00:20.89`. The original card stayed undecided. No approval, rejection, hold, second card, or acquisition. This is the launch seam only. `038` untouched.
 
 **2026-09-26 Timeline Editor Phase 2A: LIVE PASS (~22:11 EDT). CLOSED — do not redesign or further polish.** Bryan drove the visual timeline on the real editor surface: measured source **~33.30s**, START moved to **~3.37s**, END to **~30.70s**, selected **~27.34s**. Handles, drag, numeric sync, ±1s, source-bounded selection and non-destructive **Preview Selection** all LIVE VERIFIED. See the increment below.
