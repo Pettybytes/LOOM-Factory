@@ -47,6 +47,23 @@ scratch copy is gone. So on SUCCESS the staged copy is removed again (scratch is
 scratch, and this deliberately does not become a second durable store); on
 FAILURE the workspace is left in place for forensics. The original working asset
 is untouched in both cases.
+
+DURABLE PROVENANCE — WHERE IT LIVES (grep note)
+-----------------------------------------------
+A successful handoff is durably recorded, but NOT from this module: this module
+has no database credentials and must stay usable without any. The record is
+written by the CALLER — ``record_capcut_handoff`` in ``adapter.py``, into the
+append-only table ``loom_capcut_handoffs`` (migration
+``infra/supabase/042_loom_capcut_handoffs.sql``), keyed by ``handoff_id``.
+
+This runner supplies that record's inputs, all present in the returned report:
+``spec`` (the IMMUTABLE initial handoff specification), ``media['sha256']`` (the
+working-media identity), ``coordinates['timebase_origin']`` (the ORIGINAL source
+time of working t=0) and ``compiler`` (donor/compiler identity, version read from
+the vendored manifest plus the pinned commit). One row per SUCCESS; a failed or
+refused handoff raises before returning a report, so it can never produce a
+success row. The purpose is provenance only, so a later BEFORE/AFTER diff needs
+no archaeology — see ``CURRENT_STATE.md`` §42.
 """
 
 from __future__ import annotations
