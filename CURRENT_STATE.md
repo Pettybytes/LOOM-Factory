@@ -4437,3 +4437,81 @@ implemented, not designed, and not prepared for** by any code today:
   `handoff_id` exists to prevent future archaeology.
 * **§15b Source Mining Intelligence V2** — a later intelligence upgrade once real operating evidence
   exists. Discovery, scoring, acquisition and CI are **not** redesigned now.
+
+---
+
+## INCREMENT — 2026-09-29 (late) — RECOVERY ATTEMPT: **BLOCKED**, SAFE CLOSE, RECORD CORRECTED
+
+**Status: `BLOCKED` — the compact operator path was NOT proven tonight. No behaviour change
+was committed. Repository is at the frozen, verified HEAD and is safe to resume.**
+
+### Frozen state (verified at close)
+Outer **`1343fae` == `origin/master`** · worktree clean except the deliberately untracked
+`infra/supabase/038_loom_editor_session_tokens.sql` (**`3da12826ef96dd05ce089b490ee490e66baf01c0`**,
+untracked/unstaged/unapplied) · nested OpenShorts **`7e25c60`** with its pre-existing unrelated
+changes preserved untouched · live runtime PID **31120**, `/health` `source_sha256`
+**`0d090994514a5d96f5b21627f49a7c6fb730d8b933e145b8e98cf8b88b6278a6`** == on-disk `adapter.py`.
+
+### Last working PRE-CHOOSER route, and the exact changed seam
+Last pre-chooser commit **`c690137`** (2026-09-28 17:41). The chooser then landed in
+**`c166bff`** (17:51), **`c919219`** (17:54) and **`0405f08`** (18:18).
+Changed seam: **`_manual_intake_execute`** gained an operator-choice ROUND TRIP in front of the
+proven executor — a Discord offer, a later CLICK, and an in-process ref (`_MI_PENDING`) as the
+ONLY link between the two halves. It gated **every windowless submission, URL and upload alike**.
+Pre-chooser, the executor ran from the same interaction that submitted the source; the shared
+gate decided whole-vs-window and `START:`/`END:` text segments worked throughout.
+
+### What was restored / flagged off — **nothing shipped**
+A flag-gated recovery (`MI_CHOOSER_ENABLED`, default OFF → pre-chooser behaviour, chooser code
+retained) was implemented and compile-verified, then **REVERTED UNCOMMITTED**: it flips DEFAULT
+behaviour, and its test story was incomplete (the chooser suite asserts the chooser IS offered,
+so it needs explicit opt-in). Shipping an unproven default flip would have left tomorrow with a
+red suite. **The flag remains the recommended smallest recovery** — implement it with the chooser
+tests pinned to the flag ON.
+
+### Live acceptance — NOT achieved, and not claimed
+The compact acceptance (real executor, one URL source + one supplied file, chooser off) was
+**killed mid-run**; only `executor_start` traces survive. **No acceptance IDs exist.** Not
+acceptance. What IS independently verified: the edited-version reopen resolves at the resolver
+level against the live rows; small durable writes DO work (5 MB accepted on attempt 1; 20 MB
+accepted on attempt 2 with folder placement verified; LOOM folder returned to its 11-file
+baseline after every probe).
+
+### YouTube edited-version reopen
+Resolver-verified against the live rows: `render-1.0` → media 7,273,660 B
+(`sha 686461f1…`), `source_range 0.0 → 20.108481`, `version_mode edited_version`,
+previous `source-1.0`. **The operator's editor reopen is still the acceptance** — no new version
+was generated.
+
+### Large Kick clip — retained, NOT accepted
+`/var/folders/zp/m0yvx5fd3x385sjm9gqqz2l40000gn/T/loom-manual-intake-tsu6jruu/clip_01M33XASMP29XTQ1QK0EV7TXDC.mp4`
+· **30,782,671 bytes** · **sha256 `e8a303d41b3acbd58e017bd75d302c42761a2f60fc6a84c75724df1af8cc2360`**.
+Durable GHL write **UNRESOLVED; cause UNKNOWN**. Production uploader, valid token: 5 MB ✅,
+20 MB ✅ (attempt 2), **24 MB ❌ 5/5, 26 MB ❌ 5/5, 28 MB ❌ 5/5, 31 MB ❌ 5/5**, failure
+`[Errno 32] Broken pipe` on `POST https://services.leadconnectorhq.com/medias/upload-file` —
+**but a 33 MB success on 2026-09-28 18:47 through the same path proves it is NOT a fixed cap.**
+
+### ⛔ RETRACTIONS — two earlier diagnoses were invalid and are withdrawn
+1. **"~15 second server-side upload cut / capacity = throughput × 15 s" — WITHDRAWN.** The curl
+   timing test that produced it sent a **masked placeholder (`Bearer ***`) instead of the token**;
+   its numbers are void. Do not use them.
+2. **"Persistent GHL 401" — WITHDRAWN.** The 401 came from the SAME masked header. With the
+   credential read safely the same endpoints return **200**, there is exactly ONE correctly-shaped
+   `pit-` token in the environment, and `adapter.log` contains **ZERO GHL auth failures** — all
+   212 `401`s are LOOM's own surfaces (`/api/config` ×92, `/discord/interactions` ×37, editor
+   bootstrap/draft/capcut, `/api/status/undefined`).
+
+### Probe-cache reconciliation — NOT DONE (record not found)
+The record naming the "exact temporary media URL" is **not in this repo, the workspace notes, or
+the adapter log** (searched `assets.cdn.filesafe.space/...` with probe/tiny markers and
+probe-named artifacts). Containment is **not** inferred from 404s on other paths. Supply the exact
+URL and it gets a single HEAD (no download) reporting status + `cf-cache-status`.
+Evidence held: `https://app.loomz.stream` → `/`, `/edit` `cf-cache-status: DYNAMIC`;
+`/media/*`, `/outputs/*`, `/recut_*.mp4` → 404 `MISS`; `/api/media/*` → 401 `BYPASS`;
+**no `HIT` on any path tested**, and the Caddyfile configures no file/media handler.
+
+### SINGLE NEXT ACTION (tomorrow)
+Settle the durable-store write for the retained 30.8 MB clip **at the transport layer only**, with
+a valid token and ONE timed 20 MB vs 24 MB comparison — the single measurement that separates
+"hard cap" from "transport/time". Until durable storage accepts the operator's real working
+sources, no large short-item can reach review, and every downstream acceptance is blocked behind it.

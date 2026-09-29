@@ -1328,3 +1328,37 @@ tenant**.
 **Explicitly NOT in scope now:** do **not** redesign discovery, scoring, acquisition or Content
 Intelligence. This item records a future direction only. Today's ranking/filtering policy is
 unchanged, and CI rejections must **not** silently become sourcing policy (see §14).
+
+---
+
+# START HERE — 2026-09-29 (late) RECOVERY CLOSEOUT — **BLOCKED**, SAFE TO RESUME
+
+**Outcome: `BLOCKED`.** The compact operator path was not proven tonight. **No behaviour change
+was committed.** Full detail: `CURRENT_STATE.md` → `INCREMENT — 2026-09-29 (late)`.
+
+**Frozen state.** Outer **`1343fae` == `origin/master`** · clean except the untracked-and-preserved
+`infra/supabase/038_loom_editor_session_tokens.sql` (`3da12826ef96dd05ce089b490ee490e66baf01c0`)
+· nested OpenShorts **`7e25c60`**, pre-existing unrelated changes untouched · live adapter PID
+**31120**, digest **`0d090994514a…`** == on-disk `adapter.py`.
+
+**Last working PRE-CHOOSER commit: `c690137`** (2026-09-28 17:41). The chooser landed in
+`c166bff` / `c919219` / `0405f08` and inserted a Discord offer→click round trip, with an
+in-process ref as the only link, in front of the proven executor — gating every windowless
+submission, URL and upload alike.
+
+**Nothing was restored or flagged off in a commit.** The `MI_CHOOSER_ENABLED` (default OFF,
+chooser code retained) recovery was implemented, compile-verified, then reverted uncommitted
+because flipping a DEFAULT without its test story is not a safe close. **Do it first tomorrow,
+with `test_manual_segment_choice.py` pinned to the flag ON.**
+
+**Acceptance: none.** The compact acceptance run was killed mid-execution; no IDs exist. Do not
+treat any earlier audit, resolver test, `acquire_url_media` success or local file as acceptance.
+
+**Next action:** reproduce the durable-store write failure for the retained 30.8 MB clip at the
+transport layer, with a valid token and one timed 20 MB vs 24 MB comparison. Retained bytes:
+`/var/folders/zp/m0yvx5fd3x385sjm9gqqz2l40000gn/T/loom-manual-intake-tsu6jruu/clip_01M33XASMP29XTQ1QK0EV7TXDC.mp4`
+· 30,782,671 B · sha256 `e8a303d41b3acbd58e017bd75d302c42761a2f60fc6a84c75724df1af8cc2360`.
+
+**Retracted — do not cite:** the "~15 s upload cut" and the "persistent GHL 401". Both came from a
+masked `Bearer ***` placeholder reaching the wire, not from the product. The token works (200s);
+the log has zero GHL auth failures.
