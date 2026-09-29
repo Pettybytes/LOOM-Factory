@@ -41,6 +41,8 @@ import source_window as sw  # noqa: E402
 
 YT_SHORT = "https://www.youtube.com/shorts/U0cN4rdLxk4"
 YT_SHORT_ID = "U0cN4rdLxk4"
+IG_REEL = "https://www.instagram.com/reel/DdwlUqsOhP0"
+TT_URL = "https://www.tiktok.com/@comountainmarine/video/7671018311492193567"
 TW_VOD = "https://www.twitch.tv/videos/2852456270"
 
 RESOLVED_OK = {
@@ -84,10 +86,23 @@ def _interaction():
             "data": {"components": []}, "message": {"id": "m1"}}
 
 
-def _drive_execute(parsed, *, handler=None, acquire=None, duration=20.0):
-    """Run the REAL `_manual_intake_execute` with transport stubbed."""
+def _drive_execute(parsed, *, handler=None, acquire=None, duration=20.0,
+                   attachment=None):
+    """Run the REAL `_manual_intake_execute` with transport stubbed.
+
+    ``attachment`` drives the UPLOAD ingress (mode A) instead of a URL download.
+    """
     handler = handler or _FakeHandler()
     acquire = acquire or (lambda *a, **kw: _acquired())
+
+    def _fake_download(url, dest):
+        with open(dest, "wb") as fh:
+            fh.write(b"\x00" * 4096)
+
+    def _no_extract(*a, **kw):
+        raise AssertionError(
+            "a whole-source choice must not extract a window from the supplied file")
+
     found = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     found.write(b"\x00" * 4096)
     found.close()
@@ -98,6 +113,8 @@ def _drive_execute(parsed, *, handler=None, acquire=None, duration=20.0):
                           return_value={"dreemzy"}),
         mock.patch.object(mmi, "probe_source_duration", return_value=duration),
         mock.patch.object(mmi, "acquire_url_media", side_effect=acquire),
+        mock.patch.object(mmi, "download_attachment", side_effect=_fake_download),
+        mock.patch.object(mmi, "extract_local_window", side_effect=_no_extract),
         mock.patch.object(mmi, "probe_media",
                           return_value={"has_video": True, "duration_seconds": 20.0,
                                         "sha256": "a" * 64, "width": 1080,
@@ -114,7 +131,8 @@ def _drive_execute(parsed, *, handler=None, acquire=None, duration=20.0):
         patch.start()
     try:
         with contextlib.redirect_stdout(buf):
-            adapter.Handler._manual_intake_execute(handler, _interaction(), parsed, {})
+            adapter.Handler._manual_intake_execute(handler, _interaction(), parsed,
+                                                   attachment or {})
     finally:
         for patch in reversed(patches):
             patch.stop()
@@ -212,6 +230,42 @@ class NoChooserLoopTests(unittest.TestCase):
                 requires_window_for_long_source=True)
         self.assertIn("LONG_FORM_REQUIRES_WINDOW",
                       str(getattr(caught.exception, "code", "") or caught.exception))
+
+
+class UploadedMediaWholeChoiceTests(unittest.TestCase):
+    """4: the SAME hole existed for supplied media (mode A), and is closed too.
+
+    TikTok and Instagram reach Manual Intake as UPLOADS, so the mode-A branch is
+    their route: a whole choice there must take the file AS the working source.
+    """
+
+    ATTACHMENT = {"url": "https://cdn.discordapp.example/x.mp4",
+                  "filename": "supplied.mp4"}
+
+    def test_whole_chosen_upload_does_not_ask_again_and_skips_extraction(self):
+        parsed = {"url": IG_REEL, "start_s": None, "end_s": None,
+                  "tenant": "dreemzy", "window_intent": False,
+                  "window_problem": "", "whole_chosen": True}
+        out, handler = _drive_execute(parsed, attachment=self.ATTACHMENT)
+        self.assertEqual(handler.choice_calls, 0,
+                         "an answered whole choice on an upload must not re-offer")
+        self.assertNotIn("choice_offered", out)
+        self.assertIn("whole source chosen for the supplied file", out)
+        self.assertIn("stage=acquisition_start", out)
+        self.assertIn("mechanism=local:file_upload", out)
+        # The route reached the durable store (the driver stops it there on purpose, so
+        # the RESULT line is `route_failed` AT that stage rather than a success line).
+        self.assertIn("failed_stage=durable_store_ghl", out)
+
+    def test_a_fresh_upload_still_offers_the_choice(self):
+        parsed = {"url": TT_URL, "start_s": None, "end_s": None,
+                  "tenant": "dreemzy", "window_intent": False,
+                  "window_problem": ""}
+        out, handler = _drive_execute(parsed, attachment=self.ATTACHMENT)
+        self.assertEqual(handler.choice_calls, 1)
+        self.assertIn("choice_offered", out)
+        row = handler.components_rows()[-1][0]["components"]
+        self.assertEqual({c["label"] for c in row}, {"Whole video", "Select segment"})
 
 
 if __name__ == "__main__":
