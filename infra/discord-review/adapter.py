@@ -65,6 +65,7 @@ import tenant_routing  # noqa: E402  (same-dir module; tenant assignment/reassig
 import intake_card  # noqa: E402  (same-dir module; card-based intake wizard)
 import acquisition_ops  # noqa: E402
 import library_root as _library_root  # noqa: E402  (approved acquisition lane operator surface)
+import capcut_runner  # noqa: E402  (OPTIONAL "Finish in CapCut" lane; never required)
 
 
 def _source_digest() -> str:
@@ -1529,6 +1530,23 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
 # Review proxy generation (Docker-independent, master untouched)
 # ---------------------------------------------------------------------------
 
+def resolve_local_working_media(job_id, durable):
+    """The durable working asset's path ON THIS HOST, or "" when there is none.
+
+    The CapCut handoff needs real local bytes. It never re-downloads (that would
+    be a second acquisition, and the lane must not become a downloader) and it
+    never invents a location: it looks where this host actually keeps a clip's
+    rendered output. "" is reported honestly as "no local media" — never worked
+    around by fetching the remote URL.
+    """
+    name = os.path.basename(str((durable if isinstance(durable, dict) else {}).get(
+        "source_filename") or ""))
+    if not (job_id and name):
+        return ""
+    candidate = os.path.join(OPENSHORTS_OUTPUT, str(job_id), name)
+    return candidate if os.path.isfile(candidate) else ""
+
+
 def probe_duration(path: str) -> float:
     try:
         out = subprocess.run(
@@ -2667,6 +2685,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/discord/editor/draft":
             self._handle_editor_draft()
+            return
+        if path == "/discord/editor/capcut":
+            self._handle_editor_capcut()
             return
         self._send_json(404, {"error": "not found"})
 
@@ -4370,6 +4391,84 @@ class Handler(BaseHTTPRequestHandler):
             return
         print(f"[draft] saved for session {edit_session_id}", flush=True)
         self._send_json(200, {"ok": True})
+
+    def _handle_editor_capcut(self):
+        """Hand the CURRENT version to CapCut as an editable project.
+
+        OPTIONAL lane ("Finish in CapCut"), authenticated by the short-lived
+        editor session token exactly like the other editor endpoints.
+
+        This endpoint is READ-ONLY with respect to LOOM: it reads the session's
+        own durable version state and writes only to (a) its own scratch handoff
+        workspace and (b) the local CapCut draft store. It never writes a version,
+        approval, score, session or SourceWindow; never triggers acquisition, CI,
+        a rerender or a publish; and never moves or deletes the working asset. On
+        any failure it returns a reason and leaves LOOM exactly as it was.
+
+        It is also optional in the strongest sense: with CapCut absent, or its
+        CLI absent, this returns a clear "lane unavailable" and nothing else in
+        LOOM changes behaviour.
+        """
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            self._send_json(401, {"ok": False, "error": "missing session token"})
+            return
+        session, reason = resolve_editor_session_token_diag(auth[len("Bearer "):].strip())
+        if not session:
+            print(f"[capcut] reject={reason}", flush=True)
+            self._send_json(401, {"ok": False, "error": "invalid or expired session",
+                                  "reason": reason})
+            return
+        try:
+            body = json.loads(self._read_body().decode() or "{}")
+        except Exception:
+            self._send_json(400, {"ok": False, "error": "bad json"})
+            return
+        if body.get("edit_session_id") != session["edit_session_id"]:
+            self._send_json(403, {"ok": False, "error": "session mismatch"})
+            return
+
+        tenant_id = session.get("tenant_id")
+        clip_id = session.get("clip_id")
+        source_asset_version = session.get("source_asset_version")
+        durable, reason = resolve_durable_bootstrap_diag(
+            tenant_id, clip_id, source_asset_version)
+        if not durable:
+            self._send_json(404, {"ok": False, "lane": "capcut",
+                                  "error": "missing_data", "reason": reason})
+            return
+        durable = dict(durable)
+        resolved_version = durable.get("asset_version")
+        job_id = session.get("job_id") or str(clip_id or "").rpartition(":")[0]
+        media_path = resolve_local_working_media(job_id, durable)
+        try:
+            report = capcut_runner.run_handoff(
+                bootstrap=durable,
+                media_path=media_path,
+                caption_blocks=durable.get("captions") or [],
+                asset_version=resolved_version or "",
+                title=durable.get("title") or "",
+                hook=durable.get("hook") or "",
+                reveal=bool(body.get("reveal")),
+            )
+        except capcut_runner.ch.CapCutHandoffUnavailable as exc:
+            print(f"[capcut] unavailable for {clip_id}@{resolved_version}: {exc}",
+                  flush=True)
+            self._send_json(409, {"ok": False, "lane": "capcut",
+                                  "error": "handoff_unavailable", "reason": str(exc),
+                                  "asset_version": resolved_version})
+            return
+        except Exception as exc:  # noqa: BLE001
+            print(f"[capcut] unexpected failure for {clip_id}: {type(exc).__name__}",
+                  flush=True)
+            self._send_json(500, {"ok": False, "lane": "capcut",
+                                  "error": "handoff_failed",
+                                  "reason": f"{type(exc).__name__}"})
+            return
+
+        print(f"[capcut] draft '{report.get('draft_name')}' for {clip_id}@"
+              f"{resolved_version}", flush=True)
+        self._send_json(200, report)
 
     def _handle_editor_api(self, method):
         """Authenticated, allowlisted editor API gateway. Only the endpoints the

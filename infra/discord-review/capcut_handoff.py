@@ -23,8 +23,10 @@ source_range.start               -> tracks[video].items[0].sourceStart   (the TR
 source_range.end - start         -> tracks[video].items[0].duration
 hook                             -> tracks[text].items[0].text (0 -> min(2s, dur))
 title                            -> tracks[text].items[1].text (if present)
-captions / transcript            -> NOT REPRESENTABLE in the compile spec (reported,
-                                    never invented) -- see UNSUPPORTED
+captions / word blocks           -> the compile spec's `captions` operation (an SRT the
+                                    CLI turns into editable caption items). See
+                                    build_caption_operation(); timing is never
+                                    invented and absence is reported, not faked.
 scenes / framing / social_caption-> NOT REPRESENTABLE (reported)
 
 NOTICE: spec format adapted from capcut-cli (MIT, (c) 2026 Rene Zander).
@@ -42,8 +44,14 @@ SUPPORTED = ("canvas (9:16 / 16:9)", "video item with trim-in (sourceStart)",
 
 # Honestly unsupported by the compile spec: reported, never invented.
 UNSUPPORTED = {
-    "captions": "the compile spec has no caption-cue type; CapCut captions need the "
-                "caption/SRT path, which this fixture does not wire",
+    # MEASURED 2026-09-28 against the pinned donor (src/compile.ts): the spec's
+    # TRACKS have no caption-cue type, but the spec DOES support captions via
+    # operations[].op="captions", which parses an SRT into editable caption
+    # items. build_capcut_spec() therefore still emits no caption track (its
+    # behaviour is unchanged); captions travel through build_caption_operation().
+    "captions": "not expressible as a TRACK item; supported via the spec's "
+                "`captions` operation (see build_caption_operation) -- never "
+                "fabricated, and reported as unavailable when absent",
     "transcript": "same as captions",
     "scenes": "no scene-marker primitive in the spec",
     "framing": "reframe/auto-framing is a render concern, not a spec field",
@@ -148,6 +156,82 @@ def write_spec(spec: dict[str, Any], out_path: str) -> str:
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(spec, fh, indent=2)
     return out_path
+
+
+CAPTION_TRACK_NAME = "captions"
+
+
+def normalize_caption_blocks(blocks: Any) -> list[dict[str, Any]]:
+    """Durable caption/word blocks -> ordered cues, ignoring what is unusable.
+
+    NEVER invents timing: a block without BOTH a numeric start and end is
+    dropped rather than estimated, so a half-timed block cannot reach the
+    draft. Ordering is by start time so the emitted SRT is monotonic.
+    """
+    cues: list[dict[str, Any]] = []
+    for block in (blocks or []):
+        if not isinstance(block, dict):
+            continue
+        text = str(block.get("text") or block.get("word") or "").strip()
+        raw_start = block.get("startMs", block.get("start_ms"))
+        raw_end = block.get("endMs", block.get("end_ms"))
+        try:
+            start = float(raw_start)
+            end = float(raw_end)
+        except (TypeError, ValueError):
+            continue
+        if not text or start < 0 or not (end > start):
+            continue
+        cues.append({"text": text, "startMs": start, "endMs": end})
+    cues.sort(key=lambda c: (c["startMs"], c["endMs"]))
+    return cues
+
+
+def srt_timestamp(ms: float) -> str:
+    """Milliseconds -> SRT `HH:MM:SS,mmm`."""
+    total = int(round(float(ms)))
+    hours, rest = divmod(total, 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    seconds, millis = divmod(rest, 1_000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+def build_srt(cues: list[dict[str, Any]]) -> str:
+    """Render cues as SRT text (pure; no I/O)."""
+    parts = []
+    for index, cue in enumerate(cues, start=1):
+        parts.append(f"{index}\n{srt_timestamp(cue['startMs'])} --> "
+                     f"{srt_timestamp(cue['endMs'])}\n{cue['text']}\n")
+    return "\n".join(parts)
+
+
+def write_srt(cues: list[dict[str, Any]], out_path: str) -> str:
+    """Write an SRT next to the spec so the caption operation resolves."""
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        fh.write(build_srt(cues))
+    return out_path
+
+
+def build_caption_operation(blocks: Any, srt_path: str) -> dict[str, Any] | None:
+    """The spec `captions` operation for durable word blocks, or None.
+
+    MEASURED against the pinned donor (src/compile.ts): `operations[].op="captions"`
+    parses the SRT at `path` into EDITABLE caption text items on their own track.
+
+    Timing passes through in the WORKING timebase with a zero offset, because
+    LOOM's durable caption blocks are already recorded clip-relative (relative to
+    the same working asset CapCut receives). Applying the source timebase origin
+    here would double-offset every caption.
+
+    Returns None when there are no durable cues — the caller reports
+    "captions unavailable for this version" rather than inventing timing.
+    """
+    cues = normalize_caption_blocks(blocks)
+    if not cues:
+        return None
+    return {"op": "captions", "path": srt_path,
+            "trackName": CAPTION_TRACK_NAME, "timeOffset": 0}
 
 
 def capcut_cli_path() -> str:
