@@ -3650,7 +3650,7 @@ editor ingress supposedly moved to Cloudflare?
 |---|---|---|
 | Discord interaction endpoint | **`https://users-macbook-pro-1.taild000b2.ts.net/discord/interactions`** | Discord API `/applications/@me` (authoritative) |
 | `LOOM_EDITOR_PUBLIC_URL` (accepted Editor work) | **`https://users-macbook-pro-1.taild000b2.ts.net`** | live env |
-| Tailscale Funnel | **ON**, `https://users-macbook-pro-1.taild000b2.ts.net` → `/ proxy http://127.0.0.1:8081` | `tailscale funnel status` |
+| Tailscale Funnel | **RETIRED 2026-09-21 — historical row, not the live ingress**, `https://users-macbook-pro-1.taild000b2.ts.net` → `/ proxy http://127.0.0.1:8081` | `tailscale funnel status` |
 
 **Conclusion: the Cloudflare cut-over never happened for these surfaces.** Both
 the Discord interaction endpoint AND the accepted editor's own public URL are on
@@ -4515,3 +4515,36 @@ Settle the durable-store write for the retained 30.8 MB clip **at the transport 
 a valid token and ONE timed 20 MB vs 24 MB comparison — the single measurement that separates
 "hard cap" from "transport/time". Until durable storage accepts the operator's real working
 sources, no large short-item can reach review, and every downstream acceptance is blocked behind it.
+
+---
+
+## CORRECTION — 2026-09-29 — INGRESS IS CLOUDFLARE; TAILSCALE IS OUT OF THE LOOM WORKFLOW
+
+**Live ingress, verified from the running configuration (not from older notes):**
+`https://app.loomz.stream` → Cloudflare → Caddy `:8081` → `host.docker.internal:8090`
+(Discord interactions / editor / `/api/*`) and → `:5175` (SPA catch-all); `:8082` → n8n relay.
+`cloudflared` = 2 processes (**quick tunnel `http://127.0.0.1:8081`** + named tunnel). The Caddy
+config read from the RUNNING container (`docker exec loom-tunnel-proxy cat /etc/caddy/Caddyfile`)
+matches the repository file; it contains **no file/media handler**.
+
+**Tailscale is STOPPED (`tailscale status` → "Tailscale is stopped.") and is intentionally REMOVED
+from the LOOM workflow.** Do not reintroduce, reconnect or modify it. Any earlier line in this file
+describing Tailscale Funnel as the ACTIVE ingress is historical: Funnel was retired 2026-09-21 in
+favour of Cloudflare (see §30). The leftover macOS VPN/Tailscale entries are **not** evidence that
+Tailscale caused the GHL upload failure — that claim is not supported by any measurement, and the
+upload failure's cause remains UNKNOWN.
+
+### Corrections to earlier diagnoses (carried here so they cannot be re-quoted)
+* "~15 second server-side upload cut / capacity = throughput × 15 s" — **WITHDRAWN**. The curl test
+  that produced it sent a masked `Bearer ***` placeholder to the wire; its numbers are void.
+* "Persistent GHL 401" — **WITHDRAWN**. Same masked header. With the credential read safely the
+  same endpoints return 200; exactly ONE correctly-shaped `pit-` credential exists; `adapter.log`
+  contains **zero** GHL auth failures (all 212 `401`s are LOOM's own `/api/config`,
+  `/discord/interactions` and editor surfaces).
+* Durable `_MI_PENDING` persistence — **NOT implemented, and not to be implemented on current
+  evidence**: no live failure has been attributed to `resume_miss`, and the YouTube trace showed
+  `resume_state=present`. Revisit only if a `resume_miss` is ever observed.
+
+### The pushed backup tag
+`loom-backup-2026-09-29-working-intake` is a **recovery anchor for the verified CODE HEAD only**.
+It is **not** proof that intake works, and it is not live acceptance.
