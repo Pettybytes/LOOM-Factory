@@ -92,12 +92,48 @@ class TestSizeAwareFormatSelection(unittest.TestCase):
         self.assertEqual(ya.build_format_selector(), ya.FORMAT_SELECTOR)
         self.assertEqual(ya.build_format_selector(max_height=None), ya.FORMAT_SELECTOR)
 
-    def test_height_bound_is_applied_to_every_alternative(self):
+    def test_height_bound_is_applied_to_every_bounded_alternative(self):
         sel = ya.build_format_selector(max_height=720)
         self.assertNotEqual(sel, ya.FORMAT_SELECTOR)
-        # every alternative is bounded, so no fallback can silently exceed it
-        for alt in sel.split("/"):
+        # every PREFERENCE alternative stays bounded, so a rendition that actually
+        # advertises a resolution can never be picked above the ceiling
+        alts = sel.split("/")
+        self.assertEqual(alts[-2:], ya.UNTAGGED_FALLBACK_SELECTOR.split("/"))
+        for alt in alts[:-2]:
             self.assertIn("height<=720", alt, alt)
+
+    def test_sparse_manifest_still_resolves_under_a_height_bound(self):
+        """THE 2026-09-29 REGRESSION: a manifest with no resolution metadata.
+
+        A Kick clip publishes exactly one untagged combined rendition
+        (`ext=mp4`, `height=NA`, `vcodec=NA`, `acodec=NA`). `height<=H` is false for
+        a MISSING height, so every bounded alternative missed and yt-dlp exited 1
+        with "Requested format is not available" although an eligible rendition
+        existed. The bounded selector must therefore keep a resolution-free
+        alternative.
+        """
+        sel = ya.build_format_selector(max_height=1080)
+        height_free = [a for a in sel.split("/") if "height<=" not in a]
+        self.assertTrue(height_free, sel)
+        # and one of them is the plain combined mp4 rendition
+        self.assertIn("b[ext=mp4]", height_free)
+
+    def test_the_height_free_fallback_cannot_shadow_a_bounded_choice(self):
+        """Preference order is preserved: bounded alternatives come FIRST."""
+        for bound in ya.height_ladder():
+            alts = ya.build_format_selector(max_height=bound).split("/")
+            # the FIRST preference is still the bounded delivery-ready rendition
+            self.assertIn("height<=%d" % bound, alts[0])
+            self.assertEqual(alts[-2:], ya.UNTAGGED_FALLBACK_SELECTOR.split("/"))
+
+    def test_every_bounded_rung_carries_the_fallback_in_the_real_command(self):
+        for bound in ya.height_ladder():
+            cmd = ya.build_download_command(URL, out_template="/tmp/x.%(ext)s",
+                                            max_height=bound)
+            selector = cmd[cmd.index("--format") + 1]
+            self.assertTrue(selector.endswith("/" + ya.UNTAGGED_FALLBACK_SELECTOR))
+            self.assertIn("--max-filesize", cmd)
+            self.assertIn("height<=%d" % bound, selector)
 
     def test_command_carries_the_bound_and_the_ladder_is_ordered(self):
         cmd = ya.build_download_command(URL, out_template="/tmp/x.%(ext)s", max_height=480)

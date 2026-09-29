@@ -45,6 +45,24 @@ FORMAT_SELECTOR = ("bv*[vcodec^=avc1]+ba[acodec^=mp4a]"
                    "/b[ext=mp4]"
                    "/bv*+ba/b")
 
+# FINAL, resolution-FREE combined fallback, appended only to a HEIGHT-BOUNDED
+# selector.
+#
+# A height bound is how the size ceiling is respected, but `height<=H` is only
+# meaningful when the manifest publishes a resolution. Some platforms publish a
+# single untagged combined rendition (probed on a Kick clip: `ext=mp4`,
+# `height=NA`, `vcodec=NA`, `acodec=NA`), and a MISSING height never satisfies
+# `height<=H` — so every bounded alternative misses, yt-dlp exits 1 with
+# "Requested format is not available", and an eligible rendition that IS present
+# is never fetched. These alternatives carry no resolution filter, so such a
+# manifest still resolves.
+#
+# They are LAST, so preference order is unchanged: a bounded preferred rendition
+# is still chosen whenever one exists. They are not a size loophole either —
+# `--max-filesize`, the post-download ceiling check and the integrity gate all
+# still apply to whatever the fallback selects.
+UNTAGGED_FALLBACK_SELECTOR = "b[ext=mp4]/b"
+
 # Bounded recovery. An interrupted download must be RESUMABLE/RETRYABLE rather
 # than accepted as a complete file. Bounded so an unreachable or hostile source
 # can never loop: at most 3 attempts plus 3 fragment-level retries.
@@ -75,7 +93,8 @@ def build_format_selector(*, max_height: int | None = None) -> str:
     h = int(max_height)
     return (f"bv*[vcodec^=avc1][height<={h}]+ba[acodec^=mp4a]"
             f"/b[ext=mp4][height<={h}]"
-            f"/bv*[height<={h}]+ba/b[height<={h}]")
+            f"/bv*[height<={h}]+ba/b[height<={h}]"
+            f"/{UNTAGGED_FALLBACK_SELECTOR}")
 
 
 def height_ladder(max_bytes: int | None = None) -> tuple[int, ...]:
