@@ -55,6 +55,7 @@ from typing import Any
 
 import discord_media  # tier-aware upload limit + poster fallback (shared with the acquisition path)
 from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
 
 import source_review  # noqa: E402  (same-dir module; Source Review Inbox)
@@ -1430,6 +1431,12 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
     source_asset_version = version
     by_version = {r.get("asset_version"): r for r in (media_rows or []) if isinstance(r, dict)}
     canonical_url = None
+    # Identity of the bytes AT canonical_url: captured from the SAME row the URL
+    # came from, so a later verifier compares against the object it actually
+    # points at (a version that re-renders from an ancestor keeps the ancestor's
+    # hash, never the current row's).
+    canonical_hash = None
+    canonical_size = None
     source_filename = None
     clean_source_url = None
     media_duration = None
@@ -1438,7 +1445,10 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
     while cur and cur in by_version and cur not in seen:
         seen.add(cur)
         row = by_version[cur]
-        canonical_url = canonical_url or row.get("canonical_url")
+        if not canonical_url and row.get("canonical_url"):
+            canonical_url = row.get("canonical_url")
+            canonical_hash = row.get("file_hash")
+            canonical_size = row.get("size_bytes")
         source_filename = source_filename or row.get("source_filename")
         media_duration = media_duration or row.get("duration_seconds")
         # The clean pre-hook/pre-subtitle input master is a durable property of
@@ -1505,6 +1515,11 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
 
     return {
         "media_url": canonical_url,
+        # Durable identity of the working asset handed to a consumer: the
+        # sha256/size of exactly the object at media_url. Descriptive only; an
+        # absent record stays absent rather than being guessed from a path.
+        "media_sha256": canonical_hash or "",
+        "media_size_bytes": canonical_size,
         "clean_source_url": clean_source_url,
         "duration_seconds": round(range_end - range_start, 2),
         "source_range": {"start": range_start, "end": range_end},
@@ -1590,6 +1605,11 @@ def resolve_local_working_media(job_id, durable):
     never invents a location: it looks where this host actually keeps a clip's
     rendered output. "" is reported honestly as "no local media" — never worked
     around by fetching the remote URL.
+
+    NOTE: "" here means "not on this host", NOT "no working media exists". When
+    this returns "", the caller hands the durable record to
+    ``materialize_local_working_media`` (below), which materialises the SAME
+    durable object for transport. This function's own answer is unchanged.
     """
     name = os.path.basename(str((durable if isinstance(durable, dict) else {}).get(
         "source_filename") or ""))
@@ -1597,6 +1617,207 @@ def resolve_local_working_media(job_id, durable):
         return ""
     candidate = os.path.join(OPENSHORTS_OUTPUT, str(job_id), name)
     return candidate if os.path.isfile(candidate) else ""
+
+
+# ---------------------------------------------------------------------------
+# CapCut handoff transport media (durable -> local)
+# ---------------------------------------------------------------------------
+# The runner owns no durable credentials (deliberately), so materialising the
+# durable object belongs HERE, on the side of the handoff that already holds the
+# durable record and the downloader.
+#
+# LIFECYCLE POLICY — transport only, bounded, never canonical:
+#   * The root is a bounded scratch root (LOOM_CAPCUT_HANDOFF_MEDIA_ROOT), NOT a
+#     media store: nothing is registered from it, no LOOM identity points at it,
+#     and deleting it loses nothing that cannot be re-materialised from the
+#     durable record.
+#   * One deterministic directory per (clip, version) — the identity token is
+#     the sanitised job id + version + a hash of that identity, so the SAME
+#     working asset always maps to the SAME path and retries reuse the copy.
+#   * A directory holds AT MOST one file: a copy whose bytes match the durable
+#     hash/size is reused as-is; anything else is removed before re-materialising
+#     so transport copies cannot accumulate. Accumulation is bounded by the
+#     number of distinct (clip, version) handoffs, not by the number of attempts.
+#   * Canonical GHL/LOOM assets are never read-modify-written, moved or deleted.
+#     Cleanup is confined to this root and can never reach a canonical asset.
+CAPCUT_HANDOFF_MEDIA_ROOT = _env(
+    "LOOM_CAPCUT_HANDOFF_MEDIA_ROOT",
+    os.path.join(os.path.expanduser(capcut_runner.DEFAULT_HANDOFF_ROOT),
+                 "transport"))
+
+
+def _transport_identity_token(job_id, asset_version) -> str:
+    """A deterministic, filesystem-safe, collision-free path component."""
+    identity = f"{job_id}\x00{asset_version}"
+    readable = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{job_id}:{asset_version}")
+    readable = readable.strip("._-")[:60] or "handoff"
+    return f"{readable}-{hashlib.sha256(identity.encode()).hexdigest()[:12]}"
+
+
+def capcut_handoff_transport_path(job_id, durable):
+    """(directory, destination) for the transport copy of one durable asset.
+
+    Deterministic in the durable identity, so the same working asset resolves to
+    the same path on every attempt and a retry reuses a verified copy instead of
+    downloading again.
+    """
+    durable = durable if isinstance(durable, dict) else {}
+    version = str(durable.get("asset_version") or "")
+    directory = os.path.join(CAPCUT_HANDOFF_MEDIA_ROOT,
+                             _transport_identity_token(job_id, version))
+    name = os.path.basename(str(durable.get("source_filename") or ""))
+    if not name:
+        name = os.path.basename(urlparse(str(durable.get("media_url") or "")).path)
+    if not name or os.path.splitext(name)[1] == "":
+        name = "working.mp4"
+    return directory, os.path.join(directory, os.path.basename(name))
+
+
+def verify_working_media_copy(path, durable):
+    """True when ``path`` provably holds the durable working asset's bytes.
+
+    Identity comes from the durable record (sha256, size where present) — never
+    from the path or the transport directory. A record carrying neither is NOT
+    verifiable and fails closed: an unverifiable object is exactly the thing the
+    guard exists to stop.
+    """
+    durable = durable if isinstance(durable, dict) else {}
+    if not path or not os.path.isfile(path):
+        return False
+    expected_sha = str(durable.get("media_sha256") or "").strip().lower()
+    expected_size = durable.get("media_size_bytes")
+    try:
+        expected_size = int(expected_size) if expected_size is not None else None
+    except (TypeError, ValueError):
+        expected_size = None
+    if not expected_sha and expected_size is None:
+        return False
+    if expected_size is not None and os.path.getsize(path) != expected_size:
+        return False
+    if expected_sha and _sha256_file(path) != expected_sha:
+        return False
+    return True
+
+
+def materialize_local_working_media(job_id, durable):
+    """A local path to the CURRENT working asset, or ("", reason).
+
+    Adds a remote-only case to ``resolve_local_working_media`` WITHOUT changing
+    it: when the host has no rendered copy, the durable record's own object is
+    materialised into the bounded transport workspace and verified against the
+    durable sha256 (and size where present) before it is offered to the handoff.
+
+    This is NOT acquisition and NOT a second store. It fetches the durable GHL
+    object this LOOM record already points at — the same bytes the editor plays
+    — using the existing ``_download`` helper (chunked + browser UA, because the
+    filesafe CDN rejects the default urllib UA). Nothing is re-encoded, nothing
+    is re-acquired from the platform, and the ORIGINAL long source is never
+    touched: the transport copy is the working asset, so CapCut keeps receiving
+    working-relative coordinates and no second ORIGINAL offset can appear.
+
+    Returns (path, how) where how is one of local_existing, transport_reused,
+    materialized; or ("", reason) with one of: no_durable_record,
+    no_durable_media_url, durable_media_identity_unavailable,
+    durable_media_download_failed, durable_media_hash_mismatch,
+    durable_media_size_mismatch.
+    """
+    local = resolve_local_working_media(job_id, durable)
+    if local:
+        return local, "local_existing"
+    if not isinstance(durable, dict):
+        return "", "no_durable_record"
+    url = str(durable.get("media_url") or "")
+    if not url.startswith("https://"):
+        return "", "no_durable_media_url"
+
+    expected_sha = str(durable.get("media_sha256") or "").strip().lower()
+    expected_size = durable.get("media_size_bytes")
+    try:
+        expected_size = int(expected_size) if expected_size is not None else None
+    except (TypeError, ValueError):
+        expected_size = None
+    if not expected_sha and expected_size is None:
+        # No durable identity means no way to prove the bytes, and an unproven
+        # transport copy would be a guess about what the operator is editing.
+        return "", "durable_media_identity_unavailable"
+
+    directory, dest = capcut_handoff_transport_path(job_id, durable)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError as exc:
+        print(f"[capcut] transport workspace failed: {exc}", flush=True)
+        return "", "durable_media_download_failed"
+
+    if verify_working_media_copy(dest, durable):
+        return dest, "transport_reused"
+
+    # Clear stale transport copies in THIS directory before writing, so the
+    # directory never holds more than the one file the handoff needs. Scoped to
+    # the transport root: nothing outside it can be reached from here.
+    try:
+        for stale in os.listdir(directory):
+            stale_path = os.path.join(directory, stale)
+            if os.path.isfile(stale_path):
+                os.remove(stale_path)
+    except OSError as exc:
+        print(f"[capcut] transport cleanup failed: {exc}", flush=True)
+
+    if not _download(url, dest):
+        return "", "durable_media_download_failed"
+    if expected_size is not None and os.path.getsize(dest) != expected_size:
+        print(f"[capcut] transport size mismatch for {job_id}: "
+              f"got={os.path.getsize(dest)} want={expected_size}", flush=True)
+        _discard_transport_copy(dest)
+        return "", "durable_media_size_mismatch"
+    if expected_sha and _sha256_file(dest) != expected_sha:
+        print(f"[capcut] transport hash mismatch for {job_id}", flush=True)
+        _discard_transport_copy(dest)
+        return "", "durable_media_hash_mismatch"
+    return dest, "materialized"
+
+
+def _discard_transport_copy(path):
+    """Remove a transport copy that failed verification. Transport root only.
+
+    Confined by construction: the caller passes a path built by
+    ``capcut_handoff_transport_path``, and a path outside the transport root is
+    refused outright so a bug here can never reach a canonical asset.
+    """
+    try:
+        root = os.path.realpath(CAPCUT_HANDOFF_MEDIA_ROOT)
+        real = os.path.realpath(path)
+        if os.path.commonpath([root, real]) != root:
+            return
+        os.remove(real)
+    except (OSError, ValueError):
+        pass
+
+
+def handoff_acquisition_provenance(durable):
+    """ORIGINAL provenance for the handoff report, or None.
+
+    REPORTED, never applied: the runner uses these values only to describe which
+    ORIGINAL range the working asset covers, so the coordinates it exports stay
+    working-relative and no second ORIGINAL offset can be introduced. Records
+    with no origin (every rendered-clip version) return None, which leaves that
+    lane's report exactly as it was.
+    """
+    durable = durable if isinstance(durable, dict) else {}
+    try:
+        origin = float(durable.get("working_timebase_origin_s"))
+    except (TypeError, ValueError):
+        return None
+    if origin < 0:
+        return None
+    acquisition = {"working_timebase_origin_s": origin}
+    original = durable.get("original_window")
+    if isinstance(original, dict):
+        try:
+            acquisition["original_start_s"] = float(original["start"])
+            acquisition["original_end_s"] = float(original["end"])
+        except (KeyError, TypeError, ValueError):
+            pass
+    return acquisition
 
 
 def probe_duration(path: str) -> float:
@@ -4492,11 +4713,29 @@ class Handler(BaseHTTPRequestHandler):
         durable = dict(durable)
         resolved_version = durable.get("asset_version")
         job_id = session.get("job_id") or str(clip_id or "").rpartition(":")[0]
-        media_path = resolve_local_working_media(job_id, durable)
+        # Local-first (unchanged), then the durable record's own object is
+        # materialised+verified for transport when this host has no copy. The
+        # runner is handed a path it can actually open; it still owns the
+        # fail-closed guard, and it is never given a URL to fetch.
+        media_path, media_source = materialize_local_working_media(job_id, durable)
+        if not media_path:
+            print(f"[capcut] working media unavailable for {clip_id}@"
+                  f"{resolved_version}: {media_source}", flush=True)
+            self._send_json(409, {"ok": False, "lane": "capcut",
+                                  "error": "working_media_unavailable",
+                                  "reason": media_source,
+                                  "asset_version": resolved_version})
+            return
         try:
             report = capcut_runner.run_handoff(
                 bootstrap=durable,
                 media_path=media_path,
+                # ORIGINAL provenance only: the runner reports the origin and
+                # never applies it (the range it receives is working-relative).
+                # `working_source_duration_s` is deliberately NOT passed — it
+                # only feeds bounds validation, and the window stays owned by
+                # the durable candidate plan.
+                acquisition=handoff_acquisition_provenance(durable),
                 caption_blocks=durable.get("captions") or [],
                 asset_version=resolved_version or "",
                 title=durable.get("title") or "",
@@ -4553,6 +4792,10 @@ class Handler(BaseHTTPRequestHandler):
         body = dict(report)
         body.pop("spec", None)
         body["provenance"] = provenance
+        # Where the handed media actually came from (local copy vs materialised
+        # durable transport copy). Reported for the operator; it never changes
+        # which version was exported.
+        body["media_source"] = media_source
         self._send_json(200, body)
 
     def _handle_editor_api(self, method):

@@ -412,6 +412,35 @@ def resolve_source_editor_identity(candidate: dict[str, Any]) -> dict[str, Any] 
             continue
     if duration is None or duration < end:
         duration = end
+    # Durable identity of the EXACT working asset (the bytes at media_url). The
+    # hash is what lets a later consumer prove it holds those bytes without
+    # trusting a path or a remote-vs-local location; size is carried when the
+    # candidate recorded one. Purely additive: an absent hash stays absent and
+    # is never replaced by a computed guess.
+    media_sha256 = str(lineage.get("media_sha256") or "").strip().lower() or ""
+    media_size_bytes = None
+    for _raw_size in (lineage.get("media_size_bytes"), lineage.get("size_bytes")):
+        try:
+            if _raw_size is not None and int(_raw_size) > 0:
+                media_size_bytes = int(_raw_size)
+                break
+        except (TypeError, ValueError):
+            continue
+    # ORIGINAL-source provenance, reported only — never applied. The window
+    # above is working-relative by contract, so this pair is how a working range
+    # is read back against the source without re-deriving it.
+    try:
+        origin = float(plan.get("working_timebase_origin_s"))
+    except (TypeError, ValueError):
+        origin = None
+    original_window = None
+    raw_original = plan.get("original_window")
+    if isinstance(raw_original, dict):
+        try:
+            original_window = {"start": float(raw_original.get("start_s")),
+                               "end": float(raw_original.get("end_s"))}
+        except (TypeError, ValueError):
+            original_window = None
     return {
         "tenant_id": tenant,
         "duplicate_fingerprint": fp,
@@ -419,6 +448,10 @@ def resolve_source_editor_identity(candidate: dict[str, Any]) -> dict[str, Any] 
         "asset_version": SOURCE_EDITOR_ASSET_VERSION,
         "media_url": media_url,
         "filename": filename,
+        "media_sha256": media_sha256,
+        "media_size_bytes": media_size_bytes,
+        "working_timebase_origin_s": origin,
+        "original_window": original_window,
         "window": {"start": start, "end": end},
         "duration_seconds": duration,
         "platform": candidate.get("platform") or lineage.get("platform") or "",
@@ -438,6 +471,13 @@ def source_lineage_bootstrap(candidate: dict[str, Any],
     window = identity["window"]
     return {
         "media_url": identity["media_url"],
+        # Durable identity of the working asset (the bytes at media_url) plus
+        # the ORIGINAL provenance pair. Both are descriptive: the coordinate
+        # contract below is unchanged and stays working-relative.
+        "media_sha256": identity.get("media_sha256") or "",
+        "media_size_bytes": identity.get("media_size_bytes"),
+        "working_timebase_origin_s": identity.get("working_timebase_origin_s"),
+        "original_window": identity.get("original_window"),
         "clean_source_url": identity["media_url"],
         "duration_seconds": round(float(identity["duration_seconds"]), 2),
         "source_range": {"start": window["start"], "end": window["end"]},
