@@ -3301,6 +3301,17 @@ class Handler(BaseHTTPRequestHandler):
                 parsed["start_s"] = start_ms / 1000.0
                 parsed["end_s"] = end_ms / 1000.0
                 parsed["window_intent"] = True
+            else:
+                # WHOLE VIDEO is an EXPLICIT operator decision and must be CARRIED as
+                # one. Without this marker the executor cannot tell a RESUMED whole
+                # choice from a FRESH windowless submission, so it re-entered the
+                # "no explicit intent -> offer the choice" branch and re-presented the
+                # chooser — the 2026-09-29 loop in which Whole Video could never reach
+                # acquisition at all. Only THIS worker sets the marker (a text
+                # submission cannot), and the shared acquisition-mode gate still
+                # re-validates the whole-source acquisition downstream, so this is a
+                # decision, never a bypass.
+                parsed["whole_chosen"] = True
             _supplied = pending.get("local_path") or ""
             try:
                 self._manual_intake_execute(interaction, parsed,
@@ -3515,6 +3526,12 @@ class Handler(BaseHTTPRequestHandler):
                     print(f"[manual-intake] local window extracted "
                           f"{_w['clip_duration_ms'] / 1000:.3f}s "
                           f"range={str(_w['range_fingerprint'])[:12]}", flush=True)
+                elif parsed.get("whole_chosen"):
+                    # WHOLE VIDEO was chosen explicitly for the supplied file: the file
+                    # IS the working source. Nothing to extract, nothing to ask again.
+                    acq_prov["acquisition_mode"] = "full_item"
+                    print("[manual-intake] whole source chosen for the supplied file",
+                          flush=True)
                 else:
                     # NO EXPLICIT INTENT -> the operator chooses. The choice applies to
                     # SUPPLIED media exactly as it does to a URL: SELECT SEGMENT is not
@@ -3572,7 +3589,13 @@ class Handler(BaseHTTPRequestHandler):
                 # offered WHOLE VIDEO / SELECT SEGMENT instead of LOOM downloading a
                 # long source and failing later on the size ceiling. Nothing is
                 # acquired until the operator has chosen.
-                if (parsed.get("start_s") is None and parsed.get("end_s") is None):
+                if parsed.get("whole_chosen"):
+                    # The operator ALREADY answered this question with WHOLE VIDEO, so
+                    # acquire the source as provided. The shared gate is re-asked inside
+                    # acquire_url_media (whole-source mode) and stays the one authority.
+                    print("[manual-intake] whole source chosen by the operator; "
+                          "acquiring the source as provided", flush=True)
+                elif (parsed.get("start_s") is None and parsed.get("end_s") is None):
                     # NO EXPLICIT INTENT -> the operator chooses, for ANY source, short
                     # or long. Whole video is disabled only when the shared safety
                     # contract refuses it, and the refusal is explained in the gate's
