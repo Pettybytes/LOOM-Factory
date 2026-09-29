@@ -51,6 +51,7 @@ is untouched in both cases.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -72,6 +73,14 @@ CAPCUT_MACOS_DRAFT_DIR = "~/Movies/CapCut/User Data/Projects/com.lveditor.draft"
 DEFAULT_HANDOFF_ROOT = "~/Movies/LOOM-CapCut-Handoff"
 
 COMPILE_TIMEOUT_SECONDS = 240
+
+# The pinned donor identity. Recorded in durable handoff provenance so a recorded
+# spec can be interpreted deterministically later against the exact compiler that
+# made it. PINNED_DONOR_COMMIT is asserted equal to the vendored PROVENANCE.md by
+# test, so the two can never drift apart silently.
+PINNED_DONOR_URL = "https://github.com/renezander030/capcut-cli"
+PINNED_DONOR_COMMIT = "a21cc9ce65ef169920f0e18cb130777a13bee838"
+PINNED_DONOR_LICENSE = "MIT"
 # Tolerance when checking a working-coordinate range against the real asset.
 WORKING_EPSILON = 0.05
 DRAFT_NAME_PREFIX = "LOOM "
@@ -191,12 +200,41 @@ def capcut_invocation(cli_path: str = "") -> list[str]:
     return []
 
 
-def vendored_template_dir(cli_path: str = "") -> str:
-    """The bundled ``_init`` template that belongs to the resolved CLI.
+def compiler_identity(cli_path: str = "") -> dict[str, Any]:
+    """The pinned compiler's identity, for durable provenance.
 
-    Passed explicitly to ``compile`` so the template is always the one vendored
-    next to the CLI, never whatever happens to sit in a parent directory.
+    The version is READ from the resolved CLI's own ``package.json`` rather than
+    hard-coded, while the commit/licence come from the pin (asserted equal to the
+    vendored PROVENANCE.md by test). A caller can therefore interpret a recorded
+    spec against the exact compiler that produced it.
     """
+    resolved = (cli_path or "").strip() or ch.capcut_cli_path()
+    root = resolved if os.path.isdir(resolved) else os.path.dirname(resolved or "")
+    version = ""
+    if root:
+        manifest = os.path.join(root, "package.json")
+        try:
+            if os.path.isfile(manifest):
+                with open(manifest, encoding="utf-8") as fh:
+                    version = str(json.load(fh).get("version") or "")
+        except (OSError, ValueError):
+            version = ""
+    return {"name": "capcut-cli", "version": version,
+            "commit": PINNED_DONOR_COMMIT, "url": PINNED_DONOR_URL,
+            "license": PINNED_DONOR_LICENSE}
+
+
+def sha256_file(path: str) -> str:
+    """sha256 of a file's bytes — the working-media identity for provenance."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def vendored_template_dir(cli_path: str = "") -> str:
+    """The bundled ``_init`` template that belongs to the resolved CLI."""
     resolved = (cli_path or "").strip() or ch.capcut_cli_path()
     root = resolved if os.path.isdir(resolved) else os.path.dirname(resolved)
     candidate = os.path.join(root, "templates", "_init")
@@ -475,7 +513,8 @@ def stage_working_media(media_path: str, *, workspace: str) -> dict[str, Any]:
     if after != before:
         raise _unavailable("staged media is not byte-identical to the working asset")
     return {"source_path": media_path, "staged_path": staged,
-            "bytes": after, "workspace": workspace}
+            "bytes": after, "sha256": sha256_file(staged),
+            "workspace": workspace}
 
 
 # ---------------------------------------------------------------------------
@@ -683,9 +722,13 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
             "working": {"start": coords["start"], "end": coords["end"],
                         "duration": coords["duration"]},
             "capcut": {"sourceStart": coords["start"], "duration": coords["duration"]},
+            # ORIGINAL-source time of working t=0; the only way to read a working
+            # range against the source without re-deriving it later.
+            "timebase_origin": coords.get("timebase_origin", 0.0),
         },
         "media": {"source_path": staged["source_path"],
                   "staged_path": staged["staged_path"], "bytes": staged["bytes"],
+                  "sha256": staged["sha256"],
                   "draft_copy": "copied into the draft by the CLI (self-contained)"},
         "captions": caption_state,
         "carried": ch.handoff_report(working_bootstrap)["carried"] + (
@@ -694,6 +737,11 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
         "manual_open_required": True,
         "cli": invocation,
         "template": template,
+        # Provenance inputs for the durable handoff record. The SPEC is included
+        # deliberately: it is the immutable BEFORE state, and the caller (which
+        # owns the Supabase credentials) persists it. It is not browser payload.
+        "spec": spec,
+        "compiler": compiler_identity(cli_path),
     }
     with open(os.path.join(workspace, "handoff-report.json"), "w",
               encoding="utf-8") as fh:

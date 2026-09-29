@@ -4349,3 +4349,60 @@ feedback lineage. **Segment 5 remains OPEN.**
 
 vidIQ unspent (24 credits). No donor research. RECUT on hold. Segment 6 locked.
 Migration 038 untouched.
+
+---
+
+## 42. "FINISH IN CAPCUT" — OPTIONAL EDITABLE HANDOFF (2026-09-28)
+
+**Additive and optional.** One control added to the EXISTING accepted editor (`ManualTrimEditor.jsx`);
+no second editor, no new timeline. Phase 2A untouched. CapCut is **never required** for normal LOOM
+operation: with the CLI or the app absent, the lane reports "unavailable" and nothing else changes
+behaviour.
+
+**Vendored, pinned donor:** `renezander030/capcut-cli` @ `a21cc9ce65ef169920f0e18cb130777a13bee838`
+(MIT, © 2026 Rene Zander, v0.26.0), vendored at `vendor/capcut-cli/` with provenance + LICENSE.
+Self-contained (`dist/` + `templates/_init` + `package.json`), no `node_modules`, **no global npm
+install**; `LOOM_CAPCUT_CLI` remains an optional override and the vendored runtime is the normal path.
+
+**What it does:** current version state → `build_capcut_spec()` → local media handoff (COPY, never
+move) → vendored `compile` → a real CapCut project in the app's own store, one-way only. No
+multi-track/full-timeline export claim, no CapCut→LOOM sync, no auto-export, no publishing.
+
+**Three findings that mattered, all fixed:**
+1. **Coordinates.** `boundary_plan.recommended_clip_*` (the editor's `source_range`) is ALREADY
+   working-relative, so it must not be translated again — the coordinate system is decided by what the
+   caller supplies, never inferred from a version label. ORIGINAL 1800→1860 + origin 1800 → working
+   0→60 → CapCut `sourceStart 0`, `duration 60`; re-translating a working pair is refused.
+2. **Schema drift.** The vendored `_init` template declares CapCut **6.5.0** while the operator's store
+   holds **7.0.0** projects, and the CLI correctly REFUSES that mismatch — `compile` therefore uses
+   `--template auto` (seed from the store's newest project) so the draft matches the app that opens it.
+3. **App-open guard + orphans.** The CLI refuses to write a managed draft while CapCut runs. It is now
+   pre-flighted (donor's own `ps -axo comm=` rule, scoped to managed stores) so nothing is staged; and
+   if a compile fails after creating a project directory, this run removes only what IT created and
+   drops only now-dangling index entries.
+
+**Version authority.** Delegates to the accepted adapter helpers. One measured correction: the
+accepted ordering compares the version prefix alphabetically and `"source" > "render"`, so an
+unpinned `latest` could hand back `source-1.0` — the ORIGINAL source — over a later render. An
+unpinned request now prefers the newest non-source version; an explicitly pinned `source-1.0` is
+still honoured.
+
+**Durable provenance (migration 042, `loom_capcut_handoffs`).** Every SUCCESSFUL handoff records an
+immutable `handoff_id` with the tenant, candidate, clip, asset version, correction identity, the
+working-media sha256, `working_timebase_origin_s`, the exact compiled spec and the compiler identity.
+Provenance only — no operational path reads it, it changes no candidate/approval/render/acquisition/
+CI/publishing/SourceWindow/GHL state, and a failed handoff writes **no** row. It exists so a future
+BEFORE/AFTER comparison needs no archaeology.
+
+**Not built (deliberately):** multi-track LOOM persistence, multi-clip sequencing, SFX, transitions,
+overlays, commentary, new transcript infrastructure, WhisperX, Chopify, CapCut→LOOM sync, OBS, a new
+timeline or editor. No "LIVE PASS" is claimed — the operator's own human test decides.
+
+### Roadmap — RECORDED, NOT IMPLEMENTED
+Two future items are recorded in `NEXT_SESSION_HANDOFF.md` **§15** and are deliberately **not
+implemented, not designed, and not prepared for** by any code today:
+* **§15a Editorial Feedback Learning Loop** — CapCut BEFORE/AFTER → typed corrections → tenant-aware
+  editing preference. Explicitly: preference ≠ repeated pattern ≠ performance-supported pattern, and
+  `handoff_id` exists to prevent future archaeology.
+* **§15b Source Mining Intelligence V2** — a later intelligence upgrade once real operating evidence
+  exists. Discovery, scoring, acquisition and CI are **not** redesigned now.

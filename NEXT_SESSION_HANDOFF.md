@@ -1157,3 +1157,62 @@ free-form `edl_metadata` (jsonb) — so additional op types can ride in `edl_met
 columns **without replacing the editor**. The plan's requirement is therefore satisfiable, but only
 if V1 extends that representation instead of hard-coding it around trim alone. This is a design
 constraint on the next task, not a claim that the capability already exists.
+
+---
+
+## 15. ROADMAP — RECORDED REQUESTS, DELIBERATELY *NOT IMPLEMENTED*
+
+**Status: NOT IMPLEMENTED. NOT DESIGNED. NO CODE, NO TABLES, NO JOBS.**
+
+These two items are recorded so the intent is not lost. They are **not** authorized work, and
+nothing in LOOM reads, depends on, or prepares for them today. Do not build them without an
+explicit new instruction. Recorded 2026-09-28.
+
+### 15a. Editorial Feedback Learning Loop — RECORDED, NOT IMPLEMENTED
+
+**The eventual intent (conceptual shape only):**
+
+> LOOM-generated edit → operator finishes it in CapCut → compare the BEFORE project against the
+> AFTER project → structured, **typed** edit corrections → tenant-specific editing preferences /
+> policy → eventually post-publication performance signals.
+
+**Future correction classes to consider** (this is a list of *candidates*, not a schema): `trim`,
+`split`, `reorder`, `source`/`reaction switching`, `caption changes`, `SFX`, `transitions`,
+`overlays`, `zoom`/`reframe`, `commentary`/`voiceover`, `pacing`/`dead-air removal`.
+
+**Constraints recorded now, so a later design cannot quietly violate them:**
+
+* **Tenant-aware.** Editing preferences are per tenant; one tenant's taste must never become
+  another's policy.
+* **Not every operator correction is automatically a superior rule.** A single manual change is an
+  *operator preference* and evidence of nothing more. A repeatable pattern is stronger evidence, and
+  only a pattern later supported by performance signals could ever justify becoming policy. The
+  design must keep these three tiers genuinely distinct — **preference ≠ repeated pattern ≠
+  performance-supported pattern** — and must be able to decline to learn from any of them.
+* **The BEFORE state is already preserved.** `handoff_id` (migration 042,
+  `loom_capcut_handoffs`) records the exact immutable handoff specification, the working-media hash,
+  the working-timebase origin and the compiler identity. It exists **specifically so a future
+  BEFORE/AFTER comparison needs no archaeology** — do not re-derive the before state from source
+  files, logs or guesswork later.
+* **No return path exists.** The handoff is one-way; nothing imports from CapCut today, and any
+  future importer is a separate, separately-authorized project.
+* **No speculative tables.** The current provenance record is deliberately the *minimum* structure
+  needed to preserve the authoritative BEFORE state. No learning, preference or policy tables may be
+  added ahead of an authorized design.
+
+### 15b. Source Mining Intelligence V2 — RECORDED, NOT IMPLEMENTED
+
+**The eventual intent (conceptual shape only):** source-mining / Content Intelligence is expected to
+receive a later **intelligence upgrade** once LOOM has real operating evidence to learn from.
+
+**Future inputs to that upgrade** (from the operating record, not from inference):
+
+> discovered source → human approve/reject → selected moment → edit decisions → publication →
+> platform performance
+
+…so that discovery can learn **which sources and moments actually become useful inventory, per
+tenant**.
+
+**Explicitly NOT in scope now:** do **not** redesign discovery, scoring, acquisition or Content
+Intelligence. This item records a future direction only. Today's ranking/filtering policy is
+unchanged, and CI rejections must **not** silently become sourcing policy (see §14).

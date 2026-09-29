@@ -1530,6 +1530,58 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
 # Review proxy generation (Docker-independent, master untouched)
 # ---------------------------------------------------------------------------
 
+def record_capcut_handoff(report, *, tenant_id, clip_id, candidate_id="",
+                          correction=None):
+    """Persist the immutable BEFORE state of a SUCCESSFUL CapCut handoff.
+
+    PROVENANCE ONLY. Nothing on any operational path reads this table, and this
+    helper touches nothing else: not the candidate, approval, scoring, rendering,
+    acquisition, Content Intelligence, publishing, SourceWindow, GHL routing or
+    the editor session.
+
+    Append-only (a new handoff_id per success, rows never updated). It is called
+    ONLY after the runner has confirmed a real project exists on disk, so a
+    failed or refused handoff can never leave a success row.
+
+    Returns the recorded row, or None when nothing was written. A write failure
+    is logged and swallowed: the operator already has their project, so failing
+    loudly here would break the lane to protect a provenance record.
+    """
+    if not isinstance(report, dict):
+        return None
+    spec = report.get("spec")
+    media = report.get("media") or {}
+    coords = report.get("coordinates") or {}
+    if not isinstance(spec, dict) or not media.get("sha256"):
+        return None
+    correction = correction if isinstance(correction, dict) else {}
+    payload = {
+        "tenant_id": tenant_id,
+        "candidate_id": candidate_id or None,
+        "clip_id": clip_id,
+        "asset_version": report.get("asset_version") or "",
+        "source_asset_version": correction.get("source_asset_version"),
+        "correction_id": correction.get("id"),
+        "media_sha256": media.get("sha256"),
+        "working_timebase_origin_s": coords.get("timebase_origin", 0.0) or 0.0,
+        "spec": spec,
+        "compiler": report.get("compiler") or {},
+    }
+    url = f"{SUPABASE_URL}/rest/v1/loom_capcut_handoffs"
+    headers = _supabase_headers()
+    headers["Content-Type"] = "application/json"
+    headers["Prefer"] = "return=representation"
+    req = Request(url, data=json.dumps(payload).encode(),
+                  headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=15) as resp:
+            rows = json.loads(resp.read().decode() or "[]")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[capcut] provenance write failed: {type(exc).__name__}", flush=True)
+        return None
+    return rows[0] if isinstance(rows, list) and rows else None
+
+
 def resolve_local_working_media(job_id, durable):
     """The durable working asset's path ON THIS HOST, or "" when there is none.
 
@@ -4468,7 +4520,40 @@ class Handler(BaseHTTPRequestHandler):
 
         print(f"[capcut] draft '{report.get('draft_name')}' for {clip_id}@"
               f"{resolved_version}", flush=True)
-        self._send_json(200, report)
+
+        # Durable provenance for the BEFORE state — written ONLY now that a real
+        # project exists on disk. Never fatal: a failure here must not take the
+        # operator's project away, and it must never be reported as recorded.
+        provenance = {"recorded": False}
+        try:
+            correction = {}
+            try:
+                rows = supabase_filter_get("loom_edit_corrections", {
+                    "tenant_id": tenant_id, "clip_id": clip_id,
+                    "target_asset_version": resolved_version})
+                correction = capcut_runner.select_current_correction(
+                    rows, resolved_version)
+            except Exception:  # noqa: BLE001
+                correction = {}
+            recorded = record_capcut_handoff(
+                report, tenant_id=tenant_id, clip_id=clip_id,
+                candidate_id=durable.get("duplicate_fingerprint") or clip_id,
+                correction=correction)
+            if recorded:
+                provenance = {"recorded": True,
+                              "handoff_id": recorded.get("handoff_id")}
+            else:
+                provenance = {"recorded": False,
+                              "reason": "provenance_write_failed"}
+        except Exception as exc:  # noqa: BLE001
+            provenance = {"recorded": False, "reason": type(exc).__name__}
+
+        # The spec is the durable BEFORE artifact, not browser payload: it is
+        # recorded above and stripped here so the editor never receives it.
+        body = dict(report)
+        body.pop("spec", None)
+        body["provenance"] = provenance
+        self._send_json(200, body)
 
     def _handle_editor_api(self, method):
         """Authenticated, allowlisted editor API gateway. Only the endpoints the
