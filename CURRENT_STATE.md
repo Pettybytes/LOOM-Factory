@@ -4373,9 +4373,28 @@ multi-track/full-timeline export claim, no CapCut→LOOM sync, no auto-export, n
    working-relative, so it must not be translated again — the coordinate system is decided by what the
    caller supplies, never inferred from a version label. ORIGINAL 1800→1860 + origin 1800 → working
    0→60 → CapCut `sourceStart 0`, `duration 60`; re-translating a working pair is refused.
-2. **Schema drift.** The vendored `_init` template declares CapCut **6.5.0** while the operator's store
-   holds **7.0.0** projects, and the CLI correctly REFUSES that mismatch — `compile` therefore uses
-   `--template auto` (seed from the store's newest project) so the draft matches the app that opens it.
+2. **Schema drift / version boundary — MEASURED.** The vendored `_init` template declares CapCut
+   **6.5.0** while the operator's store holds app-authored **7.0.0** projects, and the CLI correctly
+   REFUSES that mismatch — so `compile` uses `--template auto` (the donor's own "skeleton" seeding),
+   which builds the new project from the store's NEWEST app-authored project. Verified by compiling
+   against a scratch store seeded with a real project: the CLI reports *"Skeleton seeded from the
+   store's CapCut 7.0.0 project … schema markers kept, content emptied"*, and the produced draft's
+   `draft_info.json` carries markers **byte-identical** to the source project's
+   (`platform.app_version 7.0.0`, `platform.app_source cc`, `platform.app_id 359289`,
+   `new_version 143.0.0`, `version 360000`).
+
+   **Content-file layout (do not assume).** On this CapCut (9.2.0 app, 7.0.0-authored projects) a real
+   project folder's content file is **`draft_info.json`** — there is **NO `draft_content.json`** in an
+   app-authored project. The donor writes the timeline to **all three** names it supports
+   (`draft_info.json`, `draft_content.json`, `template-2.tmp`), byte-identical, so CapCut finds the
+   timeline in the file it actually reads. Measured on a produced project: `draft_info.json`
+   bytes=5967, `tracks=1`, `segments=1`, `source_timerange {start: 0, duration: 60000000}`,
+   canvas 1080x1920 9:16 — and the project is registered in the store's `root_meta_info.json` so
+   CapCut lists it. Real project folders also contain auxiliary files
+   (`draft_cover.jpg`, `attachment_editing.json`, `attachment_pc_common.json`, `draft_agency_config.json`,
+   `draft_biz_config.json`, `adjust_mask/`, `common_attachment/`, `crypto_key_store.dat`, …) that the
+   donor does not emit; whether CapCut regenerates or tolerates those is exactly what the operator's
+   human acceptance test decides.
 3. **App-open guard + orphans.** The CLI refuses to write a managed draft while CapCut runs. It is now
    pre-flighted (donor's own `ps -axo comm=` rule, scoped to managed stores) so nothing is staged; and
    if a compile fails after creating a project directory, this run removes only what IT created and
