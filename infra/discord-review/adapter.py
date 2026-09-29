@@ -1524,7 +1524,15 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
         "duration_seconds": round(range_end - range_start, 2),
         "source_range": {"start": range_start, "end": range_end},
         "framing": framing,
+        # `title` is the human-readable DISPLAY title (source metadata), NOT
+        # renderable copy: a consumer must never draw it on the timeline. The
+        # explicit renderable contract is `renderable_text` below.
         "title": "",
+        # Renderable copy, by explicit contract. A rendered clip's hook is copy
+        # LOOM generated for this clip, so it may appear on screen; there is no
+        # operator-set title overlay on this lane, so title stays empty rather
+        # than borrowing the source metadata title.
+        "renderable_text": {"hook": hook, "title": ""},
         "source_filename": source_filename or "",
         "hook": hook,
         "has_burned_hook": has_burned_hook,
@@ -4738,8 +4746,10 @@ class Handler(BaseHTTPRequestHandler):
                 acquisition=handoff_acquisition_provenance(durable),
                 caption_blocks=durable.get("captions") or [],
                 asset_version=resolved_version or "",
-                title=durable.get("title") or "",
-                hook=durable.get("hook") or "",
+                # Renderable copy travels by its own explicit contract. The
+                # bootstrap's `title` is source metadata and is never passed as
+                # copy here.
+                renderable=durable.get("renderable_text") or {},
                 reveal=bool(body.get("reveal")),
             )
         except capcut_runner.ch.CapCutHandoffUnavailable as exc:

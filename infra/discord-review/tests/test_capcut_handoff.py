@@ -61,15 +61,18 @@ class SpecMappingTests(unittest.TestCase):
         self.assertEqual(item["duration"], 60.0)
 
     def test_hook_and_title_reach_a_text_track(self):
-        spec = ch.build_capcut_spec(_state(), media_path=self.media)
+        spec = ch.build_capcut_spec(
+            _state(), media_path=self.media,
+            renderable={"hook": "wait for it", "title": "LOCKED IN ATHON"})
         text = [t for t in spec["tracks"] if t["type"] == "text"][0]
         joined = " ".join(i["text"] for i in text["items"])
         self.assertIn("wait for it", joined)
         self.assertIn("LOCKED IN ATHON", joined)
 
     def test_no_hook_means_no_invented_text(self):
-        spec = ch.build_capcut_spec(_state(hook="", title=""),
-                                    media_path=self.media)
+        spec = ch.build_capcut_spec(
+            _state(hook="", title=""), media_path=self.media,
+            renderable={"hook": "", "title": ""})
         self.assertEqual([t for t in spec["tracks"] if t["type"] == "text"], [])
 
     def test_spec_uses_seconds_not_microseconds(self):

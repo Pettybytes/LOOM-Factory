@@ -16,18 +16,34 @@ external and optional.
 FIELD MAPPING (LOOM edit state -> compile spec)
 ------------------------------------------------
 LOOM (editor bootstrap)          -> compile spec
-canvas (LOOM 9:16 vertical)      -> width 1080, height 1920, ratio "9:16"
+canvas (persisted output format) -> width, height, ratio
 fps (not held by LOOM)           -> 30 (declared default, see DEFAULT_FPS)
 media_path (local file)          -> tracks[video].items[0].path
 source_range.start               -> tracks[video].items[0].sourceStart   (the TRIM-IN)
 source_range.end - start         -> tracks[video].items[0].duration
-hook                             -> tracks[text].items[0].text (0 -> min(2s, dur))
-title                            -> tracks[text].items[1].text (if present)
+visual state (resolved)          -> tracks[video].items[0] composition fields
+                                    (see visual_state.py; absent -> identity)
+renderable_text.hook             -> tracks[text].items[0].text (0 -> min(2s, dur))
+renderable_text.title            -> tracks[text].items[1].text (if present)
 captions / word blocks           -> the compile spec's `captions` operation (an SRT the
                                     CLI turns into editable caption items). See
                                     build_caption_operation(); timing is never
                                     invented and absence is reported, not faked.
 scenes / framing / social_caption-> NOT REPRESENTABLE (reported)
+
+RENDERABLE COPY IS AN EXPLICIT CONTRACT (why it is not `bootstrap["title"]`)
+---------------------------------------------------------------------------
+Only text the operator (or LOOM's own copy) intends to appear ON SCREEN may
+become a CapCut text object. A bootstrap's `title`/`hook` keys are NOT that
+contract: on the source-review lane `title` carries the candidate's SOURCE
+metadata, and source metadata is provenance — it says where the clip came from.
+Reading it as copy is how a raw source URL ended up rendered as an orange
+timeline text object.
+
+So renderable copy is read from ONE explicit place, `RENDERABLE_TEXT_KEY`
+(``renderable_text``), and each value is validated against the shared title
+contract's provenance rule before it is allowed to become a timeline object.
+There is deliberately NO fallback to `title`/`hook`.
 
 NOTICE: spec format adapted from capcut-cli (MIT, (c) 2026 Rene Zander).
 """
@@ -39,8 +55,12 @@ import os
 from typing import Any
 
 # "Guaranteed-valid CapCut draft" inputs the compile spec supports.
-SUPPORTED = ("canvas (9:16 / 16:9)", "video item with trim-in (sourceStart)",
-             "item duration", "hook text", "title text", "fps")
+SUPPORTED = ("canvas (persisted output format)", "video item with trim-in (sourceStart)",
+             "item duration", "item composition (crop/scale/position)",
+             "hook text", "title text", "fps")
+
+#: The ONE key on the bootstrap whose values are renderable copy.
+RENDERABLE_TEXT_KEY = "renderable_text"
 
 # Honestly unsupported by the compile spec: reported, never invented.
 UNSUPPORTED = {
@@ -73,9 +93,71 @@ class CapCutHandoffUnavailable(RuntimeError):
     """Raised when LOOM state cannot produce a legitimate handoff (never corrupts)."""
 
 
+def _title_contract():
+    """The shared human-title contract (provenance vs. human copy), or None.
+
+    Reached through ``human_title``, which loads it by path so the resolution
+    cannot be shadowed by this repo's ``acquisition.py`` module. Returning None
+    is honest rather than fatal: the caller then applies a conservative fallback
+    instead of silently trusting the value.
+    """
+    try:
+        import human_title  # type: ignore
+        return human_title
+    except ImportError:
+        return None
+
+
+def is_renderable_copy(value: Any) -> bool:
+    """Whether a value is copy that MAY be drawn on the timeline.
+
+    Provenance is never copy: a source URL/pointer identifies where the clip came
+    from, so drawing it is a category error, not a cosmetic one. Validation goes
+    through the shared title contract so there is one definition of "this is a
+    pointer, not a title"; if that contract cannot be imported the fallback still
+    refuses an explicit scheme, which is the shape that actually reached a
+    timeline.
+    """
+    if value is None:
+        return False
+    text = str(value).strip()
+    if not text:
+        return False
+    contract = _title_contract()
+    if contract is not None:
+        return not contract.is_provenance_reference(text)
+    return "://" not in text
+
+
+def renderable_copy(bootstrap: dict[str, Any],
+                    renderable: dict[str, Any] | None = None
+                    ) -> dict[str, str]:
+    """The operator/renderable copy LOOM genuinely holds: ``{title, hook}``.
+
+    Read from ONE explicit place — ``renderable`` when supplied, else the
+    bootstrap's ``renderable_text`` mapping. A bootstrap's ``title``/``hook``
+    keys are NOT consulted: on the source-review lane ``title`` carries the
+    candidate's source metadata, and reading metadata as copy is exactly how a
+    Kick source URL became an orange timeline text object.
+
+    Each value must also pass ``is_renderable_copy``; a pointer tucked into the
+    renderable slot is dropped rather than drawn.
+    """
+    source = renderable if isinstance(renderable, dict) else (
+        bootstrap.get(RENDERABLE_TEXT_KEY)
+        if isinstance(bootstrap, dict) else None)
+    if not isinstance(source, dict):
+        return {"title": "", "hook": ""}
+    out = {}
+    for key in ("title", "hook"):
+        value = source.get(key)
+        out[key] = str(value).strip()[:120] if is_renderable_copy(value) else ""
+    return out
+
+
 def build_capcut_spec(bootstrap: dict[str, Any], *, media_path: str,
                       aspect: str = DEFAULT_ASPECT, fps: int = DEFAULT_FPS,
-                      hook: str = "", title: str = "") -> dict[str, Any]:
+                      renderable: dict[str, Any] | None = None) -> dict[str, Any]:
     """Map LOOM edit state to a `capcut-cli compile` spec (seconds, not µs).
 
     Pure and side-effect free: raises `CapCutHandoffUnavailable` instead of guessing
@@ -104,8 +186,13 @@ def build_capcut_spec(bootstrap: dict[str, Any], *, media_path: str,
     duration = round(end - start, 3)
 
     preset = ASPECT_PRESETS.get(aspect) or ASPECT_PRESETS[DEFAULT_ASPECT]
+    copy = renderable_copy(bootstrap, renderable)
     spec: dict[str, Any] = {
-        "name": (bootstrap.get("title") or title or "LOOM handoff")[:80],
+        # The project name is VISIBLE in CapCut. It comes from renderable copy or
+        # falls back to a neutral base label — never from source metadata. The
+        # base is unprefixed because ``capcut_runner.safe_draft_name`` adds the
+        # "LOOM " prefix exactly once.
+        "name": (copy["title"] or "handoff")[:80],
         "width": preset["width"],
         "height": preset["height"],
         "ratio": preset["ratio"],
@@ -120,28 +207,28 @@ def build_capcut_spec(bootstrap: dict[str, Any], *, media_path: str,
         ],
     }
 
-    # Text track: only what LOOM genuinely holds. Absent -> no track at all.
+    # Text track: only copy LOOM genuinely intends to render. Absent -> no track.
     texts: list[dict[str, Any]] = []
-    hook_text = (hook or bootstrap.get("hook") or "").strip()
-    if hook_text:
-        texts.append({"text": hook_text[:120], "start": 0,
+    if copy["hook"]:
+        texts.append({"text": copy["hook"], "start": 0,
                       "duration": round(min(HOOK_MAX_SECONDS, duration), 3)})
-    title_text = (title or bootstrap.get("title") or "").strip()
-    if title_text:
-        texts.append({"text": title_text[:120], "start": 0, "duration": duration})
+    if copy["title"]:
+        texts.append({"text": copy["title"], "start": 0, "duration": duration})
     if texts:
         spec["tracks"].append({"type": "text", "items": texts})
     return spec
 
 
-def handoff_report(bootstrap: dict[str, Any]) -> dict[str, Any]:
+def handoff_report(bootstrap: dict[str, Any],
+                   renderable: dict[str, Any] | None = None) -> dict[str, Any]:
     """What the handoff WILL and WILL NOT carry, for the operator and the record."""
+    copy = renderable_copy(bootstrap, renderable)
     carried = []
     if (bootstrap.get("source_range") or {}).get("start") is not None:
         carried.append("selected trim (sourceStart + duration)")
-    if (bootstrap.get("hook") or "").strip():
+    if copy["hook"]:
         carried.append("hook text")
-    if (bootstrap.get("title") or "").strip():
+    if copy["title"]:
         carried.append("title text")
     return {
         "carried": carried or ["canvas + video item"],

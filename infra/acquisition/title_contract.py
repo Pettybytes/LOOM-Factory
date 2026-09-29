@@ -83,6 +83,24 @@ _PLACEHOLDER_PATTERNS = (
     re.compile(r"^clip$", re.I),
 )
 
+#: Reference/provenance SHAPES. A value like this does not describe the content
+#: at all — it says WHERE the content came from, which is provenance, not copy.
+#: The two are different kinds of thing and must never trade places: a title slot
+#: holding one of these is a field-misuse bug upstream (a missing human title
+#: papered over with the source pointer), and PUBLISHING one into a
+#: human-readable or renderable slot turns a pointer into on-screen text.
+#:
+#: Deliberately conservative, so ordinary titles survive: a URL always needs an
+#: explicit scheme, and a bare reference always needs a host AND a path segment
+#: (``kick.com/x``, ``www.kick.com/x``). That is exactly the shape every platform
+#: uses for a source pointer, while ``U.S.A``, ``MrBeast`` and ``R.I.P.`` — each
+#: of which a naive host-or-TLD test would swallow — are untouched.
+_PROVENANCE_PATTERNS = (
+    re.compile(r"^[a-z][a-z0-9+.\-]*://\S+$", re.I),                       # scheme://...
+    re.compile(r"^www\.[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9\-]+)+/\S*$", re.I),
+    re.compile(r"^[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9\-]+)+/\S+$", re.I),       # host/path
+)
+
 
 class TitleError(ValueError):
     def __init__(self, code: str, message: str) -> None:
@@ -110,10 +128,42 @@ def clean_title(raw: Any) -> str:
     return _DOTS_RE.sub("", text).strip()
 
 
+def is_provenance_reference(value: Any) -> bool:
+    """True when a value identifies WHERE content came from, not what it is.
+
+    A source URL/pointer is provenance. It is never a human-readable title and
+    never renderable copy, on any platform — so it must not be published into a
+    human slot, and a consumer holding one must treat it as a missing title
+    rather than as text to show.
+
+    Matched against the RAW value on purpose: ``clean_title`` rewrites path
+    separators to spaces for DISPLAY, which would destroy the very shape being
+    detected (``https://kick.com/x`` -> ``https: kick.com x``). Only control
+    characters and whitespace runs are normalized here.
+    """
+    if value is None:
+        return False
+    raw = "".join(
+        " " if ch in "\r\n\t" else ch
+        for ch in str(value).strip()
+        if unicodedata.category(ch)[0] != "C" or ch in "\r\n\t")
+    raw = re.sub(r"\s+", " ", raw).strip()
+    if not raw:
+        return False
+    return any(p.match(raw) for p in _PROVENANCE_PATTERNS)
+
+
 def is_placeholder_title(title: str, content_id: str = "") -> bool:
-    """True when a title carries no information beyond identity."""
+    """True when a title carries no information beyond identity.
+
+    A provenance reference counts: it restates where the content lives and
+    nothing about the content itself, so it is rejected by the title priorities
+    exactly like ``untitled`` and falls through to creator + content label.
+    """
     text = clean_title(title)
     if not text:
+        return True
+    if is_provenance_reference(title):
         return True
     if content_id and text.strip() == str(content_id).strip():
         return True
@@ -162,8 +212,15 @@ def resolve_display_title(*, platform: str, content_id: str = "",
                           stored_title: str = "", clip_name: str = "",
                           creator_name: str = "", creator_handle: str = "",
                           kind: str = "") -> str:
-    """Build the display title using the documented priority order."""
+    """Build the display title using the documented priority order.
+
+    A provenance reference is skipped outright (checked on the RAW value, before
+    display cleaning can disguise it), so a source pointer never wins a title
+    priority over the creator fallback.
+    """
     for candidate in (source_title, caption, clip_name, stored_title):
+        if is_provenance_reference(candidate):
+            continue
         text = clean_title(candidate)
         if text and not is_placeholder_title(text, content_id):
             return text[:200]

@@ -591,7 +591,7 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
                 asset_version: str = "",
                 draft_name: str = "",
                 aspect: str = ch.DEFAULT_ASPECT, fps: int = ch.DEFAULT_FPS,
-                hook: str = "", title: str = "",
+                renderable: dict[str, Any] | None = None,
                 cli_path: str = "", draft_store: str = "",
                 template: str = "auto",
                 handoff_root: str = "", reveal: bool = False,
@@ -600,6 +600,11 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
                 invoke: Callable[[list[str], int], tuple[int, str, str]] | None = None,
                 ) -> dict[str, Any]:
     """Build the editable CapCut project for the CURRENT version.
+
+    ``renderable`` is the explicit renderable-copy contract (see
+    ``capcut_handoff.renderable_copy``). It is the ONLY source of on-screen text:
+    the bootstrap's own ``title``/``hook`` keys are metadata slots and are never
+    read as copy.
 
     Returns a report on success. Raises ``CapCutHandoffUnavailable`` on any
     failure — including an absent CLI — having changed NO LOOM state.
@@ -643,7 +648,7 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
                          "source_range": {"start": coords["start"],
                                           "end": coords["end"]}}
     spec = ch.build_capcut_spec(working_bootstrap, media_path=staged["staged_path"],
-                               aspect=aspect, fps=fps, hook=hook, title=title)
+                               aspect=aspect, fps=fps, renderable=renderable)
     spec["name"] = safe_draft_name(spec.get("name") or "", store=store)
 
     caption_state: dict[str, Any] = {"included": False,
@@ -748,9 +753,9 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
                   "sha256": staged["sha256"],
                   "draft_copy": "copied into the draft by the CLI (self-contained)"},
         "captions": caption_state,
-        "carried": ch.handoff_report(working_bootstrap)["carried"] + (
+        "carried": ch.handoff_report(working_bootstrap, renderable)["carried"] + (
             [f"{caption_state['count']} caption block(s)"] if caption_state["included"] else []),
-        "unsupported": ch.handoff_report(working_bootstrap)["unsupported"],
+        "unsupported": ch.handoff_report(working_bootstrap, renderable)["unsupported"],
         "manual_open_required": True,
         "cli": invocation,
         "template": template,

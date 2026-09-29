@@ -527,10 +527,14 @@ class EditorUnchangedTests(CapCutRunnerCase):
     def test_the_committed_mapper_output_is_unchanged(self):
         # A frozen snapshot of build_capcut_spec's accepted contract. If the
         # additive caption work had altered the editor-facing mapping, this
-        # fails.
+        # fails. On-screen copy now travels through the EXPLICIT renderable
+        # contract rather than the bootstrap's metadata `title`/`hook` keys, so
+        # the copy is supplied the way the operator-facing lane supplies it.
         state = {"source_range": {"start": 30.0, "end": 90.0},
                  "title": "LOCKED IN ATHON", "hook": "wait for it"}
-        spec = ch.build_capcut_spec(state, media_path=self.media)
+        spec = ch.build_capcut_spec(
+            state, media_path=self.media,
+            renderable={"title": "LOCKED IN ATHON", "hook": "wait for it"})
         self.assertEqual(spec["width"], 1080)
         self.assertEqual(spec["height"], 1920)
         self.assertEqual(spec["ratio"], "9:16")

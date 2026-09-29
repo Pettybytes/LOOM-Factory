@@ -482,7 +482,17 @@ def source_lineage_bootstrap(candidate: dict[str, Any],
         "duration_seconds": round(float(identity["duration_seconds"]), 2),
         "source_range": {"start": window["start"], "end": window["end"]},
         "framing": "auto",
-        "title": candidate.get("title") or "",
+        # The candidate's `title` is SOURCE METADATA (the platform's own title for
+        # the item). It is carried here as `source_title` for display and as
+        # provenance, and deliberately NOT as `title`, which is a renderable
+        # slot — publishing metadata into it is how a raw source URL reached the
+        # CapCut timeline as visible text.
+        "source_title": candidate.get("title") or "",
+        "title": "",
+        # Renderable copy, by explicit contract. A source-review launch has no
+        # operator-authored overlay text yet, so this is empty and the handoff
+        # emits no text object at all.
+        "renderable_text": {"hook": "", "title": ""},
         "source_filename": identity.get("filename") or "",
         "hook": "",
         "has_burned_hook": False,

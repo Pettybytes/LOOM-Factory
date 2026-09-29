@@ -93,6 +93,34 @@ def manual_brief(tenant_id: str, *, profile_id: str = MANUAL_PROFILE_ID,
     })
 
 
+def _human_title(submission: dict[str, Any], url: str, platform: str) -> str:
+    """The HUMAN-READABLE title for a supplied submission — never the source URL.
+
+    The reviewer note is the operator's own words and wins when it says
+    something. When it is absent (or is itself just the pasted pointer) the title
+    is resolved by the SAME shared contract every other platform uses, which
+    falls back to ``creator · content label``.
+
+    This used to be ``(reviewer_note or url)``: a missing note published the
+    SOURCE POINTER into the human title slot. ``canonical_url`` already carries
+    that pointer, so the fallback added no information and turned provenance
+    into a title — which downstream became visible on-screen text in the CapCut
+    handoff. Provenance and human copy are different kinds of thing; only the
+    human value may fill a human slot.
+    """
+    import human_title
+    note = submission.get("reviewer_note") or ""
+    if human_title.is_provenance_reference(note):
+        note = ""
+    return human_title.resolve_display_title(
+        platform=platform,
+        content_id=submission.get("platform_content_id") or "",
+        source_title=note,
+        creator_handle=submission.get("submitter") or "",
+        kind="clip",
+    )[:200]
+
+
 def build_record(submission: dict[str, Any], probe: dict[str, Any],
                  *, brief: Any, media_url: str,
                  source_metadata: dict[str, Any] | None = None) -> Any:
@@ -130,7 +158,7 @@ def build_record(submission: dict[str, Any], probe: dict[str, Any],
         source_brief_version=brief.version, platform=platform,
         canonical_url=url, platform_content_id=submission.get("platform_content_id") or "",
         creator_channel_identity=submission.get("submitter") or "manual",
-        creator_channel_url="", title=(submission.get("reviewer_note") or url)[:200],
+        creator_channel_url="", title=_human_title(submission, url, platform),
         publication_timestamp=(captured.get("publication_timestamp") or None),
         metric_observation_timestamp=None,
         observed_metrics=metrics, metric_history=[],
