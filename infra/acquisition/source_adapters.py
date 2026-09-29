@@ -189,8 +189,14 @@ class YouTubeAdapter:
         if expected_content_id and parsed["video_id"] != expected_content_id:
             raise ValueError(f"[CONTENT_ID_DRIFT] {parsed['video_id']!r} != "
                              f"{expected_content_id!r}")
+        # `kind` comes from the source form `youtube_url.parse` ALREADY computed --
+        # this is not a second URL-identity model. `/shorts/<id>` is a SHORT ITEM
+        # (short by contract, so it may be taken whole); every other accepted form
+        # (`watch?v=`, `youtu.be/<id>`) is a long/unproven video, which is why the
+        # ambiguous short-link form deliberately does NOT claim short.
+        kind = "short" if parsed.get("source_form") == "shorts" else "video"
         return {"platform": self.platform, "canonical_url": parsed["canonical_url"],
-                "content_id": parsed["video_id"]}
+                "content_id": parsed["video_id"], "kind": kind}
 
 
 class _UnimplementedLongFormAdapter:
@@ -231,10 +237,12 @@ class TwitchAdapter:
     def canonicalize(self, url: str, *, expected_content_id: str = "") -> dict[str, str]:
         import twitch_url as tu
         parsed = tu.parse(url, expected_content_id=expected_content_id)
+        # `.get`, not a direct subscript: a parser that omits `kind` must not raise
+        # into a caller that treats an absent kind as advisory.
         return {"platform": self.platform,
                 "canonical_url": parsed["canonical_url"],
                 "content_id": parsed["content_id"],
-                "kind": parsed["kind"]}
+                "kind": parsed.get("kind") or ""}
 
     def start_hint_ms(self, url: str) -> int | None:
         """The URL's `?t=` start hint, in ms. NON-IDENTITY by contract.
@@ -320,10 +328,12 @@ class KickAdapter:
     def canonicalize(self, url: str, *, expected_content_id: str = "") -> dict[str, str]:
         import kick_url as ku
         parsed = ku.parse(url, expected_content_id=expected_content_id)
+        # `.get`, not a direct subscript: a parser that omits `kind` must not raise
+        # into a caller that treats an absent kind as advisory.
         return {"platform": self.platform,
                 "canonical_url": parsed["canonical_url"],
                 "content_id": parsed["content_id"],
-                "kind": parsed["kind"]}
+                "kind": parsed.get("kind") or ""}
 
     def start_hint_ms(self, url: str) -> int | None:
         """The URL's `?t=<seconds>` start hint, in ms. NON-IDENTITY by contract.

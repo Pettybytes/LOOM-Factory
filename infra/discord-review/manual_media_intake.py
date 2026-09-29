@@ -270,15 +270,25 @@ def resolve_source_url(url: str) -> dict[str, Any]:
     resolved = manual_intake.validate_and_canonicalize(url)
     if isinstance(resolved, dict):
         platform = resolved.get("platform", "")
+        # A kind this resolver ALREADY holds is never lost: it is only ever filled
+        # in from the platform's own adapter when absent.
+        known_kind = str(resolved.get("kind") or "")
         try:
             sa = _acq("source_adapters")
             adapter = sa.adapter_for(platform)
-            if adapter is not None and not resolved.get("kind"):
+            if adapter is not None and not known_kind:
                 parsed = adapter.canonicalize(url)
                 if isinstance(parsed, dict) and parsed.get("kind"):
-                    resolved = {**resolved, "kind": parsed["kind"]}
-        except Exception:  # noqa: BLE001 — kind is advisory; identity is already proven
-            pass
+                    known_kind = str(parsed["kind"])
+        except Exception as exc:  # noqa: BLE001 — kind is advisory; identity is already proven
+            # NOT silent. An unobtainable kind is a real gap in the operator surface
+            # (whole-source vs bounded-segment), so it is diagnosed rather than
+            # erased with `pass`. Identity was proven above and is unaffected, so
+            # the submission still proceeds -- `kind` stays advisory.
+            print(f"[intake] kind unresolved platform={platform!r} "
+                  f"error={type(exc).__name__}: {str(exc)[:160]}", flush=True)
+        if known_kind:
+            resolved = {**resolved, "kind": known_kind}
         try:
             # A URL timestamp is a HINT, never identity. It is surfaced for the
             # operator (Start prefill) through the platform's own adapter, and it

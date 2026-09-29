@@ -42,6 +42,7 @@ import json
 import os
 import re
 import secrets
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -287,11 +288,36 @@ _INTAKE_FAILURE_REASONS: dict[str, str] = {
     "DURABLE_STORE_FAILED":
         "the durable copy could not be stored (storage transport failed). The working "
         "source was kept, so re-running the command is safe.",
+    "TRANSPORT_FAILED":
+        "a network transport call failed (timeout/reset/TLS) — this is a connection "
+        "problem, not a problem with the media. Nothing was acquired; re-run the "
+        "command.",
     "PROBE_FAILED":
         "the media could not be inspected.",
     "UNKNOWN":
         "an unexpected error occurred; the adapter log has the detail.",
 }
+
+
+def _is_transient_transport_error(exc: Exception) -> bool:
+    """Did this failure come from the NETWORK transport rather than the media?
+
+    A Discord interaction PATCH (or any other HTTP call) can fail on a TLS handshake
+    timeout, a connection reset or a broken pipe. Those are transient CONNECTION
+    failures and are deliberately NOT classified as media problems. ``HTTPError`` is
+    excluded: a real HTTP status is a response from the server, not a transport
+    failure, and it keeps its own classification.
+    """
+    seen: set[int] = set()
+    current: Any = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, HTTPError):
+            return False
+        if isinstance(current, (URLError, TimeoutError, ConnectionError, ssl.SSLError)):
+            return True
+        current = getattr(current, "reason", None) or getattr(current, "__cause__", None)
+    return False
 
 
 def classify_intake_failure(exc: Exception, stage: str = "") -> tuple[str, str]:
@@ -305,6 +331,11 @@ def classify_intake_failure(exc: Exception, stage: str = "") -> tuple[str, str]:
         return "DOWNLOAD_FAILED", _INTAKE_FAILURE_REASONS["DOWNLOAD_FAILED"]
     if code in ("FFPROBE_FAILED", "BAD_METADATA", "NO_STREAMS", "BAD_DURATION"):
         return "PROBE_FAILED", _INTAKE_FAILURE_REASONS["PROBE_FAILED"]
+    # A transport failure is a CONNECTION failure, never a media failure and never a
+    # generic UNKNOWN. Checked only after the explicit code-based classes above, so
+    # no classified media refusal is re-labelled here.
+    if _is_transient_transport_error(exc):
+        return "TRANSPORT_FAILED", _INTAKE_FAILURE_REASONS["TRANSPORT_FAILED"]
     text = str(exc).lower()
     if "exceeds cap" in text:
         return "MEDIA_EXCEEDS_LIMIT", _INTAKE_FAILURE_REASONS["MEDIA_EXCEEDS_LIMIT"]
@@ -350,8 +381,14 @@ _MI_REFUSAL_DEFAULT = "the safety contract does not allow this source whole"
 # refusal whose cause is the input itself needs the input changed first, not a retry.
 _MI_RETRY_SAFE_CODES = frozenset({
     "DURABLE_STORE_FAILED", "DOWNLOAD_FAILED", "PROBE_FAILED", "UNKNOWN",
-    "MEDIA_INTEGRITY_FAILED", "REVIEW_CARD_FAILED",
+    "MEDIA_INTEGRITY_FAILED", "REVIEW_CARD_FAILED", "TRANSPORT_FAILED",
 })
+
+#: Stages whose failure is an INTERACTION UPDATE delivery problem, not acquisition.
+#: Named distinctly so a Discord transport error can never be reported as an
+#: acquisition failure.
+MI_STAGE_INTERACTION_PATCH = "interaction_patch"
+_MI_PATCH_STAGES = frozenset({MI_STAGE_INTERACTION_PATCH})
 
 _MI_PENDING: dict[str, dict] = {}
 _MI_PENDING_TTL = 15 * 60
@@ -3408,6 +3445,10 @@ class Handler(BaseHTTPRequestHandler):
                         channel_id=channel_id, attachment=attachment,
                         local_path=local_path,
                         start_hint_ms=int(_res_a.get("start_hint_ms") or 0))
+                    # The PATCH that carries the choice is an INTERACTION UPDATE, not
+                    # an acquisition step: label it truthfully so a delivery failure
+                    # is never reported as an acquisition failure.
+                    stage = MI_STAGE_INTERACTION_PATCH
                     self._mi_present_choice(
                         application_id, interaction_token, ref=_ref_a,
                         whole_allowed=_allowed_a, refusal=_refuse_a,
@@ -3455,6 +3496,10 @@ class Handler(BaseHTTPRequestHandler):
                     # retained: an offered choice is not a failure.
                     manual_media_intake.cleanup(temp_dir)
                     temp_dir = ""
+                    # The PATCH that carries the choice is an INTERACTION UPDATE, not
+                    # an acquisition step: label it truthfully so a Discord transport
+                    # failure is never reported as an acquisition failure.
+                    stage = MI_STAGE_INTERACTION_PATCH
                     self._mi_present_choice(
                         application_id, interaction_token, ref=_ref,
                         whole_allowed=_allowed, refusal=_refuse,
@@ -3616,9 +3661,17 @@ class Handler(BaseHTTPRequestHandler):
             code, operator_reason = classify_intake_failure(e, stage)
             # Full detail stays in the log; Discord gets a concise, actionable
             # reason. Never a raw stderr dump, never secrets.
+            #
+            # `MediaIntakeError.detail` is documented "for logs only" and carries the
+            # PRESERVED underlying reason of a classified refusal (the gate's own code
+            # for WINDOW_REJECTED, the GHL transport reason for DURABLE_STORE_FAILED).
+            # `str(e)` is only the operator-facing message, so surfacing detail here is
+            # what makes those codes explain themselves. It never reaches Discord.
+            preserved = str(getattr(e, "detail", "") or "")
             print(f"[manual-intake] failed stage={stage} code={code} "
-                  f"error={type(e).__name__} detail={str(e)[:300]!r} "
-                  f"frames={frames}", flush=True)
+                  f"error={type(e).__name__} detail={str(e)[:300]!r}"
+                  + (f" reason={preserved[:300]!r}" if preserved else "")
+                  + f" frames={frames}", flush=True)
             note = [f"❌ Manual intake failed at **{stage}**\n**{code}** — {operator_reason}"]
             if durable_url:
                 note.append(f"durable media kept: {durable_url}")
