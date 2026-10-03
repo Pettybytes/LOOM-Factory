@@ -1,5 +1,106 @@
 # LOOM — NEXT SESSION HANDOFF
 
+## START HERE — 2026-10-03 — GHL UPLOAD TRANSPORT
+
+**Current scope: fix GHL uploads, then hand off. No CapCut/editor/discovery work.**
+This section supersedes the older next-action instructions below, including the
+September 29 `ASTRA_START` file. **Transport repair is not yet verified.**
+
+### Confirmed request and invariant
+
+- Caller: `adapter.ghl_upload_file`, shared by Manual Intake and existing media storage.
+- Exact endpoint: `POST https://services.leadconnectorhq.com/medias/upload-file`.
+- Headers: environment-read Bearer credential, `Version: v3`,
+  `Content-Type: multipart/form-data; boundary=...`, `User-Agent: LOOMReviewAdapter/1.0`.
+- Parts: `file` with filename and `Content-Type: video/mp4`, `name`, `hosted=false`,
+  `parentId` targeting the existing LOOM folder. `urllib` calculates Content-Length.
+- Official documentation explicitly allows **video up to 500 MB**:
+  https://marketplace.gohighlevel.com/docs/ghl/medias/upload-media-content/index.html
+  **Do not diagnose a size limit without an actual HTTP response proving it.**
+- **Cloudflare is the active LOOM ingress tunnel. Tailscale was decommissioned.**
+  Do not re-enable, modify, or troubleshoot Tailscale. The failing transfer is the
+  independent **outbound Mac → GHL HTTPS request**, not the inbound Discord tunnel.
+
+### Exact reproduction and evidence
+
+Retained, unchanged valid Kick media:
+`/tmp/loom-kick-probe/clip_01M33XASMP29XTQ1QK0EV7TXDC.mp4`
+— **30,782,671 bytes**, SHA256
+`e8a303d41b3acbd58e017bd75d302c42761a2f60fc6a84c75724df1af8cc2360`.
+
+- Production uploader with the real credential: `Broken pipe`, no HTTP response.
+- Same body via curl HTTP/1.1/HTTP/2, both IPv4 edge addresses, native curl multipart,
+  Python streamed/chunked bodies and the existing Linux container: also failed.
+- A paced curl attempt reached **23,854,796 transmitted bytes / 45.54 s**, then
+  received TLS `bad record mac`. This contradicts a universal 15-second cutoff.
+- IPv6 could not establish a connection. TLS 1.2/alternate cipher did not cure it.
+- A small valid upload returned **201** and verified the configured folder.
+  Its one probe object was deleted: `6ac139c822bc27f58f37485a`; absence verified,
+  folder count returned from 12 to 11. Subsequent completed probes created no Kick object.
+- `hosted=true/fileUrl` is **not a repair**: prior measured behavior registers an
+  external reference, not a durable GHL copy. No temporary public media route was created.
+- Reduced send buffer did not repair it: 4 KiB timed out writing at 60.08 s;
+  16 KiB with a 180-second client timeout still hit `Broken pipe` at 67.30 s.
+- An alternate-network/hotspot control was requested from Bryan; no response or
+  network switch was recorded before this checkpoint. Do not claim it occurred.
+
+### Source Review comparison — requested by Bryan
+
+There is no separate working GHL uploader to transplant. Media registration and
+Manual Intake already converge on `adapter.ghl_upload_file`; posting a Source Review
+card can also reuse an already-stored asset and is not by itself a new GHL upload.
+
+- AST comparison: the uploader at pre-chooser **`c690137`** is identical to current
+  after removing three `_set_ghl_upload_error` diagnostic calls. No request-body,
+  endpoint, timeout, or transport regression was introduced by the chooser.
+- Commit **`9973fb7`** (September 19) added retries for the same `Broken pipe` on
+  the earlier media/review flow, including a 1.4 MB file. It predates the chooser.
+- September 28 logs show `twitch__2880604198.mp4` failed once, succeeded on attempt 2,
+  verified its LOOM folder, then reached the review card: **32,956,932 bytes**.
+- That existing GHL object remains present: `6abaee9bb4d207ff9d28516c`.
+  Its bytes were downloaded without altering the object to
+  `/tmp/loom-ghl-previously-stored-twitch.mp4` and re-submitted with the same uploader.
+  **Current control: `Broken pipe` at 15.53 s; no new object.**
+- Thus the failure is neither specific to the Kick file nor evidence of a new
+  chooser/upload implementation. The precise fault location within the outbound
+  network/provider path remains **UNRESOLVED**, not automatically the Mac or GHL.
+
+### Next action — avoid repeating the same unsuccessful probes
+
+Run one unchanged multipart upload over an actually different outbound network
+(for example, a user-connected hotspot), or from an existing authorized remote host.
+Preserve the endpoint, credentials, folder, original bytes and SHA256; record HTTP
+status/body if any. The local Docker control is **not** a different outbound network.
+If it succeeds, locate/repair the failing outbound path without changing LOOM ingress.
+If it also fails, preserve a sanitized reproducible request and obtain provider-side
+failure evidence; no support message has been sent or authorized here.
+
+Do not shrink/re-encode the file, raise arbitrary retry counts, weaken TLS verification,
+create an alternate durable store, or claim `hosted=true` owns the media bytes.
+Only ship a transport change after the original file uploads and GHL's returned media
+is independently retrieved with matching byte count/hash and verified folder placement.
+
+### Repository and proof state
+
+- Code baseline: outer **`59674a3`**, equal to origin before this documentation update.
+  Only `CURRENT_STATE.md` and this handoff changed. No production code changes,
+  restart, network configuration changes or quality reduction.
+- Earlier repairs already present: selector fallback `d60edee`; Whole-resume fix
+  `4124252` / upload coverage `8aaccd5`. Do not rebuild those paths.
+- Prior focused baseline this session: **56 passed + 3 subtests**.
+- Discord aggregate, run once: **711 passed, 1 skipped + 54 subtests**.
+  Logs: `/tmp/loom-focused-baseline.log`, `/tmp/loom-discord-aggregate-20261003.log`.
+- `/health` OK; loaded adapter SHA256 equals disk and committed source:
+  `0d090994514a5d96f5b21627f49a7c6fb730d8b933e145b8e98cf8b88b6278a6`.
+- `038` remains untracked, untouched, SHA1
+  `3da12826ef96dd05ce089b490ee490e66baf01c0`. Never stage/stash/modify it.
+- Full Manual Intake acceptance is **not complete**. The existing attachment contract
+  requires the original source URL; supplied bytes are not platform-reacquired.
+
+---
+
+## HISTORICAL RECORDS BELOW — NOT THE CURRENT NEXT ACTION
+
 ---
 
 # START HERE — NEXT SESSION

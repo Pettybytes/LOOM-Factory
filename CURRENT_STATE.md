@@ -2,6 +2,43 @@
 
 > **This file is the execution authority.** If `HANDOFF.md` disagrees, this file wins.
 
+## CURRENT — 2026-10-03 — GHL upload transport unresolved
+
+**Only active task:** repair GHL upload transport while preserving original bytes and
+canonical GHL storage, then provide a handoff. See the **2026-10-03 START HERE** section
+in `NEXT_SESSION_HANDOFF.md`; older next-action lists are historical, not authorization.
+
+- **Cloudflare tunnel active; Tailscale decommissioned.** No tunnel changes made or needed
+  by this investigation. Failure is on outbound Mac → GHL HTTPS.
+- Correct endpoint: `POST https://services.leadconnectorhq.com/medias/upload-file`,
+  `Version: v3`, multipart `file` (`video/mp4`), `name`, `hosted=false`, `parentId`.
+- GHL documents **500 MB video uploads**. The original Kick file is **30,782,671 bytes**.
+  No HTTP size-rejection response has been received. Do not label this a size-limit issue.
+- Production and independent transports reproduced write disconnects; paced transfer
+  also received TLS `bad record mac`. Exact transport cause remains unproven.
+- Small upload + folder verification succeeded; its probe was deleted and absence verified.
+  No successful large Kick upload or new review candidate from these checks.
+- No application patch shipped. Reduced send-buffer/longer-timeout control also failed
+  (`Broken pipe` at 67.30 s). An alternate-network control was requested, not performed.
+- **Source Review checked:** same uploader; pre-chooser `c690137` function AST equals
+  current except diagnostic calls. Its previously stored **32,956,932-byte Twitch file**
+  was downloaded and re-submitted unchanged; it now also fails (`Broken pipe`, 15.53 s).
+  Original GHL object preserved. There is no separate working GHL uploader to reuse.
+- Next: unchanged multipart request over genuinely different outbound networking,
+  followed by byte/hash/folder proof before shipping a transport fix. Local Docker uses
+  the same egress and already failed. Do not infer whether Mac/network/provider is at
+  fault from the current evidence, and do not repeat the disproved chooser diagnosis.
+- Baseline code **59674a3**; focused **56 + 3 subtests** pass; aggregate
+  **711 passed, 1 skipped + 54 subtests**. Runtime healthy, live/disk/committed digest match.
+- Protected `038` untouched and untracked; SHA1
+  `3da12826ef96dd05ce089b490ee490e66baf01c0`.
+- No CapCut, editor, discovery, schema or alternate-storage work authorized here.
+- Handoff-only changes: this file and `NEXT_SESSION_HANDOFF.md`. No repair claimed.
+
+---
+
+## HISTORICAL STATE BELOW
+
 **2026-09-29 SESSION CLOSEOUT — see `NEXT_SESSION_HANDOFF.md` → "START HERE — NEXT SESSION".**
 Frozen at outer HEAD **`d954cec`** (`master`, == `origin`) and nested OpenShorts HEAD **`7e25c60`**
 (`loom/factory-mvp-baseline-fixes`, == `loom`). Recovery tags pushed:
