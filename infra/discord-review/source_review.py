@@ -302,8 +302,15 @@ def format_mining_embed(c, base):
         # The two "window"-looking groups on this card are DIFFERENT concepts and are
         # now labelled as such: THIS one is the CI moment's coordinate range in the
         # WORKING source's own clock (0-based, after any bounded extraction).
-        add("CI moment · working clock",
+        manual_boundary = ((me.get("lineage") or {}).get("boundary_provenance") == "manual_intake")
+        add("Operator-selected · working clock" if manual_boundary else "CI moment · working clock",
             f"Event {event_label}\nStart {_fmt_seconds(s)} · End {_fmt_seconds(e)} · Duration {e-s:g}s")
+        recommendation = p.get("machine_recommendation") or {}
+        if manual_boundary and all(isinstance(recommendation.get(k), (int, float))
+                                   for k in ('recommended_clip_start', 'recommended_clip_end')):
+            add("CI recommendation · advisory only",
+                f"{_fmt_seconds(recommendation['recommended_clip_start'])} → "
+                f"{_fmt_seconds(recommendation['recommended_clip_end'])} · operator boundary retained")
     add("Why selected", me.get("why_selected") or ("; ".join(_reasons) if _reasons else None))
     add("First 0–3 second hook", me.get("hook_0_3s") or (
         "Not established — no qualifying moment" if (_analyzed and not _had_moment) else None))
@@ -567,6 +574,16 @@ back to the source version and never substitutes a 0:00 range.
     """
     if not isinstance(media_row, dict):
         return None, "version_not_found"
+    edit_metadata = (correction_row or {}).get("edl_metadata") or {}
+    if not isinstance(edit_metadata, dict):
+        edit_metadata = {}
+    auto_edit = edit_metadata.get("auto_edit") or {}
+    if not isinstance(auto_edit, dict):
+        auto_edit = {}
+    generated_copy = auto_edit.get("generated_copy") or {}
+    captions = auto_edit.get("captions") or []
+    if not isinstance(captions, list):
+        captions = []
     media_url = str(media_row.get("clean_source_url") or "")
     trim = _trim_pair(correction_row)
     if not media_url and trim is None:
@@ -607,19 +624,23 @@ back to the source version and never substitutes a 0:00 range.
         # `title` stays empty and metadata travels as `source_title` (exactly as the
         # source payload does), so platform metadata can never become renderable text.
         "source_title": candidate.get("title") or "",
-        "title": "",
-        "renderable_text": {"hook": "", "title": ""},
+        "title": generated_copy.get("title") or "",
+        "renderable_text": {"hook": generated_copy.get("hook") or "", "title": generated_copy.get("title") or ""},
         "source_filename": media_row.get("clean_source_filename") or "",
-        "hook": "",
+        "hook": generated_copy.get("hook") or "",
         "has_burned_hook": False,
         "has_burned_captions": False,
         "social_caption": "",
-        "caption_text": "",
-        "captions": [],
+        "caption_text": " ".join(str(w.get("text") or "") for w in captions if isinstance(w, dict)).strip(),
+        "captions": captions,
         "transcript": [],
         "scenes": [],
         "asset_version": requested_version,
         "version_mode": "edited_version",
+        # The plan that actually produced this version, carried by the existing
+        # correction JSON. A new editor session must not analyze it again just
+        # because that session has no target version yet.
+        "auto_edit": edit_metadata.get("auto_edit"),
         "previous_asset_version": (media_row.get("previous_asset_version")
                                    or SOURCE_EDITOR_ASSET_VERSION),
         "publication_status": media_row.get("publication_status") or "",

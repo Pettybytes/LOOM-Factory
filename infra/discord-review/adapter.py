@@ -5164,7 +5164,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._forward_clip_subresource(None, clip_res.group(3), session)
                 return
             print(f"[api] rehydrate failed fp={req_fp}", flush=True)
-            self._send_json(502, {"error": "could not rehydrate edit job",
+            # This operation's workspace dependency failed; the API gateway
+            # itself is working. Cloudflare replaces a 502 with HTML, hiding
+            # this JSON error from the editor. Keep real backend outages 502.
+            self._send_json(424, {"error": "could not rehydrate edit job",
                                   "code": "live_job_unavailable"})
             return
 
@@ -5229,6 +5232,11 @@ class Handler(BaseHTTPRequestHandler):
         or (None, None) when the backend could not be reached."""
         url = f"http://127.0.0.1:8000{target}"
         headers = {"Content-Type": self.headers.get("Content-Type", "application/json")}
+        # Existing self-host OpenShorts Auto Edit accepts the key configured in
+        # its Settings. Forward it only to this authenticated, allowlisted edit
+        # handler on loopback; never persist it in the draft or correction.
+        if method == "POST" and target == "/api/edit" and self.headers.get("X-Gemini-Key"):
+            headers["X-Gemini-Key"] = self.headers["X-Gemini-Key"]
         req = Request(url, data=(raw_body or None), headers=headers, method=method)
         try:
             with urlopen(req, timeout=300) as resp:

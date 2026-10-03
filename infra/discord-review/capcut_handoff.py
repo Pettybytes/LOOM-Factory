@@ -302,10 +302,20 @@ def build_capcut_spec(bootstrap: dict[str, Any], *, media_path: str,
 
     # Text track: only copy LOOM genuinely intends to render. Absent -> no track.
     texts: list[dict[str, Any]] = []
+    auto_edit = bootstrap.get("auto_edit") or {}
+    generated = auto_edit.get("status") == "completed"
+    hook_settings = (auto_edit.get("hook_settings") or {}) if generated else {}
     if copy["hook"]:
+        hook_duration = float(hook_settings.get("duration_seconds") or HOOK_MAX_SECONDS)
         texts.append({"text": copy["hook"], "start": 0,
-                      "duration": round(min(HOOK_MAX_SECONDS, duration), 3)})
-    if copy["title"]:
+                      "duration": round(min(hook_duration, duration), 3)})
+        if generated:
+            texts[-1].update({"y": {"top": 0.65, "center": 0.0, "bottom": -0.65}.get(
+                hook_settings.get("position"), 0.65), "fontSize": 14})
+    # Auto Edit's generated title names the project. Its on-video layer is the
+    # hook (the persisted pipeline calls /api/hook, not a title burn). Do not add
+    # a full-duration duplicate text layer that the OpenShorts result never had.
+    if copy["title"] and not generated:
         texts.append({"text": copy["title"], "start": 0, "duration": duration})
     if texts:
         spec["tracks"].append({"type": "text", "items": texts})

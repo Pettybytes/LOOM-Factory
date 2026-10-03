@@ -312,6 +312,56 @@ def _served_video_path(served_url: str) -> str:
     return candidate if os.path.isfile(candidate) else ""
 
 
+def verified_auto_edit_state(bootstrap: dict[str, Any], *, media_path: str,
+                             digest: str, asset_version: str) -> dict[str, Any] | None:
+    """Resolve the registered PRE-HOOK generated artifact, never the final render.
+
+    Existing Auto Edit stores its applied plan and output URL in the correction.
+    Its clean source already contains those effects. Verify the exact output
+    bytes before reading its actual canvas; importing those pixels at identity
+    preserves AUTO framing without guessing geometry or applying it twice.
+    Hook/captions remain separate editable objects in the existing mapper.
+    """
+    auto = bootstrap.get("auto_edit") or {}
+    if not isinstance(auto, dict) or auto.get("status") != "completed":
+        return None
+    generated = _served_video_path(str(auto.get("output_url") or ""))
+    if not generated or sha256_file(generated) != digest:
+        raise _unavailable("the clean source cannot be verified against the persisted "
+                           "Auto Edit output; refusing raw-source or stale-edit handoff")
+    try:
+        probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,r_frame_rate:format=duration",
+            "-of", "json", media_path], capture_output=True, text=True,
+            check=True, timeout=30)
+        data = json.loads(probe.stdout)
+        stream = data["streams"][0]
+        width, height = int(stream["width"]), int(stream["height"])
+        from fractions import Fraction
+        fps = float(Fraction(stream["r_frame_rate"]))
+        duration = float(data["format"]["duration"])
+        if min(width, height, fps, duration) <= 0:
+            raise ValueError("invalid generated media probe")
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError) as exc:
+        raise _unavailable(f"cannot measure verified Auto Edit output: {type(exc).__name__}") from None
+    import math
+    divisor = math.gcd(width, height)
+    return {
+        "schema": vs.SCHEMA, "resolution": "resolved", "output_baked": True,
+        "ownership": {"sha256": digest, "asset_version": asset_version,
+                      "output_filename": os.path.basename(media_path)},
+        "canvas": {"width": width, "height": height, "fps": fps,
+                   "ratio": f"{width // divisor}:{height // divisor}", "format": "auto"},
+        "coordinate_basis": {"canvas": "output_pixels", "position": "canvas_centre_to_edge"},
+        "source": {"width": width, "height": height},
+        "scenes": [{"start": 0.0, "end": duration, "strategy": "AUTO_EDIT",
+                    "composition": {"representation": "already_baked"}}],
+        "auto_edit": {"edit_plan": auto.get("edit_plan") or {},
+                      "output_sha256": digest,
+                      "effects_representation": "generated_pre_hook_pixels"},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Lane availability: the CLI and the draft store
 # ---------------------------------------------------------------------------
@@ -808,6 +858,12 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
         raise _unavailable(
             "no CapCut draft store found on this machine; the project would not "
             "be recognised by the installed app")
+    try:
+        os.listdir(store)
+    except PermissionError:
+        raise _unavailable("macOS denied access to CapCut's project folder. Allow the "
+                           "LOOM adapter access in System Settings → Privacy & Security, "
+                           "then retry Finish in CapCut.") from None
 
     coords = working_coordinates_for(bootstrap, acquisition, original_window)
 
@@ -839,13 +895,20 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
     # stale framing is the failure this lane exists to prevent.
     requested = requested_choice(bootstrap, output_format)
     persisted = vs.load(media_path)
+    generated_state = False
+    if (bootstrap.get("auto_edit") or {}).get("status") == "completed":
+        # Generated versions must never silently enter the legacy raw-source
+        # fallback just because a download did not carry a local sidecar.
+        persisted = verified_auto_edit_state(bootstrap, media_path=media_path,
+            digest=staged["sha256"], asset_version=asset_version)
+        generated_state = True
     verdict = vs.assess(persisted, digest=staged["sha256"],
                         asset_version=asset_version)
     state = persisted if verdict["usable"] else None
     visual_report: dict[str, Any] = {
         "ownership": verdict["reason"],
         "requested": requested,
-        "state_source": "persisted" if state else "none",
+        "state_source": ("verified_auto_edit_output" if generated_state else "persisted") if state else "none",
         "resolution": (state or {}).get("resolution"),
         "output_baked": vs.is_baked(state) if state else None,
         "canvas_source": None,

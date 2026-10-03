@@ -5,8 +5,8 @@ GHL) becomes real intelligence and a review candidate, by invoking the EXISTING
 Content Intelligence runtime — no parallel analyzer, no new scoring model.
 
 Two behaviours that matter:
-  * No timestamps supplied -> the existing pipeline locates the moment and the
-    candidate keeps MACHINE boundaries (``boundary_provenance='machine'``).
+  * No timestamps supplied -> the entire supplied asset is the operator's window.
+    The pipeline's selected moment remains advisory evidence only.
   * Timestamps supplied -> the operator's window is preserved as the candidate
     boundary (``boundary_provenance='manual_intake'``); the machine result is
     retained as evidence, never silently substituted.
@@ -311,32 +311,10 @@ def run_manual_intelligence(*, submission: dict[str, Any], media_path: str,
                 "error": "Content Intelligence produced no candidate for the supplied media"}
 
     cand = candidates[0]
-    start_s, end_s = human_window
-    boundary_provenance = "machine"
     plan = dict(getattr(cand, "boundary_plan", {}) or {})
-    machine_plan = dict(plan)
-    if start_s is not None or end_s is not None:
-        # Preserve the operator's window; keep the machine result as evidence.
-        # The recommended_* fields are WORKING-relative: convert first, and keep
-        # the ORIGINAL pair alongside so nothing is lost.
-        w_start, w_end, origin = _operator_window_in_working_coords(
-            start_s=start_s, end_s=end_s, submission=submission)
-        plan.update({
-            "recommended_clip_start": w_start,
-            "recommended_clip_end": w_end,
-            "provenance": ["manual_intake_window", "operator_supplied"],
-            "machine_recommendation": machine_plan,
-            "original_window": {"start_s": float(start_s), "end_s": float(end_s)},
-            "working_timebase_origin_s": origin,
-        })
-        boundary_provenance = "manual_intake"
-
-    # C — the range must fit the WORKING asset, whatever produced it.
-    _assert_working_range(plan=plan, probe=probe)
-
     return enrich_manual_candidate(
         submission=submission, probe=probe, media_url=media_url, human_window=human_window,
-        boundary_plan=plan, boundary_provenance=boundary_provenance, candidate=cand,
+        boundary_plan=plan, candidate=cand,
         store=store, source_metadata=source_metadata,
         summary=(result.summary() if hasattr(result, "summary") else {}))
 
@@ -352,29 +330,43 @@ def enrich_manual_candidate(*, submission: dict[str, Any], probe: dict[str, Any]
     """Apply boundary provenance + lineage to the DURABLE candidate row.
 
     Split out of the analysis run so it is idempotent and retryable WITHOUT
-    paying for Content Intelligence again. Preserves the operator's window when
-    one was supplied; the machine recommendation stays as evidence.
+    paying for Content Intelligence again. The operator owns the boundary even
+    without explicit timestamps: supplying a whole clip selects that whole clip.
     """
     if store is None:
         from content_intelligence.store_supabase import ContentStoreSupabase
         store = ContentStoreSupabase()
     plan = dict(boundary_plan or {})
     start_s, end_s = human_window
-    if boundary_provenance is None:
-        if start_s is not None or end_s is not None:
-            w_start, w_end, origin = _operator_window_in_working_coords(
-                start_s=start_s, end_s=end_s, submission=submission)
-            plan.update({
-                "recommended_clip_start": w_start,
-                "recommended_clip_end": w_end,
-                "provenance": ["manual_intake_window", "operator_supplied"],
-                "machine_recommendation": dict(plan),
-                "original_window": {"start_s": float(start_s), "end_s": float(end_s)},
-                "working_timebase_origin_s": origin,
-            })
-            boundary_provenance = "manual_intake"
-        else:
-            boundary_provenance = "machine"
+    if start_s is None and end_s is None:
+        start_s, end_s = submission.get("time_start_s"), submission.get("time_end_s")
+    origin = _working_origin_s(submission)
+    whole = start_s is None and end_s is None
+    if whole:
+        duration = (probe or {}).get("duration_seconds")
+        import math
+        if (isinstance(duration, bool) or not isinstance(duration, (int, float))
+                or not math.isfinite(duration) or duration <= 0):
+            raise ValueError("manual whole-clip boundary requires measured media duration")
+        start_s, end_s = origin, origin + float(duration)
+    elif start_s is None or end_s is None:
+        raise ValueError("manual operator window requires both start and end")
+    w_start, w_end, origin = _operator_window_in_working_coords(
+        start_s=start_s, end_s=end_s, submission=submission)
+    # Retrying enrichment must not nest the human plan inside machine evidence.
+    advisory = plan.get("machine_recommendation")
+    machine_plan = dict(advisory if isinstance(advisory, dict) else plan)
+    plan.update({
+        "recommended_clip_start": w_start,
+        "recommended_clip_end": w_end,
+        "duration": round(w_end - w_start, 3),
+        "provenance": ["manual_intake_window", "operator_supplied"],
+        "boundary_selection": "entire_supplied_clip" if whole else "operator_timestamps",
+        "machine_recommendation": machine_plan,
+        "original_window": {"start_s": float(start_s), "end_s": float(end_s)},
+        "working_timebase_origin_s": origin,
+    })
+    boundary_provenance = "manual_intake"
     _assert_working_range(plan=plan, probe=probe)
 
     lineage = {

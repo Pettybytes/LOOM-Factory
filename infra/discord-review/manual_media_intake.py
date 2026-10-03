@@ -1077,7 +1077,7 @@ def build_media_submission(*, url: str, destination: str, content_format: str,
     """Build the durable submission payload, reusing the V1 contract verbatim.
 
     ``origin='manual_media'`` records that the operator supplied the bytes;
-    ``boundary_provenance`` records who chose the window (the human, when given).
+    ``boundary_provenance`` records human ownership, including a whole supplied clip.
     ``source_metadata`` (when captured) is embedded in ``media_reference`` so the
     source engagement evidence is durable at the SUBMISSION level — it therefore
     survives even when Content Intelligence later filters the asset before any
@@ -1110,8 +1110,7 @@ def build_media_submission(*, url: str, destination: str, content_format: str,
     payload.update({
         "origin": "manual_media",
         "media_reference": reference,
-        "boundary_provenance": ("manual_intake" if start_s is not None or end_s is not None
-                                else None),
+        "boundary_provenance": "manual_intake",
     })
     return payload
 

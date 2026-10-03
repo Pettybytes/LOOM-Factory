@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[3]
@@ -98,7 +99,7 @@ class TestRecord(unittest.TestCase):
 class TestIntelligenceWiring(unittest.TestCase):
     """Stub the runtime; assert the seams V1 lacked."""
 
-    def _run(self, *, plan, human_window, candidates=None, raises=None):
+    def _run(self, *, plan, human_window, candidates=None, raises=None, duration=8.0):
         import content_intelligence.pipeline as pipe
 
         calls = {"patches": []}
@@ -117,11 +118,12 @@ class TestIntelligenceWiring(unittest.TestCase):
         try:
             row = {"duplicate_fingerprint": "b" * 64, "moment_evidence": {"existing": True}}
             store = _FakeStore(row)
-            out = mii.run_manual_intelligence(
-                submission=_submission(), media_path="/tmp/none.mp4",
-                probe={"duration_seconds": 8.0, "sha256": "c" * 64},
-                media_url="https://cdn/x.mp4", brief=mii.manual_brief("dreemzy"),
-                provider=object(), store=store, human_window=human_window)
+            with patch('discovery.store_supabase.SupabaseStore', return_value=MagicMock()):
+                out = mii.run_manual_intelligence(
+                    submission=_submission(), media_path="/tmp/none.mp4",
+                    probe={"duration_seconds": duration, "sha256": "c" * 64},
+                    media_url="https://cdn/x.mp4", brief=mii.manual_brief("dreemzy"),
+                    provider=object(), store=store, human_window=human_window)
             return out, store
         finally:
             pipe.Pass1Pipeline = original
@@ -138,12 +140,54 @@ class TestIntelligenceWiring(unittest.TestCase):
         patch = next(c for c in store.calls if c[0] == "PATCH" and "loom_source_candidates" in c[1])
         self.assertEqual(patch[2]["boundary_plan"]["recommended_clip_start"], 2.0)
 
-    def test_machine_window_kept_when_no_human_timestamps(self):
-        out, store = self._run(plan={"recommended_clip_start": 3.0, "recommended_clip_end": 8.0},
-                               human_window=(None, None))
+    def test_whole_supplied_clip_wins_without_operator_timestamps(self):
+        machine = {"recommended_clip_start": 0.0, "recommended_clip_end": 26.0, "duration": 26.0}
+        out, store = self._run(plan=machine, human_window=(None, None), duration=46.8)
         self.assertTrue(out["ok"], out)
-        self.assertEqual(out["boundary_provenance"], "machine")
-        self.assertNotIn("machine_recommendation", out["boundary_plan"])
+        self.assertEqual(out["boundary_provenance"], "manual_intake")
+        plan = out["boundary_plan"]
+        self.assertEqual((plan['recommended_clip_start'], plan['recommended_clip_end']), (0.0, 46.8))
+        self.assertEqual(plan['duration'], 46.8)
+        self.assertEqual(plan['machine_recommendation'], machine)
+        saved = next(c[2]['boundary_plan'] for c in store.calls if c[0] == 'PATCH' and 'loom_source_candidates' in c[1])
+        self.assertEqual(saved, plan)
+
+    def test_retry_keeps_original_machine_evidence_without_new_analysis(self):
+        out, store = self._run(plan={"recommended_clip_start": 0, "recommended_clip_end": 26},
+                               human_window=(None, None), duration=46.8)
+        retried = mii.enrich_manual_candidate(submission=_submission(), probe={'duration_seconds':46.8},
+            media_url='https://cdn/x.mp4', boundary_plan=out['boundary_plan'], store=store)
+        self.assertEqual(retried['boundary_plan'], out['boundary_plan'])
+
+    def test_review_and_editor_consume_human_boundary_not_advisory(self):
+        import source_review
+        out, store = self._run(plan={'recommended_clip_start':0, 'recommended_clip_end':26},
+                               human_window=(None,None), duration=46.8)
+        saved = next(c[2] for c in store.calls if c[0]=='PATCH' and 'loom_source_candidates' in c[1])
+        candidate = {'duplicate_fingerprint':'b'*64, 'tenant_id':'dreemzy', 'platform':'tiktok',
+            'platform_content_id':'7515185025495633182', 'moment_type':{}, **saved}
+        candidate['moment_evidence']['intent'] = 'operator-supplied content for human review'
+        bootstrap, reason = source_review.source_lineage_bootstrap(candidate)
+        self.assertEqual(reason,'ok')
+        self.assertEqual(bootstrap['source_range'], {'start':0.0,'end':46.8})
+        embed = source_review.format_source_embed(candidate)
+        fields = {f['name']:f['value'] for f in embed['fields']}
+        self.assertIn('46.8s',fields['Operator-selected · working clock'])
+        self.assertIn('00:26',fields['CI recommendation · advisory only'])
+
+    def test_whole_boundary_without_measured_duration_fails_not_machine_fallback(self):
+        with self.assertRaisesRegex(ValueError, 'measured media duration'):
+            mii.enrich_manual_candidate(submission=_submission(), probe={}, media_url='https://cdn/x.mp4',
+                boundary_plan={'recommended_clip_start':0, 'recommended_clip_end':26}, store=_FakeStore({}))
+
+    def test_retry_reads_explicit_operator_window_from_submission(self):
+        submission = {**_submission(), 'time_start_s':2.0, 'time_end_s':5.0}
+        out = mii.enrich_manual_candidate(submission=submission, probe={'duration_seconds':46.8},
+            media_url='https://cdn/x.mp4', boundary_plan={}, store=_FakeStore({'duplicate_fingerprint':'b'*64}))
+        self.assertEqual((out['boundary_plan']['recommended_clip_start'], out['boundary_plan']['recommended_clip_end']), (2.0,5.0))
+        retry = mii.enrich_manual_candidate(submission=submission, probe={'duration_seconds':46.8},
+            media_url='https://cdn/x.mp4', boundary_plan=out['boundary_plan'], store=_FakeStore({'duplicate_fingerprint':'b'*64}))
+        self.assertEqual(retry['boundary_plan'], out['boundary_plan'])
 
     def test_lineage_marks_media_already_acquired(self):
         out, store = self._run(plan={"recommended_clip_start": 0.0, "recommended_clip_end": 5.0},
