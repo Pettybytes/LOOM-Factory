@@ -1,5 +1,271 @@
 # LOOM — NEXT SESSION HANDOFF
 
+## START HERE — 2026-10-03 — USER-REQUESTED STOP / COMMITTED RECOVERY CHECKPOINT
+
+Read the newest `CURRENT_STATE.md` section first. **Bryan asked to save and stop, not to continue fixing during this closeout.** Earlier conditions withholding commits until full CapCut acceptance are superseded by his explicit checkpoint/commit request. Accepted work is committed; text-style research is backed up but **not fixed or promoted**. Resume only the one remaining text-style seam when asked.
+
+### 1. Resume target and non-negotiable scope
+
+`OpenShorts resolved hook/caption style → existing CapCut editable text/subtitle style`.
+
+The video handoff is correct. Do not reopen Gemini, call `/api/edit`, reset one-time guards, rerender media, reconstruct baked zooms as native keyframes, change Manual Intake, test alternate canvases/FULL/TRACK, or resume GHL/storage/acquisition investigations. No broad audit or second exporter. Existing close-CapCut write-safety behavior stays intact.
+
+The final hook should look like the OpenShorts reference: **black bold serif text, centered and wrapped in a rounded white card, top position, medium size, five seconds**, still editable. Do not flatten it into the video merely to match the screenshot.
+
+### 2. Exact artifact and durable state
+
+- Tenant `dreemzy`; clip `src-4b50dfa7544c0ba25035a26d1888e60a3398f8a82f9749e71b24f95e36c680b0:0`; version **render-1.5**.
+- Title: **Taking an icy cold outdoor plunge**.
+- Hook: **Stepping into a freezing cold ice bath in the backyard**.
+- Media row `cb527dae-961b-4489-bac4-d563e6cc1444`; correction `25308a65-a02a-4156-a901-b2d4d1373e95`.
+- Generated clean output: `openshorts/output/loom-5ff8d91a3dce/edited_recut_1791054452_ac5bad_loom_5ff8d91a_clip_1.mp4`.
+- Clean-media SHA256 **`c4c2ca72e56e1ddba206542cd6e19cb5f6cedcbd21395ffc9edd95ca7900a3d9`**. 26 seconds,576×1024,9:16,30fps. Applied zoom_in/flash/punch_in stay baked in this pre-hook video; identity transform avoids double effects/crop.
+- Reference final output: `openshorts/output/loom-2add7738b9f9/hooked_1791054624_loom_2add7738_clip_1.mp4`. Do NOT substitute this flattened hooked output for the editable handoff.
+- Persisted hook settings: `{"size":"M","style":"classic","position":"top","duration_seconds":5}`.
+- Persisted captions `[]`, `captions_applied=false`; ASR previously returned no words. Caption style settings exist but there are **no actual caption segments for this artifact**. Do not invent captions or claim subtitle visual proof from it.
+- Private exact bootstrap/correction snapshots: `/Users/user/Desktop/bentley/loom-checkpoint-2026-10-03/evidence/final-two/bootstrap.json` and `loom_edit_corrections.json`.
+- Original Manual Intake source remains46.8s; candidate now human-owned0–46.8s, machine0–26s advisory. This is already done and must not be reopened.
+
+### 3. Installed CapCut state / experiments outside Git
+
+Installed project:
+`/Users/user/Movies/CapCut/User Data/Projects/com.lveditor.draft/LOOM render-1.5 20261003-1546`
+
+The real button created it at15:46 EDT with HTTP200, native installed-store template, verified media/trim/canvas, one video track and one editable hook0–5s, no source URL as text. User screenshots and preceding UI work prove it opens. Original lint was0 errors +1 line-length warning, NOT warning-free.
+
+**Important:** that same project was subsequently modified directly during text-style experiments. It is NOT a pristine real-button output now. Both variants are preserved:
+
+- Pre-style project: `/Users/user/Desktop/bentley/loom-checkpoint-2026-10-03/evidence/final-two/style-fix/before-project/`.
+- Exact current experimental project at stop: `/Users/user/Desktop/bentley/loom-checkpoint-2026-10-03/capcut/installed-project-at-stop/`.
+- Original successful button report/spec: `/Users/user/Desktop/bentley/loom-checkpoint-2026-10-03/capcut/real-button-handoff/`.
+- Prototype preset: `/Users/user/Desktop/bentley/loom-checkpoint-2026-10-03/evidence/final-two/style-fix/hook-prototype.json`.
+- Exported experimental text template: same directory, `hook-template.json`.
+- Source library reference: same directory, `pycapcut-text-reference.py`.
+- OpenShorts visual reference: same directory, `openshorts-reference.png`; adjacent screenshots `style-*.png` show intermediate attempts (not success).
+- Earlier experimentation placed `NotoSerif-Bold.ttf` in `/Users/user/Library/Fonts/`; backup at `/Users/user/Desktop/bentley/loom-checkpoint-2026-10-03/capcut/NotoSerif-Bold.ttf`. Repo font remains `openshorts/fonts/NotoSerif-Bold.ttf`.
+
+Observed before stopping: initial native-style probe improved wrapping/color, but font/background still did not match. pyCapCut reference sets `check_flag |= 16` for a background. Experimental template includes `check_flag:23`, background white/alpha240/255 and a local font path. **These JSON fields are clues, not installed-app visual acceptance.** The serialized experimental text contains a literal backslash-n sequence; validate actual newline handling before reusing it. Investigate the active saved text object/schema only as needed; don't assume root draft JSON proves what the installed app renders.
+
+No production styling patch was made: `capcut_handoff.py`, `capcut_runner.py`, and `test_capcut_auto_edit.py` were byte-identical to their pre-style backups at checkpoint. The mapper STILL hard-codes fontSize14/y0.65 and drops resolved typography/card styling. Do not claim the style experiment is wired into the Finish button.
+
+### 4. Existing implementation entry points
+
+- Outer `infra/discord-review/capcut_handoff.py::build_capcut_spec`: current text mapper; extend this existing path rather than creating an exporter.
+- Outer `infra/discord-review/capcut_runner.py::verified_auto_edit_state` and `run_handoff`: verified persisted pre-hook media, byte identity, native canvas, installed-store safety, existing compiler. Leave video logic intact.
+- Existing pinned compiler `vendor/capcut-cli/src/compile.ts`, `preset.ts`, `index.ts`, plus their existing `dist/` build. It supports text properties/preset/template operations. Follow existing vendoring/build conventions if an actual compiler fix is necessary; do not silently change only generated dist.
+- Nested `openshorts/hooks.py`: actual hook palette/layout/font behavior; `HOOK_STYLES['classic']` = white card alpha240/255, black text, shadow. Use saved resolved settings and this rendering contract, not a guessed global theme.
+- Existing outer regression `infra/discord-review/tests/test_capcut_auto_edit.py` proves media/canvas/track identity but currently pins the simplified text item. It does **not** prove visual style. Update its expectations only with the real style repair and add focused mapping coverage when resumed.
+
+### 5. Permissions/runtime
+
+Terminal Full Disk Access fixed the project-store denial. User later enabled Screen Recording and Accessibility; both were available in the preceding UI session. **Do not send the user through the old Python/Terminal permission loop unless an actual new probe fails.** CapCut is not running in the checkpoint process listing; always recheck before writing. Do not force-kill it or bypass safety.
+
+Public app `https://app.loomz.stream`; Cloudflare/Caddy ingress. Backend `openshorts-backend`, frontend `openshorts-frontend`, adapter supervisor `infra/discord-review/supervise.sh` (last child55364, rediscover rather than trust PIDs). No service restart or deploy in this checkpoint. No outbound messages, provider inference, or live database mutations performed during closeout. Browser tokens expire: reopen the accepted version normally; never reset guards or publish tokens.
+
+### 6. Commits, tests, backup and recovery
+
+- Outer code commit **`e17a4dd56ea8de3af0fe956ec970e6b138bd5898`**, branch master, owner remote origin.
+- Nested accepted Auto Edit **`1e9f318145ef8aff63ba5c33bc586901716cf410`**, branch loom/factory-mvp-baseline-fixes, owner remote **loom**, not upstream origin.
+- Final documentation HEAD and verified push receipt: `/Users/user/Desktop/bentley/loom-checkpoint-2026-10-03/FINAL_RECEIPT.json` and `README.md` (created at completion). Use current git status/log as authoritative over historical sections below.
+- Backup root **`/Users/user/Desktop/bentley/loom-checkpoint-2026-10-03`**, both verified history bundles + pre-commit dirty worktrees/patches + all task evidence/media. Integrity manifest `SHA256SUMS`. Never blanket-restore over a later session's work.
+- Protected038 remains untracked, SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0`, unapplied.
+- Unrelated nested dirty files remain exactly as before and are separately backed up; see Current State list. Do not stage/reset/clean them.
+
+Fresh closeout result: **231 outer +23 frontend +33 backend =287 passed**, build and compilation passed. Two backend FULL cases deliberately deselected. Exact commands and statuses in `checks/results.json`; backend runner needs the already-existing `/tmp/loom-editor-testdeps` PYTHONPATH inside container. The first omitted-path attempt failed collection; corrected runner passed. No need to repeat these checks until code changes justify it.
+
+For continuation, inspect the saved screenshots/template, make the smallest existing-path style translation, then prove the actual Finish button produces matching **native editable** text in CapCut on this same artifact. Preserve correct video SHA/canvas/26s trim and separate five-second hook, verify no URLs as text, and do not assert subtitle proof on empty captions. Only then mark `OPENSHORTS → CAPCUT AUTO: LIVE ACCEPTED`. Until then the honest status is **video handoff proven; editable text styling pending**.
+
+---
+
+## ARCHIVE — PRE-CHECKPOINT HISTORY; SUPERSEDED BY THE SECTION ABOVE
+
+## CURRENT — 2026-10-03 FINAL TWO REPAIRS: MANUAL PROVEN; CAPCUT BUTTON SUCCEEDED, APP PROOF PENDING
+
+**Terminal Full Disk Access fixed the real blocker (15:46 EDT).** The existing adapter did not need another restart. CapCut was verified closed before writing. A fresh accepted `render-1.5` browser session (tab1079838103, sessionc4441959-1dda-4004-9b12-1e57a0179d76) clicked the real **Finish in CapCut** button: HTTP200 in2.867s, UI “CapCut project created”. Zero `/api/edit` calls; no Gemini rerun. The earlier tab had expired and was not used further.
+
+- Real installed project: `/Users/user/Movies/CapCut/User Data/Projects/com.lveditor.draft/LOOM render-1.5 20261003-1546`.
+- Project title: `LOOM Taking an icy cold outdoor plunge`. Existing compiler used `template=auto` from the installed store (not the scratch vendor template).
+- Readback: source/target **0–26s**, native canvas **576×1024,9:16,30fps**, identity transform/no double crop. Generated clean pre-hook media SHA256 `c4c2ca72e56e1ddba206542cd6e19cb5f6cedcbd21395ffc9edd95ca7900a3d9`, matching persisted real Auto Edit output.
+- Separate editable hook text track **0–5s**. No provenance/source URLs on timeline or title. Not the flattened final hooked render; generated zoom/flash/punch-in remain baked in the clean video, not independently editable effect keyframes.
+- Real-store lint: **0 errors,1 line-length warning**, CLI exit1 for that warning. Do not report warning-free.
+- CapCut launched (PID68643). **Selecting/opening this project, visual preview/playback, and installed-app editability remain UNPROVEN**. Peekaboo still lacks Screen Recording and Accessibility. Asked Bryan to enable both for Terminal; no UI bypass attempted. Do not claim LIVE ACCEPTED yet.
+- Manual Intake remains live-proven **0–46.8s**, CI **0–26s advisory**, as documented below. Accepted historical render1.5 is correctly still26s.
+- Last focused result remains **287 tests + frontend build passed**, no source edits this retry, no redundant test run. Both diff checks pass.16 preserved baseline files have identical bytes+mtime;038 still untracked/unapplied, SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0`.
+- **No commit/push**: both-live-proof condition is not yet met. Heads remain outer`6c0457b31d2d058bd3bf44de3608a68880af8283`, nested`7e25c6050b16877bc3e670871a3f7b4e0740a716`. Accepted Auto Edit and unrelated nested work preserved.
+- Next after UI permissions: inspect CapCut, select the existing generated project (do not create duplicates), prove preview/trim/crop/text/editability, then only relevant focused checks, ownership-scoped commits/push in both repos, final handoff/038 verification, STOP.
+
+Evidence: `/tmp/loom-final-two-20261003/capcut-terminal-enabled-button.json`, `real-store-capcut-proof.json`, `real-store-capcut-lint.json`, `preservation-terminal-enabled.json`; complete real report/spec in `/Users/user/Movies/LOOM-CapCut-Handoff/handoff-20261003-154653-55364/`. Durable copies in `/Users/user/Desktop/bentley/loom-final-two-evidence/`.
+
+---
+
+## PREVIOUS CHECKPOINT — HISTORICAL (superseded by the current entry)
+
+## CURRENT — 2026-10-03 FINAL TWO REPAIRS: MANUAL PROVEN; CAPCUT macOS-BLOCKED
+
+**Latest permission retry (15:40 EDT):** Bryan replied `enabled`. Directory listing briefly succeeded from the shell, but reading CapCut project metadata and the actual button still failed with macOS `Operation not permitted`. CapCut is now closed. Reloaded only the existing supervised adapter (loaded_at `2026-10-03T19:36:16.676690+00:00`); button still409. TCC logs attribute Python's denied file access to **Terminal**, while the recorded permission change was for CapCut itself. Asked Bryan to grant **Terminal → Full Disk Access**; this supersedes the earlier Python-only suggestion. Do not bypass OS permissions. No real-store draft/opening proof yet.
+
+**Latest focused verification:** outer231 passed; frontend23 passed; backend33 passed,2 out-of-scope tests deselected; frontend production build passed. Total287 focused tests. Accepted nested source and protected038 still match baseline bytes AND mtime. No staging, commit or push.
+
+This checkpoint supersedes the previous stop/handoff. Bryan explicitly confirmed the two-repair task. Scope remains ONLY Manual Intake human-boundary precedence and existing CapCut AUTO handoff. No GHL repair, automated acquisition changes, FULL/TRACK, alternate canvases or broad audit.
+
+### Manual Intake human boundary — live data/wire proof complete
+
+- Supplied original remains **46.8s**, SHA256 `9b9c9f5eb5af83c4130fb105d8089f2966b55fc91ea040ec50be52c325eb3a66`.
+- Production Manual Intake enrichment now makes the whole measured asset authoritative when no explicit operator timestamps exist. Explicit windows still win, including ORIGINAL→WORKING conversion. CI remains advisory; retries retain the original machine recommendation without nesting/re-analysis.
+- Reused this submission's existing CI evidence (no Gemini call, no reacquisition/upload): candidate `4b50dfa7544c0ba25035a26d1888e60a3398f8a82f9749e71b24f95e36c680b0` now persists **0–46.8s**, with **0–26s** retained under `machine_recommendation`.
+- Existing source-review card `1556010201830658239` updated in place. Human window is labelled **Operator-selected · working clock**; CI window **advisory only**. No duplicate review card and no approval decision.
+- Fresh live HTTP exchange/bootstrap and existing OpenShorts EDL endpoint returned source range, segments and canonical range **0–46.8s**, duration46.8. Rehydrated workspace `loom-a9c47069f92d`; earlier fresh workspace `loom-dff2aa438974`. Did not mount a fresh unedited UI merely to trigger another paid Auto Edit. The proof is live persistence/card/API/backend, not a second new upload/model run.
+- Accepted generated **render-1.5 remains 0–26s**, unchanged: this repair does not retroactively stretch an already accepted edited artifact.
+
+### CapCut — code/real compiler proof, NOT LIVE ACCEPTED
+
+- Reproduced original actual-button failure: `PermissionError [Errno1] Operation not permitted` at `os.listdir` on `~/Movies/CapCut/User Data/Projects/com.lveditor.draft`. This is macOS app-data access, not a Gemini/render failure. Permission remains denied; user asked to allow relevant Python/LOOM/OpenClaw access. Peekaboo also reported Screen Recording and Accessibility absent. **Do not bypass those permissions.**
+- Existing runner now preflights the permission and returns actionable409 rather than generic500. Real button in a fresh **render-1.5** browser session proved this409 and correct message.
+- Existing runner consumes correction `auto_edit` and verifies generated pre-hook bytes against its persisted output. Actual SHA256 `c4c2ca72e56e1ddba206542cd6e19cb5f6cedcbd21395ffc9edd95ca7900a3d9`; actual canvas **576×1024,9:16,30fps**; duration **26s**. Keeps already-applied zoom/flash/punch-in at identity (no double crop/effects).
+- Existing mapper carries saved **5s hook** on a separate editable text track, top position. Generated title names the project rather than becoming a phantom full-duration text overlay. Source URLs do not become text.
+- **A real draft from actual render-1.5 was compiled in an isolated scratch store**, using the existing pinned CLI. One video track plus one editable text track, source/target0–26s, identity scale/position, media copy byte-identical. Not the flattened final hooked render. Generated visual effects remain baked in the CLEAN PRE-HOOK video; do not claim independently editable effect keyframes. Source/trim/text remain editable.
+- Scratch uses vendor template because installed store is inaccessible. **Installed CapCut schema compatibility, opening, playback/visual acceptance and successful button creation in the real store are UNPROVEN.** Lint:0 errors,1 advisory54-character-hook line warning.
+- Fresh accepted-v1.5 browser reopen is now proven: correct generated title/hook, playable readyState4,26s,AUTO9:16, **zero `/api/edit` calls**. Current tab1079838099, window1079836258; session375cb69f-383b-48bb-a203-8e4f1b84836a (expires normally). Do not reset guards.
+
+### Verification / preservation / next action
+
+- **231 focused unittest tests passed**, including Manual Intake, review/editor regression, real CapCut compile, provenance/materialization, selected AUTO/native-canvas/ownership cases. No FULL/TRACK or alternate-canvas test run. Prior161 Auto Edit tests/build remain historical prior-run results; nested code unchanged this session.
+- Supervised review adapter reloaded for changed helpers; Caddy/backend/frontend PIDs unchanged. Acquisition live runner remains disabled. No backend restart or provider call.
+- ALL accepted Auto Edit and unrelated nested dirty files remain byte-identical to the start-of-task snapshot. Earlier outer adapter repair unchanged; source_review only adds boundary labels on top of accepted work. Protected038 remains untracked, untouched, unapplied; SHA1 `3da12826ef96dd05ce089b490ee490e66baf01c0`.
+- **NO COMMIT/PUSH:** user conditioned final commit/push on BOTH items live-proven. That condition is not met. Both owning repo heads unchanged (below). Do not stage unrelated files or038.
+- Next: after user enables macOS access, use existing close-CapCut safety gate, click **Finish in CapCut** on fresh accepted render-1.5, inspect/open the real project and verify all acceptance items. Then commit accepted work in the two owning repos, push, update these documents, confirm038, STOP. Do not rerun Gemini or restart unrelated work.
+
+Evidence: `/tmp/loom-final-two-20261003/` (`manual-live.json`, `manual-wire.json`, `manual-card-final.json`, `capcut-button-live.json`, `real-auto-capcut-report.json`, `capcut-lint.json`, `focused.log`, baseline copies/diffs). Scratch draft path is recorded in `real-auto-capcut-report.json`. Durable user-readable report on Desktop/bentley.
+
+Outer HEAD `6c0457b31d2d058bd3bf44de3608a68880af8283`; nested HEAD `7e25c6050b16877bc3e670871a3f7b4e0740a716`.
+
+---
+
+## PREVIOUS CHECKPOINT — HISTORICAL
+
+## START HERE — 2026-10-03 — AUTO EDIT ACCEPTED, DOCUMENTATION CLOSEOUT
+
+**Read `CURRENT_STATE.md` first, then this section.** It supersedes every older instruction below and the September 29 ASTRA_START file. Bryan confirmed **“it worked”**, received the report, and asked for these files so he can open a new session.
+
+**Immediate next-session action:** acknowledge the accepted state and follow Bryan's new task. If no next task is supplied, ask for it. **Do not resume GHL debugging, run Gemini again, rerender this clip, or start CapCut merely because older lists say “next.”** No feature work is active.
+
+### 1. Outcome and proof boundary
+
+The existing OpenShorts Auto Edit path now starts once on a fresh eligible editor session and performs real Gemini processing, generated copy, preview, durable state and registration. It is not a newly implemented editing pipeline.
+
+- Tenant: `dreemzy`.
+- Source/clip: `src-4b50dfa7544c0ba25035a26d1888e60a3398f8a82f9749e71b24f95e36c680b0:0` (TikTok `7691069626641435936`).
+- Final registered version: **`render-1.5`**, source version `render-1.4`.
+- Final title: **Taking an icy cold outdoor plunge**.
+- Final hook: **Stepping into a freezing cold ice bath in the backyard**.
+- Media row: `cb527dae-961b-4489-bac4-d563e6cc1444`.
+- Correction row: `25308a65-a02a-4156-a901-b2d4d1373e95`.
+- Review channel/message: `1546266875225440397` / `1556020661850341441`. Guild ID not established; do not fabricate a permalink.
+- Final media (existence rechecked at handoff):
+  `/Users/user/Desktop/LOOM-Factory/openshorts/output/loom-2add7738b9f9/hooked_1791054624_loom_2add7738_clip_1.mp4`.
+- `clean_source_present: true`; actual plan/copy persisted in draft and correction and used by registration.
+- Reopen proof is for `render-1.4`: playable video `readyState:4`, restored generated copy, **zero `/api/edit` calls**. Then text-only correction registered `render-1.5`; user accepted. Do not invent a separate v1.5 refresh test.
+
+### 2. Root cause and smallest existing-path repairs
+
+`ManualTrimEditor.jsx` auto-start previously called rerender/overlay/register but never `/api/edit`. Source-review also supplied empty transcript and no generated title/hook, bypassing the normal OpenShorts prerequisites. Preview stayed original / used logical source ID instead of the rehydrated backend job. State restoration and repeat guards were incomplete.
+
+Repaired existing sequence:
+
+`bootstrap → save draft → existing clip rerender + ASR if unchecked → existing Gemini edit + hook_grounding copy → existing hook/subtitle overlays → generated preview → persist resolved state → existing registration`
+
+- Wait for full bootstrap; save initial draft before provider work.
+- `RerenderRequest.ensure_transcript` defaults false; initial Auto Edit sends true. Calls existing local ASR only when words absent and `editor_transcription_complete` absent; preserves source/canonical clock offsets and checked marker.
+- `EditRequest.generate_copy` defaults false; Auto Edit sends true. Calls existing `hook_grounding.reground` when no prior grounding; uses the same selected window and explicit request key, no environment mutation.
+- Existing localhost Gemini credential privately reused at `https://app.loomz.stream` browser origin. Adapter forwards `X-Gemini-Key` only for authenticated POST `/api/edit` to loopback backend. Do not print credentials or signed session URLs.
+- Apply plan/copy/captions before overlays/register; set actual generated preview URL; preserve state in draft/correction and source-review bootstrap.
+- Generated-version guard prevents accidental new Gemini analysis. Reopen can restore overlays through existing local render functions; this is not a paid analysis rerun.
+- Existing grounding prompt now rejects invented durations/numbers/challenges/first-person claims; previous copy is not factual evidence. One earlier generation invented a “30-day challenge”; final copy regenerated through the same function, only text layer replaced, visual edit retained.
+- Earlier JSON repair in adapter also remains: absent source/workspace → **424 JSON**, avoiding Cloudflare replacing a 502 JSON body with HTML; real backend outage still 502. Original ~20s session had missing source404, not SPA routing. Do not claim that source was recovered.
+
+### 3. Duration and captions — answer honestly
+
+- Original upload measured **46.8s**, remains intact at `openshorts/output/loom-87305dfb9ed7/loom_87305dfb_clip_1.mp4`.
+- CI selected **0–26s** (entry, submersion, initial surfacing). This explains the 26s editor/review item; Manual Intake did not truncate acquisition. No selector/acquisition change was made.
+- Default local ASR ran and returned **0 segments/words**. No fabricated caption text. Audio exists; do not equate no ASR result with no vocals.
+- VAD-disabled diagnostic produced unreliable mixed-language song transcription; it was not persisted or promoted. No new ASR policy shipped.
+- Final Discord card uses poster fallback: preview19,660,908B exceeds10MiB server limit. Playback is in editor; not a Discord playable-attachment pass.
+
+### 4. Completed verification — do not repeat without a reason
+
+| Suite | Result |
+|---|---:|
+| Frontend `autoStart.test.mjs`, `manualAutoEdit.test.mjs` | 23 passed |
+| OpenShorts `test_rerender_endpoint.py`, `test_reframe_endpoint.py`, `test_transcribe_backends.py`, `test_hook_grounding.py` | 63 passed |
+| Adapter `test_editor_auto_edit_seam.py`, `test_editor_dependency_response.py`, `test_editor_reliability.py`, `test_edited_version_and_gone_source.py` | 75 passed |
+| Total focused | **161 passed** |
+
+Frontend build passed. Both repositories' diff checks passed. The additional12 grounding tests after prompt change passed too; do not add that duplicate run to161. A previous711-test GHL-era aggregate is historical, NOT an aggregate test of today's editor edits.
+
+### 5. Repository ownership — all live fixes still UNCOMMITTED
+
+Outer `/Users/user/Desktop/LOOM-Factory`: branch `master`, HEAD **`6c0457b`**.
+Nested `/Users/user/Desktop/LOOM-Factory/openshorts`: branch `loom/factory-mvp-baseline-fixes`, HEAD **`7e25c60`**.
+Both rechecked during handoff. No code committed/pushed. Documentation closeout updates only this file and CURRENT_STATE plus workspace recovery notes.
+
+**Outer session changes (preserve):**
+- `infra/discord-review/adapter.py`: earlier424 JSON repair + narrow Gemini key forwarding.
+- `infra/discord-review/source_review.py`: expose persisted auto_edit; restore generated copy/caption blocks.
+- New `infra/discord-review/tests/test_editor_auto_edit_seam.py`.
+- New `infra/discord-review/tests/test_editor_dependency_response.py` (earlier routing task).
+
+**Nested Auto Edit session changes (preserve):**
+- `app.py` — existing ASR/copy prerequisite connections and response state.
+- `hook_grounding.py` — optional explicit api_key, prior callers still supported.
+- `gemini_worker.py` — grounding prompt factual constraints.
+- `dashboard/src/components/ManualTrimEditor.jsx` — existing-stage sequencing, saved state, preview, copy/captions, restoration.
+- `dashboard/src/lib/autoStart.js` — existing `/api/edit` bridge, actual-result validation, generated-version repeat guard.
+- New `dashboard/src/lib/manualAutoEdit.test.mjs` — real callback seam tests.
+- `tests/test_rerender_endpoint.py` — ASR timebase/once/failure and copy-generation contract tests.
+
+**Pre-existing unrelated nested changes (not authored by this repair; DO NOT revert/stage blindly):**
+- `.gitignore`
+- `dashboard/src/components/LoomActivityRoot.jsx`
+- `dashboard/src/lib/api.js`
+- `tests/test_header_rich_text.py`
+- Untracked `aborted-runs/`
+- Untracked `security_utils.py.bak-20260908212436`
+
+**Protected outer untracked migration:** `infra/supabase/038_loom_editor_session_tokens.sql`; SHA1 **`3da12826ef96dd05ce089b490ee490e66baf01c0`**, rechecked unchanged. Never stage, stash or modify it. Do not use git add -A or blanket resets.
+
+If a future task requests committing, separately review ownership in both repositories and preserve unrelated work. No commit/push was requested or performed for this handoff.
+
+### 6. Runtime and evidence locations
+
+- Public app: `https://app.loomz.stream`.
+- Ingress: Cloudflare → Caddy (`loom-tunnel-proxy`) → adapter8090 / backend8000; frontend5175. **Tailscale decommissioned.** No ingress changes in this repair.
+- Backend `openshorts-backend` and supervised adapter reloaded; frontend live bindmount/HMR. Adapter supervisor last known PID15812 (`bash ./supervise.sh`); rediscover current child PID if needed, do not trust an old PID.
+- Adapter loaded code SHA256 at final repair: `26cad88e6c28827d99759b7385617b20e937787fbf4c3eecc1b8366db5c8bb45`. source_review changes are not represented by adapter-only hash.
+- Logs: `infra/discord-review/adapter.log`, `docker logs openshorts-backend`.
+- Backend test dependencies were installed only in disposable `/tmp/loom-editor-testdeps` inside container, not production requirements.
+- Chrome window1079836258, final tab1079838095; JavaScript via AppleScript enabled. Avoid stale tab1079837849 (hangs). Browser session tokens may expire; do not reset completion guards to manufacture freshness.
+
+Useful run IDs (historical, no rerun requested):
+- `3af3a666-7dac-421b-bf53-8fc920559160`: actual initial repaired Gemini run; 3 effects (zoom/punch-in/color-pop); render1.2; generated/reopened hashes matched.
+- `5ff8d91a-3dce-4cba-8faa-5558298462a0`: fresh automatic ASR/copy/Gemini/overlay/register→render1.4.
+- `2add7738-b9f9-436c-ad48-e7e5410c6c43`: generated-version reopen without `/api/edit`, then copy-only final correction→render1.5.
+
+### 7. Parked work — NOT authorization
+
+- Large-file GHL Broken pipe is unresolved. Same previously successful32.96MB Twitch file and30.8MB Kick failed unchanged uploader. No proven transport repair. **Bryan cancelled hotspot due weak signal**; earlier “next hotspot” instructions below are superseded.
+- CapCut AUTO visual parity is not accepted; no CapCut work performed here. FULL/TRACK/alternate canvas parked.
+- Cross-source transcription reliability and Discord oversized playable proxy remain follow-ups, not repaired/accepted by this test.
+- No GHL uploader redesign, Manual Intake acquisition change, broad audit or second editing pipeline.
+
+Report: `/Users/user/Desktop/bentley/OPENSHORTS-AUTO-EDIT-REPORT-2026-10-03.md`.
+Recovery: `/Users/user/.openclaw/workspace/PROGRESS.md`, daily memory `memory/2026-10-03.md`.
+
+---
+
+## ARCHIVED HANDOFF — HISTORY ONLY, NOT CURRENT NEXT ACTION
+
+Everything below predates Auto Edit acceptance. Historical “current scope,” “next action,” runtime hashes and clean-tree statements must not override this top section.
+
 ## START HERE — 2026-10-03 — GHL UPLOAD TRANSPORT
 
 **Current scope: fix GHL uploads, then hand off. No CapCut/editor/discovery work.**
