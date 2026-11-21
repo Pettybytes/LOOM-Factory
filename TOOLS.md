@@ -62,8 +62,6 @@ three additions made specifically when resuming LOOM Factory:
 | **CLI-Anything** | Universal CLI-generator bridge — lets an agent control arbitrary software via generated wrapper CLIs | `~/.cli-anything` (Python 3.12 venv); wrappers exposed on PATH via `~/bin/cli-hub` etc. |
 | **vercel-labs/agent-browser** | Native (Rust) browser-automation CLI for agents, prebuilt per-platform binaries via npm | Tracked in `agent-toolkit/receipts/sources.json`; skill symlinked at `~/.agents/skills/agent-browser`. **Still needs** `npm i -g agent-browser && agent-browser install` run once on this Mac, and does not yet reach `~/.claude/skills` (that symlink is outside this toolkit's reach from automation — do it by hand once: `ln -s ~/.local/share/agent-toolkit/sources/vercel-labs--agent-browser/skills/agent-browser ~/.claude/skills/agent-browser`). |
 
-Dropped from the lineup for this build: **Muse** (not used for LOOM Factory). LoopForge was
-considered and explicitly rejected — Ralph Loop already covers that need.
-
-Agent lineup for LOOM Factory: **Codex, Claude (Claude Code), OpenClaw (Bentley)**. See
+LoopForge was considered and explicitly rejected — Ralph Loop already covers that need.
+Agent staffing (including Muse) is Bryan's call; the repo handoffs record no lineup change. See
 `AGENTS.md` in each workstation for the per-agent entry point.
