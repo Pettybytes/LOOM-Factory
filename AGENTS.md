@@ -1,8 +1,8 @@
 # AGENTS.md — LOOM Factory
 
 Read this before you touch anything. It applies to every coding agent working in this repo —
-Claude Code, Codex, and OpenClaw (Bentley). Agent staffing (including Muse) is Bryan's call;
-the repo handoffs record no lineup change, so ask before assuming one.
+Claude Code, Codex, and OpenClaw (Bentley). Bryan dropped Muse from the LOOM Factory lineup in
+Nov 2026 (his decision; not yet recorded in the repo handoffs).
 
 LOOM Factory is Bryan's multi-tenant AI-powered content pipeline: livestreams/VOD → short-form
 clips → ranking/reaction content → cross-platform distribution. Stage 1 ("Factory Spine") is
