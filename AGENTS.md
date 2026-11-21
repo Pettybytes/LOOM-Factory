@@ -1,8 +1,8 @@
 # AGENTS.md — LOOM Factory
 
 Read this before you touch anything. It applies to every coding agent working in this repo —
-Claude Code, Codex, and OpenClaw (Bentley). Muse/Gemini is **not** part of the LOOM Factory
-agent lineup (dropped as of Nov 2026) — ignore any older references to it.
+Claude Code, Codex, and OpenClaw (Bentley). Agent staffing (including Muse) is Bryan's call;
+the repo handoffs record no lineup change, so ask before assuming one.
 
 LOOM Factory is Bryan's multi-tenant AI-powered content pipeline: livestreams/VOD → short-form
 clips → ranking/reaction content → cross-platform distribution. Stage 1 ("Factory Spine") is
@@ -38,10 +38,16 @@ complete. Stage 2 ("Ranking & Reaction Growth Engine") is active.
 
 ## 3. Current state (as of Nov 2026)
 
-- Stage 2 · Segment 5 (Automated Multi-Source Discovery V1) is the active front — see
-  `NEXT_SESSION_HANDOFF.md`/`HANDOFF.md` for the exact resume point.
-- Agent lineup for this build: **Codex, Claude (Claude Code), OpenClaw (Bentley)**. Codex models
-  are back in use this cycle (usage reset); Muse is retired from the lineup.
+- **Resume point: CapCut text fidelity** (newest section of `NEXT_SESSION_HANDOFF.md`). The
+  video handoff is proven; the editable hook styling (black bold serif, wrapped, rounded white
+  card, top, five seconds, still editable) is pending. Order: runtime recovery → CapCut text
+  fidelity → gameplay-layout backport + long-VOD intake → Segment 5 (open, not current).
+- **Real working checkout:** `/Users/user/Desktop/01 Dreemzy & Clients/LOOM-Factory` (outer repo +
+  nested `openshorts` repo with uncommitted accepted work, untracked protected migration 038, one
+  stash). Runtime recovery and CapCut work happen there. This workstation is a worktree of a fresh
+  GitHub clone at the same HEAD and does NOT contain that local state.
+- Never touch migration 038, stashes, or dirty/untracked files in the real checkout. No reset,
+  clean, blanket restore or upstream merge.
 - Shared toolkit: `~/.local/share/agent-toolkit` (TOOLKIT.md governs skill/tool selection across
   all agents). Skills resolve from `~/.agents/skills/` and propagate per-agent
   (`~/.claude/skills`, `~/.codex/skills`, `~/.openclaw/workspace/skills`).
