@@ -49,3 +49,21 @@ modified. No secret values were copied into this document or exposed in chat.
 - Do not add credentials for any tool not on the Locked architecture list
   without checking `LOOM_SOURCE_OF_TRUTH.md` first (e.g. Cloudinary and
   Supabase both have live keys elsewhere but are explicitly out of scope here).
+
+## Agent Toolkit Additions (Nov 2026 — LOOM Factory build resumption)
+
+Cross-agent skill/tool toolkit at `~/.local/share/agent-toolkit` (governed by that toolkit's own
+`TOOLKIT.md`) is shared across every LOOM workstation. Reused as-is from the FridgeGraph build;
+three additions made specifically when resuming LOOM Factory:
+
+| Tool | What it is | Where it lives |
+|---|---|---|
+| **gstack** | Garry Tan's open-sourced Claude Code config: 23 specialist subagents + 8 power tools | `~/.gstack` (already active before this note was written) |
+| **CLI-Anything** | Universal CLI-generator bridge — lets an agent control arbitrary software via generated wrapper CLIs | `~/.cli-anything` (Python 3.12 venv); wrappers exposed on PATH via `~/bin/cli-hub` etc. |
+| **vercel-labs/agent-browser** | Native (Rust) browser-automation CLI for agents, prebuilt per-platform binaries via npm | Tracked in `agent-toolkit/receipts/sources.json`; skill symlinked at `~/.agents/skills/agent-browser`. **Still needs** `npm i -g agent-browser && agent-browser install` run once on this Mac, and does not yet reach `~/.claude/skills` (that symlink is outside this toolkit's reach from automation — do it by hand once: `ln -s ~/.local/share/agent-toolkit/sources/vercel-labs--agent-browser/skills/agent-browser ~/.claude/skills/agent-browser`). |
+
+Dropped from the lineup for this build: **Muse** (not used for LOOM Factory). LoopForge was
+considered and explicitly rejected — Ralph Loop already covers that need.
+
+Agent lineup for LOOM Factory: **Codex, Claude (Claude Code), OpenClaw (Bentley)**. See
+`AGENTS.md` in each workstation for the per-agent entry point.
