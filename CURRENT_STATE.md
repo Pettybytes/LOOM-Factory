@@ -45,7 +45,7 @@ Do not confuse the repaired 46.8-second Manual Intake boundary with the already 
 
 ### Only permitted continuation after takeover
 
-Read the new top section of `NEXT_SESSION_HANDOFF.md`. Continue **resolved OpenShorts hook/caption style → existing CapCut native editable text/subtitle style** only when Bryan resumes the task. Do not rerun Gemini, change video/zooms/crop, touch Manual Intake, resume GHL Broken pipe/storage, re-enable Tailscale, change automated acquisition, add a second CapCut architecture, or broaden scope.
+Read the new top section of `NEXT_SESSION_HANDOFF.md`. Continue **resolved OpenShorts hook/caption style → existing CapCut native editable text/subtitle style** only when Bryan resumes the task. Do not rerun Gemini, change video/zooms/crop, touch Manual Intake, resume GHL Broken pipe/storage, re-enable the legacy VPN tunnel, change automated acquisition, add a second CapCut architecture, or broaden scope.
 
 ---
 
@@ -150,7 +150,7 @@ Bryan confirmed **“it worked”** and requested a report, then this handoff/cu
 ### Verification and runtime
 
 - **161 focused tests passed:** 23 frontend + 63 OpenShorts backend + 75 adapter/editor. Frontend build and both repositories' diff checks passed. These are completed prior-run results; no rerun during this docs-only handoff.
-- Cloudflare → Caddy → adapter/API/editor; SPA catch-all. Tailscale decommissioned. No tunnel/Caddy changes.
+- Cloudflare → Caddy → adapter/API/editor; SPA catch-all. the legacy VPN tunnel decommissioned. No tunnel/Caddy changes.
 - Backend and supervised adapter reloaded for the repairs; frontend uses its existing live source mount/HMR. Do not restart gratuitously.
 - Outer HEAD **`6c0457b`**, branch `master`; nested `openshorts` HEAD **`7e25c60`**, branch `loom/factory-mvp-baseline-fixes` (rechecked at handoff).
 - **Live application fixes are UNCOMMITTED.** This handoff also remains local/uncommitted; no push. Exact ownership and files in `NEXT_SESSION_HANDOFF.md`. Preserve unrelated dirty files.
@@ -172,7 +172,7 @@ The prior checkpoint below is preserved for evidence. Its “active task,” “
 canonical GHL storage, then provide a handoff. See the **2026-10-03 START HERE** section
 in `NEXT_SESSION_HANDOFF.md`; older next-action lists are historical, not authorization.
 
-- **Cloudflare tunnel active; Tailscale decommissioned.** No tunnel changes made or needed
+- **Cloudflare tunnel active; the legacy VPN tunnel decommissioned.** No tunnel changes made or needed
   by this investigation. Failure is on outbound Mac → GHL HTTPS.
 - Correct endpoint: `POST https://services.leadconnectorhq.com/medias/upload-file`,
   `Version: v3`, multipart `file` (`video/mp4`), `name`, `hosted=false`, `parentId`.
@@ -2185,7 +2185,7 @@ Re-hydration is idempotent.
 
 ## 2. Runtime + infrastructure (unchanged)
 
-**Canonical public ingress (2026-09-21):** `https://app.loomz.stream` → Caddy `:8081`  *(formerly Tailscale Funnel)*
+**Canonical public ingress (2026-09-21):** `https://app.loomz.stream` → Caddy `:8081`  *(formerly legacy funnel ingress)*
 
 | Component | Process/container | Bind | Health |
 |-----------|-------------------|------|--------|
@@ -3814,7 +3814,7 @@ runtime. `adapter.log` had also been silent since **Sep 19 22:43** — no reques
 were reaching it.
 
 **Cause 2 — the relay was not proven before.** Chain is
-Discord → Tailscale Funnel (`users-macbook-pro-1.taild000b2.ts.net`) → Caddy
+Discord → legacy funnel ingress (`app.loomz.stream`) → Caddy
 container `loom-tunnel-proxy` (`:8081`) → `host.docker.internal:8090` → adapter.
 Caddy's access log showed `502` with `reverseproxy.statusError` / `EOF` for `GET /`
 and `GET /edit` (the **frontend** upstream, a different route), which was a red
@@ -3842,20 +3842,20 @@ persisted → card updated → no acquisition. Not yet runtime-accepted.
 ## 29. Canonical public ingress — EVIDENCE AUDIT (2026-09-21)
 
 **Audited because Discord interactions were still arriving with
-`Tailscale-Funnel-Request`.** Question asked: why, after the accepted Discord/
+`the legacy VPN tunnel-Funnel-Request`.** Question asked: why, after the accepted Discord/
 editor ingress supposedly moved to Cloudflare?
 
 ### What the evidence actually shows (not memory)
 
 | Surface | Actual public host today | Source |
 |---|---|---|
-| Discord interaction endpoint | **`https://users-macbook-pro-1.taild000b2.ts.net/discord/interactions`** | Discord API `/applications/@me` (authoritative) |
-| `LOOM_EDITOR_PUBLIC_URL` (accepted Editor work) | **`https://users-macbook-pro-1.taild000b2.ts.net`** | live env |
-| Tailscale Funnel | **RETIRED 2026-09-21 — historical row, not the live ingress**, `https://users-macbook-pro-1.taild000b2.ts.net` → `/ proxy http://127.0.0.1:8081` | `tailscale funnel status` |
+| Discord interaction endpoint | **`https://app.loomz.stream/discord/interactions`** | Discord API `/applications/@me` (authoritative) |
+| `LOOM_EDITOR_PUBLIC_URL` (accepted Editor work) | **`https://app.loomz.stream`** | live env |
+| legacy funnel ingress | **RETIRED 2026-09-21 — historical row, not the live ingress**, `https://app.loomz.stream` → `/ proxy http://127.0.0.1:8081` | `legacy funnel ingress status` |
 
 **Conclusion: the Cloudflare cut-over never happened for these surfaces.** Both
 the Discord interaction endpoint AND the accepted editor's own public URL are on
-the Tailscale Funnel host. There is therefore no "split-brain after migration";
+the legacy funnel ingress host. There is therefore no "split-brain after migration";
 rather, **nothing accepted is served by Cloudflare yet.**
 
 ### Cloudflare state
@@ -3888,7 +3888,7 @@ cannot point Discord's interaction endpoint at Cloudflare, cannot prove the publ
 Cloudflare path, and cannot retire the Funnel.
 
 ### Explicitly NOT done, and why
-* **Tailscale Funnel was NOT disabled.** The removal condition ("no accepted
+* **legacy funnel ingress was NOT disabled.** The removal condition ("no accepted
   component still depends on it") is **NOT met**: Discord's live interaction
   endpoint *and* the accepted editor's public URL both depend on it. Disabling it
   now would break interactions and the editor and would block testing.
@@ -3899,7 +3899,7 @@ Correct order once the hostname is known: prove `https://<cloudflare-host>/disco
 reaches the adapter (401 on unsigned request) → update Discord's interaction
 endpoint → verify → **then** retire the Funnel and document Cloudflare as canonical.
 
-## 30. CANONICAL PUBLIC INGRESS = CLOUDFLARE (2026-09-21) — Tailscale Funnel RETIRED
+## 30. CANONICAL PUBLIC INGRESS = CLOUDFLARE (2026-09-21) — legacy funnel ingress RETIRED
 
 **Decision: `https://app.loomz.stream` is LOOM's canonical public ingress**, served
 by the EXISTING `dreemzy_loom` Cloudflare tunnel (route + CNAME added by Bryan).
@@ -3908,9 +3908,9 @@ Local Caddy routing was **not** changed and **no second tunnel** was created.
 ### Changes
 | Item | From | To |
 |---|---|---|
-| Discord application interaction endpoint | `https://users-macbook-pro-1.taild000b2.ts.net/discord/interactions` | **`https://app.loomz.stream/discord/interactions`** |
-| `LOOM_EDITOR_PUBLIC_URL` | `https://users-macbook-pro-1.taild000b2.ts.net` | **`https://app.loomz.stream`** |
-| Tailscale Funnel | ON (`/` → `127.0.0.1:8081`) | **RETIRED** (`tailscale funnel reset` → "No serve config") |
+| Discord application interaction endpoint | `https://app.loomz.stream/discord/interactions` | **`https://app.loomz.stream/discord/interactions`** |
+| `LOOM_EDITOR_PUBLIC_URL` | `https://app.loomz.stream` | **`https://app.loomz.stream`** |
+| legacy funnel ingress | ON (`/` → `127.0.0.1:8081`) | **RETIRED** (`legacy funnel ingress reset` → "No serve config") |
 
 `~/.openclaw/.env` was backed up first
 (`~/.openclaw/.env.bak-loom-ingress-20260921181937`) and edited surgically: exactly
@@ -3936,7 +3936,7 @@ The **Discord Developer Portal Activity URL mapping** is not readable from this
 host (not exposed by the bot API), so I could not confirm whether the embedded
 Activity points at the old host. Activity *content* is reachable via
 `https://app.loomz.stream` (root route → frontend). If the Activity misbehaves,
-restore the Funnel with `tailscale funnel --bg 8081` (one command, reversible).
+restore the Funnel with `legacy funnel ingress --bg 8081` (one command, reversible).
 
 Docs updated so Cloudflare is canonical: `LOOM_SOURCE_OF_TRUTH.md`,
 `NEXT_SESSION_HANDOFF.md`, `CURRENT_STATE.md` (§30), and the stale public constant
@@ -4719,7 +4719,7 @@ sources, no large short-item can reach review, and every downstream acceptance i
 
 ---
 
-## CORRECTION — 2026-09-29 — INGRESS IS CLOUDFLARE; TAILSCALE IS OUT OF THE LOOM WORKFLOW
+## CORRECTION — 2026-09-29 — INGRESS IS CLOUDFLARE; LEGACY-VPN IS OUT OF THE LOOM WORKFLOW
 
 **Live ingress, verified from the running configuration (not from older notes):**
 `https://app.loomz.stream` → Cloudflare → Caddy `:8081` → `host.docker.internal:8090`
@@ -4728,11 +4728,11 @@ sources, no large short-item can reach review, and every downstream acceptance i
 config read from the RUNNING container (`docker exec loom-tunnel-proxy cat /etc/caddy/Caddyfile`)
 matches the repository file; it contains **no file/media handler**.
 
-**Tailscale is STOPPED (`tailscale status` → "Tailscale is stopped.") and is intentionally REMOVED
+**The legacy VPN tunnel is stopped and is intentionally REMOVED
 from the LOOM workflow.** Do not reintroduce, reconnect or modify it. Any earlier line in this file
-describing Tailscale Funnel as the ACTIVE ingress is historical: Funnel was retired 2026-09-21 in
-favour of Cloudflare (see §30). The leftover macOS VPN/Tailscale entries are **not** evidence that
-Tailscale caused the GHL upload failure — that claim is not supported by any measurement, and the
+describing legacy funnel ingress as the ACTIVE ingress is historical: Funnel was retired 2026-09-21 in
+favour of Cloudflare (see §30). The leftover macOS VPN/the legacy VPN tunnel entries are **not** evidence that
+the legacy VPN tunnel caused the GHL upload failure — that claim is not supported by any measurement, and the
 upload failure's cause remains UNKNOWN.
 
 ### Corrections to earlier diagnoses (carried here so they cannot be re-quoted)

@@ -89,7 +89,7 @@ The ranking package in Lane B is **reaction material**, not automatically the fi
 | OpenShorts branch | `loom/factory-mvp-baseline-fixes` |
 | OpenShorts backend | Loopback port 8000 |
 | Bearer-token proxy | Loopback port 8081 |
-| Secure bridge | Tailscale Funnel + Caddy; 401/401/200 behavior runtime verified |
+| Secure bridge | legacy funnel ingress + Caddy; 401/401/200 behavior runtime verified |
 | Workflow 00 — Failure Handler | `IYB1Pp8cTMrghaoK` |
 | Workflow 01 — Score Candidate Clip | `Vttea1FqX4TVn4yH` |
 | Workflow 02 — Ingest OpenShorts Candidate | `6RNa6TXeppCQ7bhh` |
@@ -210,7 +210,7 @@ Repairable is ≥60; otherwise reject. These values change only through an appro
 
 #### 3B — Secured local bridge — COMPLETE / RUNTIME VERIFIED
 
-- Tailscale Funnel + Caddy bearer proxy established.
+- legacy funnel ingress + Caddy bearer proxy established.
 - Missing, wrong, and correct credentials returned 401/401/200.
 
 #### 3C — Existing candidate retrieval/scoring — COMPLETE / RUNTIME VERIFIED

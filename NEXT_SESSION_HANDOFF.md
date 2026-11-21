@@ -238,7 +238,7 @@ If a future task requests committing, separately review ownership in both reposi
 ### 6. Runtime and evidence locations
 
 - Public app: `https://app.loomz.stream`.
-- Ingress: Cloudflare → Caddy (`loom-tunnel-proxy`) → adapter8090 / backend8000; frontend5175. **Tailscale decommissioned.** No ingress changes in this repair.
+- Ingress: Cloudflare → Caddy (`loom-tunnel-proxy`) → adapter8090 / backend8000; frontend5175. **the legacy VPN tunnel decommissioned.** No ingress changes in this repair.
 - Backend `openshorts-backend` and supervised adapter reloaded; frontend live bindmount/HMR. Adapter supervisor last known PID15812 (`bash ./supervise.sh`); rediscover current child PID if needed, do not trust an old PID.
 - Adapter loaded code SHA256 at final repair: `26cad88e6c28827d99759b7385617b20e937787fbf4c3eecc1b8366db5c8bb45`. source_review changes are not represented by adapter-only hash.
 - Logs: `infra/discord-review/adapter.log`, `docker logs openshorts-backend`.
@@ -283,8 +283,8 @@ September 29 `ASTRA_START` file. **Transport repair is not yet verified.**
 - Official documentation explicitly allows **video up to 500 MB**:
   https://marketplace.gohighlevel.com/docs/ghl/medias/upload-media-content/index.html
   **Do not diagnose a size limit without an actual HTTP response proving it.**
-- **Cloudflare is the active LOOM ingress tunnel. Tailscale was decommissioned.**
-  Do not re-enable, modify, or troubleshoot Tailscale. The failing transfer is the
+- **Cloudflare is the active LOOM ingress tunnel. the legacy VPN tunnel was decommissioned.**
+  Do not re-enable, modify, or troubleshoot the legacy VPN tunnel. The failing transfer is the
   independent **outbound Mac → GHL HTTPS request**, not the inbound Discord tunnel.
 
 ### Exact reproduction and evidence

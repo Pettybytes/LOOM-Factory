@@ -37,6 +37,25 @@
 		reverse_proxy host.docker.internal:8090
 	}
 
+	# Pipeline API (n8n → OpenShorts backend). The loopback backend is never
+	# exposed directly: this route requires the same tunnel token as
+	# /discord/card. It replaces the retired VPN-funnel path that the
+	# orchestrator used for /api/process and /api/status.
+	@pipeline {
+		path /pipeline/api/process
+		path /pipeline/api/status/*
+		path /pipeline/api/clip/*/transcript
+		path /pipeline/api/render/*
+		header Authorization "Bearer {$LOOM_TUNNEL_TOKEN}"
+	}
+	handle @pipeline {
+		uri strip_prefix /pipeline
+		reverse_proxy host.docker.internal:8000
+	}
+	handle /pipeline/* {
+		respond "Not Found" 404
+	}
+
 	# Editor API — public path, but authenticated + allowlisted by the LOOM
 	# adapter, which validates the short-lived editor session token + tenant/job/
 	# clip ownership and forwards ONLY the required editor endpoints to the

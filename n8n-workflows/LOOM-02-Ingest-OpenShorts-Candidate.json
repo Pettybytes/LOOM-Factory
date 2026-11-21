@@ -29,7 +29,7 @@
       "parameters": {
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
-        "url": "={{ 'https://users-macbook-pro-1.taild000b2.ts.net/api/clip/' + $json.job_id + '/' + $json.clip_index + '/transcript' }}",
+        "url": "={{ 'https://app.loomz.stream/pipeline/api/clip/' + $json.job_id + '/' + $json.clip_index + '/transcript' }}",
         "method": "GET",
         "options": {}
       },

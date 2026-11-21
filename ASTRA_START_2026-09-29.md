@@ -132,7 +132,7 @@ never treated as placement proof.
    corrupted header; its numbers are void.
 3. **`hosted=true + fileUrl` is disallowed** — it retains an external reference, not
    GHL-owned bytes.
-4. **Tailscale was intentionally removed from LOOM.** Do not reintroduce it, and do not
+4. **the legacy VPN tunnel was intentionally removed from LOOM.** Do not reintroduce it, and do not
    blame leftover macOS VPN entries without evidence.
 5. **Do not treat the earlier 33 MB success or the 24–31 MB failures as proof of a fixed
    file-size cap.** A 33 MB upload succeeded on 2026-09-28 18:47 through the same path; the
@@ -182,7 +182,7 @@ and `/edit` = `cf-cache-status: DYNAMIC`; `/media/*`, `/outputs/*`, `/recut_*.mp
 `MISS`; `/api/media/*` = 401 `BYPASS`. Live ingress (verified from the running
 configuration): Cloudflare → Caddy `:8081` → `8090` (interactions/editor/`api/*`) and
 `:5175` (SPA); `:8082` → n8n relay; `cloudflared` = quick tunnel + named tunnel;
-`tailscale status` = stopped. The Caddy config read inside the running container matches the
+`legacy vpn status` = stopped. The Caddy config read inside the running container matches the
 repo file and has **no file/media handler**.
 
 ## Appendix — retained artefact

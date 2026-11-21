@@ -21,7 +21,7 @@ Endpoint and n8n. It does exactly three things:
     with Approve/Reject/Hold buttons.
 
 Secrets are read from environment variables (never printed, never logged).
-The service binds 127.0.0.1 only; Caddy fronts it via the Tailscale Funnel.
+The service binds 127.0.0.1 only; Caddy fronts it via the Cloudflare tunnel.
 
 Reaction-lane identity (Segment 6 pre-distribution):
     review_stage='moment'             -> approve enters the reaction queue.
@@ -3109,9 +3109,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             self._handle_editor_api("POST")
             return
-        # Tailscale Funnel --set-path strips the public prefix before proxying,
-        # so the adapter sees "/" for the public /discord/interactions route.
-        # Accept both the bare root and the full path.
+        # The public ingress (Cloudflare tunnel -> Caddy) proxies this path
+        # through unchanged, but legacy prefix-stripping proxies delivered
+        # "/" for the public /discord/interactions route. Accept both.
         if path in ("/discord/interactions", "/"):
             self._handle_interaction()
             return

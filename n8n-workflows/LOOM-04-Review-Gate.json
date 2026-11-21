@@ -88,7 +88,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://users-macbook-pro-1.taild000b2.ts.net/discord/card",
+        "url": "https://app.loomz.stream/discord/card",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,

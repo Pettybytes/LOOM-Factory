@@ -333,7 +333,7 @@ Postiz may return only as an isolated X/Reddit adapter after the base Factory ea
 * Backend: loopback port 8000
 * Bearer-token proxy: loopback port 8081
 * Dashboard: `http://localhost:5175`
-* Secured bridge: Tailscale Funnel + Caddy
+* Secured bridge: legacy funnel ingress + Caddy
 * Missing/wrong/correct bearer-token behavior: 401/401/200 — **runtime verified**
 * `noplaylist: true`: **runtime verified**
 * Upload-Post gate bypass: **browser verified**

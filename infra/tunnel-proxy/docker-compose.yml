@@ -4,7 +4,7 @@ services:
     container_name: loom-tunnel-proxy
     restart: unless-stopped
     # Bind ONLY to loopback — never expose this port on all interfaces.
-    # Tailscale Funnel will be the only thing fronting this, once approved.
+    # The Cloudflare tunnel is the only thing fronting this.
     # Port 8082 is the LOOM callback relay: also loopback-only. OpenShorts'
     # backend container reaches it via host.docker.internal:8082, which
     # Docker Desktop for Mac resolves automatically for every container

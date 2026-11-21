@@ -79,7 +79,7 @@
       "parameters": {
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
-        "url": "https://users-macbook-pro-1.taild000b2.ts.net/api/process",
+        "url": "https://app.loomz.stream/pipeline/api/process",
         "method": "POST",
         "sendBody": true,
         "contentType": "multipart-form-data",
@@ -471,7 +471,7 @@
       "parameters": {
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
-        "url": "={{ 'https://users-macbook-pro-1.taild000b2.ts.net/api/status/' + $('Correlate Run Context').item.json.job_id }}",
+        "url": "={{ 'https://app.loomz.stream/pipeline/api/status/' + $('Correlate Run Context').item.json.job_id }}",
         "method": "GET",
         "options": {}
       },
@@ -510,7 +510,7 @@
       "parameters": {
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
-        "url": "={{ 'https://users-macbook-pro-1.taild000b2.ts.net/api/status/' + $('Correlate Run Context').item.json.job_id }}",
+        "url": "={{ 'https://app.loomz.stream/pipeline/api/status/' + $('Correlate Run Context').item.json.job_id }}",
         "method": "GET",
         "options": {}
       },
@@ -549,7 +549,7 @@
       "parameters": {
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
-        "url": "={{ 'https://users-macbook-pro-1.taild000b2.ts.net/api/status/' + $('Correlate Run Context').item.json.job_id }}",
+        "url": "={{ 'https://app.loomz.stream/pipeline/api/status/' + $('Correlate Run Context').item.json.job_id }}",
         "method": "GET",
         "options": {}
       },
@@ -588,7 +588,7 @@
       "parameters": {
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
-        "url": "={{ 'https://users-macbook-pro-1.taild000b2.ts.net/api/status/' + $('Correlate Run Context').item.json.job_id }}",
+        "url": "={{ 'https://app.loomz.stream/pipeline/api/status/' + $('Correlate Run Context').item.json.job_id }}",
         "method": "GET",
         "options": {}
       },
