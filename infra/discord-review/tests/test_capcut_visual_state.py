@@ -127,8 +127,8 @@ class _Case(unittest.TestCase):
                 with open(path, "w") as fh:
                     fh.write("{}")
                 return 0, json.dumps({"ok": True, "file_path": path, "refs": {
-                    "scene0": "seg-0", "scene1": "seg-1", "clip": "seg-clip"}}), ""
-            return 0, json.dumps({"ok": True}), ""
+                    "scene0": "seg-0", "scene1": "seg-1", "clip": "seg-clip", "caption_seed": "seg-caption"}}), ""
+            return 0, json.dumps({"ok": True, "in_sync": True}), ""
 
         return calls, invoke
 
@@ -602,11 +602,10 @@ class CoordinateInvariantsTests(_Case):
             bootstrap={"source_range": {"start": 12.0, "end": 42.0}},
             caption_blocks=[{"text": "hello", "startMs": 500, "endMs": 1500}],
             acquisition={"working_timebase_origin_s": 1800.0})
-        operation = report["spec"]["operations"][0]
-        self.assertEqual(operation["op"], "captions")
-        self.assertEqual(operation["timeOffset"], 0)     # no ORIGINAL shift
-        srt = Path(report["captions"]["srt"]).read_text()
-        self.assertIn("00:00:00,500 --> 00:00:01,500", srt)
+        ass = Path(report['captions']['ass']).read_text()
+        self.assertIn('Dialogue: 0,0:00:00.50,0:00:01.50', ass)
+        self.assertNotIn('--time-offset', json.dumps(report['spec']))
+
 
     def test_a_metadata_pointer_never_becomes_a_timeline_text_object(self):
         self._sidecar(scenes=[_crop_scene()])

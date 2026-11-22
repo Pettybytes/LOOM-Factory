@@ -41,6 +41,8 @@ export interface ServeSummary {
  * Jobs for different projects may run in parallel; jobs targeting the same
  * project are serialized so two writers never race. An optional stable `id`
  * deduplicates retries from external orchestrators. Each job has bounded
- * output, configurable timeout, retry/backoff, and one JSON result line.
+ * output capture, configurable timeout, retry/backoff, and one JSON result
+ * line. Capture thresholds are checked every 25ms and when the child exits;
+ * they are not hard disk quotas. Locks and IDs last for this queue invocation.
  */
 export declare function serveQueue(opts: ServeOptions): Promise<ServeSummary>;

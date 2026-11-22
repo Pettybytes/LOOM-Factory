@@ -29,9 +29,3 @@ export declare function mattingObject(flag: number, existing?: unknown): Matting
 export declare function setMatting(draft: Draft, segId: string): MattingResult;
 /** Turn matting off, writing the documented flag-0 object (cache fields kept). */
 export declare function clearMatting(draft: Draft, segId: string): MattingResult;
-/** Read the matting state of a segment's material without writing. */
-export declare function mattingState(draft: Draft, segId: string): {
-    segmentId: string;
-    materialId: string;
-    flag: number;
-};

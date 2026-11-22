@@ -14,6 +14,8 @@ export interface DraftCandidate {
     draft: Draft | null;
     timelineHash: string | null;
     error?: string;
+    /** Selected active-timeline writes preserve each document's own identity. */
+    keepGuid?: string;
 }
 /** Which primary project file drives this store: draft_content.json (the
  * layout every pre-Mac-10.x build uses), draft_info.json with no
@@ -22,9 +24,21 @@ export interface DraftCandidate {
  * carrying a nested Timelines/ directory (CapCut 7.x is reported to keep the
  * live document at Timelines/<main_timeline_id>/draft_info.json with the root
  * file a regenerated mirror — issue #50; DETECTION ONLY, reads and writes
- * still target the root candidates), or neither (timeline readable only from
- * a mirror such as template-2.tmp). */
-export type DraftStoreLayout = "content-primary" | "info-primary" | "timelines-nested" | "unknown";
+ * still target the root candidates), the fixture-backed Windows 8.7.0 active
+ * timeline layout, or neither (timeline readable only from a mirror). */
+export type DraftStoreLayout = "content-primary" | "info-primary" | "timelines-nested" | "timelines-active" | "unknown";
+interface ActiveTimeline {
+    id: string;
+    pointerPath: string;
+    pointerRaw: string;
+    explicit?: boolean;
+}
+export interface DraftStoreOptions {
+    /** Opt in to pointer-based selection on an app build without a verified fixture. */
+    activeTimeline?: boolean;
+}
+/** CLI process default; library callers should pass options to loadDraft instead. */
+export declare function setActiveTimelineSelection(value: boolean): void;
 export interface DraftStore {
     projectDir: string;
     canonical: DraftCandidate;
@@ -36,10 +50,11 @@ export interface DraftStore {
     layout: DraftStoreLayout;
     /** Project-relative paths of the nested Timelines/ documents (issue #50):
      * Timelines/project.json plus every Timelines/<id>/draft_info.json /
-     * draft_content.json found. Reporting only — never read as a timeline
-     * source, never part of the write set. Populated whenever the structure
-     * exists, even on >= 8.7 stores where the layout value stays untouched. */
+     * draft_content.json found. This discovery list is for reporting; only the
+     * validated selected active documents may enter the normal write set.
+     * Populated whenever the structure exists, including unverified stores. */
     nestedTimelines: string[];
+    activeTimeline?: ActiveTimeline;
 }
 export interface DraftStoreReport {
     ok: boolean;
@@ -67,6 +82,11 @@ export interface DraftStoreReport {
         error?: string;
     }>;
     next_actions: string[];
+    active_timeline?: {
+        id: string;
+        canonical: string;
+        explicit?: boolean;
+    };
     /** Present only when the timeline references local media that
      * draft_meta_info.json's `draft_materials` provably does not register —
      * see assessMediaRegistration. Informational: no exit-code change. */
@@ -77,6 +97,8 @@ export interface MediaRegistrationNote {
     draft_materials: "missing-file" | "missing-key" | "all-groups-empty";
     note: string;
 }
+/** The timeline in a draft file's text, at the root or inside an envelope; null when there is none. */
+export declare function timelineFromText(raw: string): Draft | null;
 export declare function parseCandidate(path: string): DraftCandidate;
 /** Warning every mutating write prints on a `timelines-nested` project (issue
  * #50). Warn, never refuse: the nested-live-document claim has no committed
@@ -86,6 +108,7 @@ export declare const NESTED_TIMELINES_WRITE_WARNING: string;
  * as the draft_info-primary action below (name the layout, state the risk,
  * end with the fixture CTA). */
 export declare const NESTED_TIMELINES_ACTION: string;
+export declare const ACTIVE_TIMELINE_WINDOWS_ACTION: string;
 /**
  * The same structure on >= 8.7 storage, where `layout` deliberately stays at its
  * content-/info-primary value so the 7.x claim never relabels a modern store.
@@ -103,7 +126,11 @@ export declare const NESTED_TIMELINES_MODERN_ACTION: string;
 export declare function nestedTimelinesWriteWarning(appVersion: string | null): string;
 /** Version-gated form of NESTED_TIMELINES_ACTION (issue #68). */
 export declare function nestedTimelinesAction(appVersion: string | null): string;
-export declare function discoverDraftStore(input: string): DraftStore;
+/** Asset files and project metadata belong at the project root even when
+ * the canonical timeline document lives below Timelines/<id>/. */
+export declare function draftProjectDir(filePath: string): string;
+export declare function assertActiveTimelineUnchanged(store: DraftStore): void;
+export declare function discoverDraftStore(input: string, options?: DraftStoreOptions): DraftStore;
 /**
  * The store as a fresh discovery would find it immediately after a write,
  * built from what the write already produced instead of re-reading the project.
@@ -124,9 +151,31 @@ export declare function discoverDraftStore(input: string): DraftStore;
  * `diverged` collapses to false on its own, because every written target now
  * exposes the same timeline.
  */
-export declare function storeAfterWrite(store: DraftStore, draft: Draft, written: Map<string, string>): DraftStore;
-export declare function serializeDraftCandidate(candidate: DraftCandidate, draft: Draft): string;
+export declare function storeAfterWrite(store: DraftStore, draft: Draft, written: Map<string, string>, preserveProjectFields?: boolean): DraftStore;
+export declare function serializeDraftCandidate(candidate: DraftCandidate, draft: Draft, preserveProjectFields?: boolean, metadata?: {
+    draft_materials: unknown;
+}): string;
 export declare function editorProcesses(): string[];
+/** One process of a listing: its id, its parent's id (0 when the listing has none) and its executable text. */
+export interface ProcessRow {
+    pid: number;
+    ppid: number;
+    line: string;
+}
+/**
+ * Rows of `ps -axo pid=,ppid=,comm=` (posix) or `tasklist /FO CSV /NH` (win32,
+ * which lists no parent id). A line without ids is skipped.
+ */
+export declare function parseProcessRows(listing: string, flavor: "win32" | "posix"): ProcessRow[];
+/**
+ * The CLI's own process and every ancestor the listing shows (#168): a Volta
+ * shim is an executable named `capcut` that starts node, so the CLI's own
+ * parent looks like the editor by name. The direct parent always counts, also
+ * where the listing carries no parent ids (win32).
+ */
+export declare function ownProcessChain(rows: ProcessRow[], pid: number, ppid: number): Set<number>;
+/** The editors among a listing's rows, leaving out the CLI's own process chain. */
+export declare function matchEditorRows(rows: ProcessRow[], flavor: "win32" | "posix", own: Set<number>): string[];
 /**
  * Match a raw process listing against the editor executables, one process per
  * line — never as a substring of the joined listing: npm rewrites its own
@@ -201,6 +250,7 @@ export interface TimelineSyncPlan {
     nested_included: boolean;
 }
 export interface TimelineSyncResult {
+    store: DraftStore;
     plan: TimelineSyncPlan;
     canonicalDraft: Draft;
     canonicalCandidate: DraftCandidate;
@@ -239,6 +289,7 @@ export interface TimelineSyncResult {
  */
 export declare function planTimelineSync(input: string, opts?: {
     nested?: boolean;
+    activeTimeline?: boolean;
 }): TimelineSyncResult;
 /** The sidecar-note core, decoupled from store discovery so `lint` can run the
  * same observation from a draft + project dir (pyCapCut#13 reports the symptom
@@ -251,5 +302,5 @@ export declare function assessMediaRegistrationRaw(draft: Draft | null, meta: {
  * project directory rather than a discovered store (lint's media-unregistered
  * check). Unreadable sidecars return null, same as the store form. */
 export declare function assessMediaRegistrationAt(draft: Draft, projectDir: string): MediaRegistrationNote | null;
-export declare function diagnoseDraftStore(input: string): DraftStoreReport;
+export declare function diagnoseDraftStore(input: string, options?: DraftStoreOptions): DraftStoreReport;
 export {};

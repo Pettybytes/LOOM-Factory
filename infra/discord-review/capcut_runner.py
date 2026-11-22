@@ -110,7 +110,7 @@ COMPILE_TIMEOUT_SECONDS = 240
 # made it. PINNED_DONOR_COMMIT is asserted equal to the vendored PROVENANCE.md by
 # test, so the two can never drift apart silently.
 PINNED_DONOR_URL = "https://github.com/renezander030/capcut-cli"
-PINNED_DONOR_COMMIT = "a21cc9ce65ef169920f0e18cb130777a13bee838"
+PINNED_DONOR_COMMIT = "6e7ef130aa7aff191a1a32a68fe2ff727fec4864"
 PINNED_DONOR_LICENSE = "MIT"
 # Tolerance when checking a working-coordinate range against the real asset.
 WORKING_EPSILON = 0.05
@@ -1005,22 +1005,20 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
     blocks = caption_blocks if caption_blocks is not None else (
         bootstrap.get("captions") or bootstrap.get("transcript") or [])
     cues = ch.normalize_caption_blocks(blocks)
+    from capcut_text import prepare_text_commands
+    text_plans = prepare_text_commands(spec, working_bootstrap, cues, workspace)
     if cues:
-        srt_path = ch.write_srt(cues, os.path.join(workspace, "captions.srt"))
-        operation = ch.build_caption_operation(blocks, srt_path)
-        if operation:
-            spec["operations"] = [operation]
-            caption_state = {"included": True, "count": len(cues),
-                             "srt": srt_path, "track": ch.CAPTION_TRACK_NAME}
-        else:
-            caption_state = {"included": False,
-                             "reason": "captions unavailable for this version"}
-
-    spec_path = ch.write_spec(spec, os.path.join(workspace, "spec.json"))
+        caption_plan = next(p for p in text_plans if p['role'] == 'caption')
+        caption_state = {'included': True, 'count': len(cues),
+                         'ass': caption_plan['ass'], 'track': ch.CAPTION_TRACK_NAME}
 
     target = os.path.join(store, draft_name or draft_name_for(asset_version, store=store))
     if os.path.exists(target):
         target = os.path.join(store, safe_draft_name(os.path.basename(target), store=store))
+    # v0.35 registers spec.name verbatim; use the same unique identity as the
+    # project folder so the app's project card matches the returned draft name.
+    spec['name'] = os.path.basename(target)
+    spec_path = ch.write_spec(spec, os.path.join(workspace, "spec.json"))
 
     cmd = list(invocation) + ["compile", spec_path, "--out", target]
     if force_write:
@@ -1037,6 +1035,7 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
                 if os.path.isdir(template) else template]
     cmd += ["--drafts", store]
 
+    skeleton, store_entry, hook_conform = {}, {}, {}
     runner = invoke or _default_invoke
     created_target = not os.path.exists(target)
     try:
@@ -1056,6 +1055,14 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
             raise _unavailable(
                 f"capcut-cli reported a failed compile: {str(result)[:300]}")
 
+        # Refuse a skeleton the installed app has outgrown (donor #67/#111):
+        # CapCut would list it at 00:00 and then refuse to open it.
+        refusal = template_seed_refusal(
+            result, explicit_template_dir=bool(template) and os.path.isdir(template))
+        if refusal:
+            raise _unavailable(
+                "refusing to hand over a draft CapCut will not open: " + refusal)
+
         # Trust the draft on disk, not the CLI's own claim about it.
         produced = result.get("file_path") or os.path.join(target, "draft_content.json")
         if not os.path.isfile(produced):
@@ -1070,6 +1077,21 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
         applied_operations = _apply_lane_operations(
             spec.get("lane_operations") or [], refs=result.get("refs") or {},
             target=target, invocation=invocation, runner=runner, timeout=timeout)
+
+        # Measured: the store card shows 00:00 / no thumbnail unless these
+        # are written from the real timeline and a real frame.
+        skeleton = result.get("template") or {}
+        hook_conform = apply_text_commands(text_plans, target=target,
+            refs=result.get('refs') or {}, invocation=invocation, runner=runner, timeout=timeout)
+        store_entry = finalize_store_entry(target, store, media_path,
+            canvas={"width": spec["width"], "height": spec["height"]},
+            invocation=invocation, runner=runner, timeout=timeout)
+        # Publish all command results, including cover metadata, to the mirrors
+        # the installed Mac app loads. The CLI owns envelopes and GUIDs.
+        sync = run_cli_json(invocation, ['sync-timelines', target, '--nested', '--apply', '--json'], runner, timeout)
+        if not sync.get('in_sync'):
+            raise _unavailable('capcut-cli timeline mirrors are not synchronized')
+        hook_conform['timeline_sync'] = sync
     except BaseException:
         # A refused or failed compile can leave a half-built project (and an
         # index entry) behind. Undo only what this run created, then re-raise:
@@ -1122,6 +1144,9 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
         "manual_open_required": True,
         "cli": invocation,
         "template": template,
+        "draft_skeleton": skeleton,
+        "hook_text_conform": hook_conform,
+        "store_entry": store_entry,
         # Provenance inputs for the durable handoff record. The SPEC is included
         # deliberately: it is the immutable BEFORE state, and the caller (which
         # owns the Supabase credentials) persists it. It is not browser payload.
@@ -1134,6 +1159,105 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
 
     if reveal:
         reveal_draft(target)
+    return report
+
+
+def template_seed_refusal(result, explicit_template_dir=False):
+    """Why this draft's SKELETON would be refused by the installed app, or None.
+
+    The CLI reports where the skeleton came from. A ``path`` skeleton (the
+    bundled ``_init`` template) carries that template's schema markers; when the
+    installed app has outgrown them the CLI emits a warning (#67/#111) and CapCut
+    lists the project at 00:00 and then refuses to open it. A caller that passed
+    an explicit template directory owns that choice, so it is surfaced, not
+    refused.
+    """
+    tpl = (result or {}).get("template") or {}
+    warning = tpl.get("warning")
+    if not warning:
+        return None
+    if tpl.get("source") == "path" and not explicit_template_dir:
+        return ("the draft skeleton came from %r (declares app_version %r), not "
+                "from a project in the store: %s"
+                % (tpl.get("path"), tpl.get("app_version"), warning))
+    return None
+
+
+def finalize_store_entry(target, store, media_path, *, canvas=None,
+                         invocation=None, runner=None, timeout=COMPILE_TIMEOUT_SECONDS):
+    """CLI registers duration/paths and cover; FFmpeg supplies the cover image."""
+    invocation = invocation or capcut_invocation()
+    runner = runner or _default_invoke
+    out = {'cover': False, 'pruned': []}
+    cover_path = os.path.join(target, 'draft_cover.jpg')
+    if media_path and os.path.isfile(media_path):
+        width, height = int((canvas or {}).get('width') or 0), int((canvas or {}).get('height') or 0)
+        cmd = ['ffmpeg', '-v', 'error', '-y', '-ss', '0.5', '-i', media_path, '-frames:v', '1']
+        if width and height:
+            cmd += ['-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black']
+        try:
+            subprocess.run(cmd + [cover_path], capture_output=True, check=True, timeout=60)
+            out['cover'] = True
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if out['cover']:
+        run_cli_json(invocation, ['add-cover', target, cover_path, '--time', '500'], runner, timeout)
+    out['registration'] = run_cli_json(invocation,
+        ['register', target, '--apply', '--drafts', store], runner, timeout)
+    # No CLI equivalent for removing an archived LOOM card from the store list.
+    # Preserve every other entry, including missing unrelated projects.
+    index_path = os.path.join(store, 'root_meta_info.json')
+    if os.path.isfile(index_path):
+        with open(index_path, encoding='utf-8') as fh:
+            meta = json.load(fh)
+        rows = meta.get('all_draft_store', [])
+        kept = []
+        for row in rows:
+            folder = str(row.get('draft_fold_path') or '')
+            if (os.path.dirname(folder) == store and os.path.basename(folder).startswith(DRAFT_NAME_PREFIX)
+                    and not os.path.exists(folder)):
+                out['pruned'].append(row.get('draft_name') or folder)
+            else:
+                kept.append(row)
+        if len(kept) != len(rows):
+            meta['all_draft_store'] = kept
+            with open(index_path, 'w', encoding='utf-8') as fh:
+                json.dump(meta, fh)
+    return out
+
+
+def run_cli_json(invocation, args, runner, timeout):
+    code, out, err = runner(list(invocation) + args, timeout)
+    if code != 0:
+        raise _unavailable(f"capcut-cli {args[0]} failed (exit {code}): {(err or out or '')[:400]}")
+    try:
+        result = json.loads(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise _unavailable(f"capcut-cli {args[0]} returned invalid JSON") from None
+    if not isinstance(result, dict) or result.get('ok') is False:
+        raise _unavailable(f"capcut-cli {args[0]} failed: {str(result)[:300]}")
+    return result
+
+
+def apply_text_commands(plans, *, target, refs, invocation, runner, timeout):
+    """CLI owns all native text writes; LOOM supplies saved-setting arguments."""
+    report = {'elements': []}
+    for plan in plans:
+        segment = refs.get(plan['ref'])
+        if not segment:
+            raise _unavailable(f"capcut-cli did not return text ref {plan['ref']}")
+        run_cli_json(invocation, ['text-style', target, segment, '--preset', plan['preset_path']], runner, timeout)
+        if plan['role'] == 'caption':
+            position = plan['preset']['transform']
+            imported = run_cli_json(invocation, ['import-ass', target, plan['ass'],
+                '--clone-style', '--style-ref', segment, '--track-name', ch.CAPTION_TRACK_NAME,
+                '--font-size', str(plan['font_size']), '--x', str(position['x']), '--y', str(position['y'])], runner, timeout)
+            run_cli_json(invocation, ['remove', target, segment], runner, timeout)
+            report['caption_import'] = imported
+        evidence = {k: v for k, v in plan.items() if k not in ('preset', 'settings')}
+        if plan['role'] == 'hook':
+            report.update(evidence)
+        report['elements'].append(evidence)
     return report
 
 

@@ -6,6 +6,7 @@ export interface TranslateOptions {
     model?: string;
     dryRun?: boolean;
     outPath: string;
+    cloud?: boolean;
 }
 export interface TranslateResult {
     ok: boolean;
@@ -19,10 +20,13 @@ export interface TranslateResult {
         translated: string;
     }>;
     dry_run: boolean;
+    engine?: "anthropic" | "capcut-cloud";
+    /** --cloud: segments the service sent no translation for, written with their original text. */
+    kept_original?: number;
 }
 /**
- * Translate every text segment in a draft via the Anthropic API. Writes the
- * translated draft to `outPath` so the original stays untouched (multi-language
+ * Translate every text segment in a draft via the Anthropic API or CapCut cloud.
+ * Writes the translated draft to `outPath` so the original stays untouched (multi-language
  * shorts factory — same source, N localized renders).
  *
  * Uses built-in `fetch` (Node ≥ 18), zero runtime deps.

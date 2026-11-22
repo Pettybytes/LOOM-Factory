@@ -8,6 +8,7 @@
 // styling (\b, \i, \u, \c/\1c, \fs, \r) come back as `spans`, with offsets in
 // UTF-16 code units of the FINAL text (after tag removal, \N -> newline).
 // Every other override ({\an8}, \pos, \k, ...) is stripped as before.
+import { fillSolid, rgb01ToHex } from "./decorators.js";
 import { repairDoubledRanges } from "./text-offsets.js";
 const TIME = /^(\d+):(\d{2}):(\d{2})[.,](\d{1,3})$/;
 function timeToUs(s) {
@@ -487,13 +488,6 @@ export function renderAss(doc) {
     ];
     return `${lines.join("\n")}\n`;
 }
-function rgb01ToHex(rgb) {
-    const byte = (c) => Math.max(0, Math.min(255, Math.round(c * 255)))
-        .toString(16)
-        .padStart(2, "0")
-        .toUpperCase();
-    return `#${byte(rgb[0])}${byte(rgb[1])}${byte(rgb[2])}`;
-}
 function normalizeBlocks(content) {
     let parsed;
     try {
@@ -512,8 +506,7 @@ function normalizeBlocks(content) {
     const blocks = [];
     for (let i = 0; i < styles.length; i++) {
         const s = styles[i];
-        const solid = s.fill
-            ?.content?.solid;
+        const solid = fillSolid(s.fill);
         const start = Math.max(0, Math.min(repaired[i][0], text.length));
         const end = Math.max(0, Math.min(repaired[i][1], text.length));
         if (end <= start)

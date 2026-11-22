@@ -1,0 +1,49 @@
+import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
+/** Minimal cross-platform PATH lookup — no `which`/`where` shell-out. */
+export function onPath(cmd) {
+    const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+    const exts = process.platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""];
+    for (const dir of dirs) {
+        for (const ext of exts) {
+            const full = join(dir, cmd + ext);
+            if (existsSync(full))
+                return full;
+        }
+    }
+    return null;
+}
+/**
+ * Whisper CLI dialects this project knows how to drive, in preference order:
+ * openai-whisper's `whisper`, then the name whisper.cpp has shipped since
+ * v1.7.4 (`whisper-cli`), then `faster-whisper`.
+ *
+ * `doctor` has always probed all three, but `caption` only ever spawned
+ * `whisper` and defaulted its dialect to openai — so on a host that installs
+ * whisper.cpp (a `whisper-cli` binary and no `whisper`), doctor reported the
+ * check as ok and the first `caption` run died with ENOENT, hinting at the
+ * wrong dialect. One resolver, used by both.
+ */
+export const WHISPER_COMMANDS = ["whisper", "whisper-cli", "faster-whisper"];
+/**
+ * The dialect a Whisper command speaks, read from its name: faster-whisper,
+ * whisper.cpp (`whisper-cli`, or its older `main` binary), otherwise
+ * openai-whisper.
+ */
+export function whisperDialect(command) {
+    const name = command.toLowerCase();
+    if (name.includes("faster-whisper"))
+        return "faster-whisper";
+    if (name.includes("whisper-cli") || /(^|[/\\])main(?:\.exe)?$/.test(name))
+        return "whisper-cpp";
+    return "openai";
+}
+/** First installed Whisper dialect, as an absolute path, or null. */
+export function resolveWhisperCommand(probe = onPath) {
+    for (const cmd of WHISPER_COMMANDS) {
+        const found = probe(cmd);
+        if (found)
+            return found;
+    }
+    return null;
+}

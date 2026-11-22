@@ -1,0 +1,9 @@
+{
+  "fonts": {
+    "Noto Serif": ["NotoSerif-Bold.ttf"],
+    "Noto Serif Bold": ["NotoSerif-Bold.ttf"],
+    "Helvetica": ["Helvetica.ttc"],
+    "Anton": ["Anton-Regular.ttf", "Anton.ttf"]
+  },
+  "styles": {}
+}

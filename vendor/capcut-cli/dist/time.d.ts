@@ -5,6 +5,7 @@ export declare function quantizeToFrame(us: number, fps?: number): number;
 export declare function secondsToUs(s: number): number;
 export declare function formatTime(us: number): string;
 export declare function formatDuration(us: number): string;
+/** A complete decimal time, rounded once to safe integer microseconds. */
 export declare function parseTimeInput(input: string): number;
 export declare function srtTime(us: number): string;
 export declare function vttTime(us: number): string;

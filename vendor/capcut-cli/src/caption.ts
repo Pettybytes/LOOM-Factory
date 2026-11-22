@@ -1,9 +1,18 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID as uuid } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AlignmentReport, alignScript, tokenizeScript } from "./align.js";
+import { transcribeAudioCapcutCloud } from "./capcut-cloud-asr.js";
+import { normalizeLanguageCode, translateCuesCapcutCloud } from "./capcut-cloud-translate.js";
+import {
+  type CoverageReport,
+  captionCoverage,
+  DEFAULT_MIN_UNCAPTIONED,
+  measureSpeech,
+  type TimeSpan,
+} from "./caption-coverage.js";
 import {
   buildEmphasisRanges,
   DEFAULT_KEYWORD_SIZE,
@@ -12,17 +21,36 @@ import {
   type TextRangeInput,
 } from "./decorators.js";
 import type { Draft, Segment, Track } from "./draft.js";
-import { findSegment } from "./draft.js";
+import { findSegment, isDryRun } from "./draft.js";
 import { captionStyleFromPreset, type TextStylePreset } from "./preset.js";
+import { probeMedia } from "./probe.js";
 import { type CaptionScript, captionScript, groupingDefaults, wordSeparator } from "./script.js";
+import { requireSegment } from "./segment-lookup.js";
 import { parseSrt } from "./srt.js";
 import { storedTextLength } from "./text-offsets.js";
+import {
+  readTranscriptCache,
+  sha256File,
+  TRANSCRIPT_CACHE_VERSION,
+  type TranscriptCacheKey,
+  type TranscriptCacheState,
+  writeTranscriptCache,
+} from "./transcript-cache.js";
+import { resolveWhisperCommand, whisperDialect } from "./whisper.js";
 
 export interface CaptionOptions {
+  /**
+   * --words: the raw JSON of word timings from an external aligner. When set,
+   * Whisper does not run; see parseWordTimings for the accepted shapes.
+   */
+  wordsJson?: string;
+  wordsSource?: string; // where wordsJson came from (path or "stdin"), for the result
   audio?: string; // path to audio file; if absent, derived from --from-segment
   audioStream?: number; // zero-based audio stream inside the input container
-  ffmpegCmd?: string; // ffmpeg binary used only when audioStream is selected
+  ffmpegCmd?: string; // ffmpeg binary for audioStream extraction and the coverage check
   fromSegment?: string; // segment ID of an audio segment in the draft to caption
+  cloud?: boolean; // transcribe via CapCut Cloud ASR
+  translate?: string; // translate captions to target language via CapCut Cloud
   whisperCmd?: string; // shell-out command; e.g. "whisper" or "whisper-cli" or "faster-whisper"
   whisperModel?: string; // model name; default "base"
   language?: string; // ISO code; default "auto"
@@ -46,6 +74,12 @@ export interface CaptionOptions {
    * cue boundary, long lines still split at --max-chars.
    */
   scriptText?: string;
+  /** false (--no-coverage) skips measuring which speech the cues leave uncaptioned. */
+  coverage?: boolean;
+  /** Shortest uncaptioned speech span the coverage check lists, seconds (default 1.5). */
+  minUncaptioned?: number;
+  /** false (--no-cache) neither reads nor writes the transcript cache. */
+  cache?: boolean;
 }
 
 export interface CaptionWord {
@@ -68,17 +102,30 @@ export interface CaptionResult {
   track_name: string;
   first_cue?: { start_us: number; text: string };
   last_cue?: { start_us: number; text: string };
-  source_audio: string;
-  engine: "whisper-cli" | "shell" | "openai" | "stdin-srt";
+  /** Absent with --words: no audio was read. */
+  source_audio?: string;
+  engine: "whisper-cli" | "shell" | "openai" | "stdin-srt" | "words" | "capcut-cloud";
   engine_name?: string;
   words?: number;
   karaoke?: boolean;
   word_reveal?: boolean;
   audio_stream?: number;
+  translated_to?: string;
+  /** --translate: what went to CapCut's translation, or under --dry-run what would have. */
+  translation?: { language: string; lines: number; to: string; sent: boolean; kept_original?: number };
+  /** --words: the file the timings came from, its detected shape, and how
+   * many entries had no usable timing and were left out. */
+  source_words?: string;
+  words_format?: WordsFormat;
+  words_skipped?: number;
   keyword_matches?: number;
   color_cycle?: number;
   /** --script alignment quality (only when a script was given). */
   script?: AlignmentReport;
+  /** Speech in the transcribed audio that no cue covers (absent with --words or --no-coverage). */
+  coverage?: CoverageReport;
+  /** Whether the transcription came from the transcript cache (absent with --words: nothing is transcribed). */
+  transcript_cache?: TranscriptCacheState;
   /** The script the transcript is written in, which chose the word separator
    * and the --max-words / --max-chars defaults (see script.ts). */
   caption_script: CaptionScript;
@@ -98,7 +145,56 @@ export interface CaptionResult {
  *   3. Parse SRT into caption cues
  *   4. Create captions track + real subtitle material per cue
  */
-export function captionDraft(draft: Draft, opts: CaptionOptions): CaptionResult {
+/** Where the words come from, as far as the source rules below need to know. */
+export interface TranscriptionSourceOptions {
+  words: boolean; // --words: timings from a file, nothing is transcribed
+  audio?: string;
+  fromSegment?: string;
+  cloud?: boolean;
+  audioStream?: number;
+  ffmpegCmd?: string;
+  whisperCmd?: string;
+  whisperEngine?: string;
+  whisperModel?: string;
+}
+
+/**
+ * The options that contradict the chosen transcription source, as the refusal
+ * text, or undefined when they agree. --words replaces transcription entirely,
+ * so every option that only steers Whisper (or the audio it would hear) is a
+ * contradiction; --cloud replaces Whisper, so the --whisper-* options are.
+ */
+export function transcriptionSourceConflict(o: TranscriptionSourceOptions): string | undefined {
+  if (o.words) {
+    const conflicting = [
+      o.audio !== undefined && "--audio",
+      o.fromSegment !== undefined && "--from-segment",
+      o.cloud !== undefined && "--cloud",
+      o.audioStream !== undefined && "--audio-stream",
+      o.ffmpegCmd !== undefined && "--ffmpeg-cmd",
+      o.whisperCmd !== undefined && "--whisper-cmd",
+      o.whisperEngine !== undefined && "--whisper-engine",
+      o.whisperModel !== undefined && "--whisper-model",
+    ].filter(Boolean);
+    if (conflicting.length > 0) {
+      return `--words is mutually exclusive with ${conflicting.join(", ")}: the word timings come from the file, Whisper does not run.`;
+    }
+  }
+  if (o.cloud) {
+    const conflicting = [
+      o.whisperCmd !== undefined && "--whisper-cmd",
+      o.whisperEngine !== undefined && "--whisper-engine",
+      o.whisperModel !== undefined && "--whisper-model",
+    ].filter(Boolean);
+    if (conflicting.length > 0) {
+      return `--cloud uses CapCut Cloud ASR and is mutually exclusive with ${conflicting.join(", ")}.`;
+    }
+  }
+  return undefined;
+}
+
+/** The option checks every caption run makes before it reads or sends any audio; a --cloud dry run makes them too. */
+export function checkCaptionOptions(opts: CaptionOptions): void {
   if (opts.styleRef && opts.preset) {
     throw new Error("--style-ref and --preset are mutually exclusive. Pass one style source.");
   }
@@ -115,16 +211,65 @@ export function captionDraft(draft: Draft, opts: CaptionOptions): CaptionResult 
   if (opts.audioStream !== undefined && (!Number.isInteger(opts.audioStream) || opts.audioStream < 0)) {
     throw new Error("--audio-stream must be a zero-based non-negative integer.");
   }
-  const sourceAudio = resolveAudio(draft, opts);
-  const selectedAudio =
-    opts.audioStream === undefined
-      ? undefined
-      : extractAudioStream(sourceAudio, opts.audioStream, opts.ffmpegCmd ?? "ffmpeg");
+  if (opts.minUncaptioned !== undefined && (!Number.isFinite(opts.minUncaptioned) || opts.minUncaptioned < 0)) {
+    throw new Error("--min-uncaptioned must be a number of seconds, 0 or more.");
+  }
+  const conflict = transcriptionSourceConflict({ ...opts, words: opts.wordsJson !== undefined });
+  if (conflict) throw new Error(conflict);
+}
+
+export async function captionDraft(draft: Draft, opts: CaptionOptions): Promise<CaptionResult> {
+  checkCaptionOptions(opts);
+  const fromWords = opts.wordsJson !== undefined;
+  let sourceAudio: string | undefined;
   let transcription: TranscriptionResult;
-  try {
-    transcription = runWhisper(selectedAudio?.path ?? sourceAudio, opts);
-  } finally {
-    selectedAudio?.cleanup();
+  let external: ParsedWordTimings | undefined;
+  // The speech in the audio that was transcribed, measured before a temporary
+  // extracted stream is cleaned up; compared with the cues once they exist.
+  let speech: TimeSpan[] | { skipped: string } | undefined;
+  let transcriptCache: TranscriptCacheState | undefined;
+  const measure = (audio: string) =>
+    opts.coverage === false ? undefined : measureSpeech(audio, opts.ffmpegCmd ?? "ffmpeg");
+  if (fromWords) {
+    // External aligner output stands in for the Whisper run; everything after
+    // this point (script detection, grouping, --script, karaoke, reveal,
+    // track writing) is the same path the Whisper words take.
+    external = parseWordTimings(opts.wordsJson as string);
+    if (external.words.length === 0) {
+      throw new Error(
+        `--words has no timed words (${external.skipped} entr${external.skipped === 1 ? "y" : "ies"} without timing skipped).`,
+      );
+    }
+    transcription = { cues: [], words: external.words, engine: "words" };
+  } else if (opts.cloud) {
+    const heard = await withCaptionAudio(draft, opts, async (cloudAudio) => {
+      // A cache hit uploads nothing: the recognition below runs only on a miss.
+      const cached = await transcribeWithCache(cloudAudio, opts, async (): Promise<TranscriptionResult> => {
+        const durationMs = cloudAudioDurationMs(draft, opts, cloudAudio);
+        if (isDryRun()) throw new Error("--cloud never uploads under --dry-run; plan the upload with planCloudUpload.");
+        process.stderr.write(
+          `WARNING: --cloud is experimental and unofficial: uploading ${cloudAudio} to ByteDance's CapCut servers for recognition.\n`,
+        );
+        const languageWarning = cloudLanguageWarning(opts);
+        if (languageWarning) process.stderr.write(languageWarning);
+        const cloudRes = await transcribeAudioCapcutCloud(cloudAudio, { durationMs });
+        return { cues: cloudRes.cues, words: cloudRes.words, engine: "capcut-cloud" };
+      });
+      speech = measure(cloudAudio);
+      return cached;
+    });
+    sourceAudio = heard.source;
+    transcription = heard.result.transcription;
+    transcriptCache = heard.result.state;
+  } else {
+    const heard = await withCaptionAudio(draft, opts, async (audio) => {
+      const cached = await transcribeWithCache(audio, opts, () => runWhisper(audio, opts));
+      speech = measure(audio);
+      return cached;
+    });
+    sourceAudio = heard.source;
+    transcription = heard.result.transcription;
+    transcriptCache = heard.result.state;
   }
   const recognizedWords = transcription.words.length > 0 ? transcription.words : wordsFromCues(transcription.cues);
   // The transcript's script decides how words join into a cue (no space inside
@@ -181,10 +326,51 @@ export function captionDraft(draft: Draft, opts: CaptionOptions): CaptionResult 
             (opts.maxGapMs ?? 500) * 1000,
             separator,
           )
-        : transcription.cues;
+        : fromWords
+          ? // Aligner output carries words only, no sentence segments: line
+            // cues group the words at the script's line width and close on a
+            // pause, as the karaoke grouping does.
+            groupWords(
+              recognizedWords,
+              opts.maxWords ?? Number.POSITIVE_INFINITY,
+              opts.maxChars ?? grouping.lineMaxChars,
+              (opts.maxGapMs ?? 500) * 1000,
+              separator,
+            )
+          : transcription.cues;
   }
   if (cues.length === 0) {
     throw new Error("Whisper produced no cues. Check the audio file is not silent and the model name is valid.");
+  }
+  // Cue times are the audio's own clock (they are written at those positions),
+  // so they compare directly with the measured speech.
+  const coverage: CoverageReport | undefined =
+    speech === undefined
+      ? undefined
+      : "skipped" in speech
+        ? speech
+        : captionCoverage(
+            speech,
+            cues.map((cue) => ({ start: cue.startUs / 1_000_000, end: cue.endUs / 1_000_000 })),
+            opts.minUncaptioned ?? DEFAULT_MIN_UNCAPTIONED,
+          );
+
+  let translation: CaptionResult["translation"];
+  if (opts.translate) {
+    const language = normalizeLanguageCode(opts.translate);
+    const to = "CapCut Cloud translation (ByteDance servers)";
+    if (isDryRun()) {
+      // A dry run sends nothing anywhere: the captions stay in their language
+      // and the result says what a real run would send.
+      translation = { language, lines: cues.length, to, sent: false };
+    } else {
+      process.stderr.write(
+        `WARNING: --translate is experimental and unofficial: sending ${cues.length} caption line(s) to ByteDance's CapCut servers for translation into ${language}.\n`,
+      );
+      const translated = await translateCuesCapcutCloud(cues, language, { from: opts.language });
+      cues = translated.cues;
+      translation = { language, lines: cues.length, to, sent: true, kept_original: translated.kept_original };
+    }
   }
 
   const trackName = opts.trackName ?? "captions";
@@ -288,22 +474,91 @@ export function captionDraft(draft: Draft, opts: CaptionOptions): CaptionResult 
     first_cue: { start_us: cues[0].startUs, text: cues[0].text },
     last_cue: { start_us: cues[cues.length - 1].startUs, text: cues[cues.length - 1].text },
     source_audio: sourceAudio,
-    engine: opts.whisperCmd ? "shell" : "whisper-cli",
-    engine_name: transcription.engine,
+    engine: fromWords ? "words" : opts.cloud ? "capcut-cloud" : opts.whisperCmd ? "shell" : "whisper-cli",
+    engine_name: fromWords ? undefined : transcription.engine,
     caption_script: textScript,
     words: transcription.words.length,
     karaoke: opts.karaoke ?? false,
     word_reveal: opts.wordReveal || undefined,
     audio_stream: opts.audioStream,
+    translated_to: translation?.sent ? translation.language : undefined,
+    translation,
+    source_words: external ? (opts.wordsSource ?? "stdin") : undefined,
+    words_format: external?.format,
+    words_skipped: external?.skipped,
     // undefined when the flags are off, so JSON output stays byte-identical.
     keyword_matches: highlightWords.length > 0 ? keywordMatches : undefined,
     color_cycle: colorCycle.length > 0 ? colorCycle.length : undefined,
     script: scriptReport,
+    coverage,
+    transcript_cache: transcriptCache,
   };
+}
+
+/**
+ * The transcript cache key for this run: the transcribed audio's bytes plus
+ * every setting that changes what the engine returns. --cloud takes no model
+ * or language (the service detects the language), so those stay null there.
+ */
+export function transcriptCacheKey(opts: CaptionOptions, audioSha256: string): TranscriptCacheKey {
+  const cloud = opts.cloud === true;
+  return {
+    version: TRANSCRIPT_CACHE_VERSION,
+    audio_sha256: audioSha256,
+    engine: cloud ? "capcut-cloud" : detectEngine(opts),
+    whisper_cmd: cloud ? null : whisperCommand(opts),
+    model: cloud ? null : (opts.whisperModel ?? "base"),
+    language: cloud ? null : (opts.language ?? "auto"),
+    // Whisper is asked for word-timestamp JSON only for these modes (runWhisper).
+    word_timing: cloud || opts.karaoke === true || opts.wordReveal === true ? "words" : "lines",
+    cloud,
+  };
+}
+
+/**
+ * Run `transcribe` unless the cache already holds its result for this audio
+ * and these settings. A dry run reads the cache but never writes it.
+ */
+async function transcribeWithCache(
+  audio: string,
+  opts: CaptionOptions,
+  transcribe: () => TranscriptionResult | Promise<TranscriptionResult>,
+): Promise<{ transcription: TranscriptionResult; state: TranscriptCacheState }> {
+  if (opts.cache === false) return { transcription: await transcribe(), state: "off" };
+  const key = transcriptCacheKey(opts, sha256File(audio));
+  const cached = readTranscriptCache(key);
+  // readTranscriptCache only returns an entry whose engine equals key.engine.
+  if (cached) return { transcription: cached as TranscriptionResult, state: "hit" };
+  const transcription = await transcribe();
+  if (!isDryRun()) writeTranscriptCache(key, transcription);
+  return { transcription, state: "miss" };
 }
 
 export function buildAudioStreamInvocation(audio: string, stream: number, output: string): string[] {
   return ["-y", "-i", audio, "-map", `0:a:${stream}`, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", output];
+}
+
+/**
+ * The audio a transcription reads, for as long as `use` runs: --audio or the
+ * --from-segment's file, or with --audio-stream that stream extracted to a
+ * temporary WAV, which is removed afterwards whether `use` succeeds or throws.
+ * `source` is the file the result reports, never the temporary copy.
+ */
+async function withCaptionAudio<T>(
+  draft: Draft,
+  opts: CaptionOptions,
+  use: (audioPath: string) => T | Promise<T>,
+): Promise<{ source: string; result: T }> {
+  const source = resolveAudio(draft, opts);
+  const selected =
+    opts.audioStream === undefined
+      ? undefined
+      : extractAudioStream(source, opts.audioStream, opts.ffmpegCmd ?? "ffmpeg");
+  try {
+    return { source, result: await use(selected?.path ?? source) };
+  } finally {
+    selected?.cleanup();
+  }
 }
 
 function extractAudioStream(audio: string, stream: number, command: string): { path: string; cleanup: () => void } {
@@ -377,8 +632,7 @@ function resolveAudio(draft: Draft, opts: CaptionOptions): string {
     return opts.audio;
   }
   if (opts.fromSegment) {
-    const found = findSegment(draft, opts.fromSegment);
-    if (!found) throw new Error(`Segment not found: ${opts.fromSegment}`);
+    const found = requireSegment(draft, opts.fromSegment);
     if (found.track.type !== "audio")
       throw new Error(`--from-segment must be on an audio track (got ${found.track.type})`);
     const mat = draft.materials.audios.find((m) => m.id === found.segment.material_id);
@@ -389,18 +643,210 @@ function resolveAudio(draft: Draft, opts: CaptionOptions): string {
   throw new Error("Missing --audio <path> or --from-segment <id>. Provide one.");
 }
 
+/**
+ * The cloud task is created for a fixed span, so it needs the real length of
+ * the audio: ffprobe's reading, else the draft's own material duration for an
+ * unextracted --from-segment. Fails before anything is uploaded.
+ */
+function cloudAudioDurationMs(draft: Draft, opts: CaptionOptions, audioPath: string): number {
+  const probedUs = probeMedia(audioPath)?.durationUs;
+  if (probedUs) return probedUs / 1000;
+  if (opts.fromSegment && opts.audioStream === undefined) {
+    const found = requireSegment(draft, opts.fromSegment);
+    const mat = draft.materials.audios.find((m) => m.id === found.segment.material_id);
+    if (mat?.duration && mat.duration > 0) return mat.duration / 1000;
+  }
+  throw new Error(
+    `--cloud needs the audio length, and ffprobe could not read it from ${audioPath}. Install FFmpeg (ffprobe), or transcribe locally without --cloud.`,
+  );
+}
+
+/**
+ * What `caption --cloud` would send, read without sending it: the file, its
+ * size and length. `--dry-run` reports this instead of uploading, the way
+ * translate sends nothing in a dry run. With --audio-stream the upload would
+ * be that stream extracted from this file. The options are checked as in a
+ * real run, so a dry run refuses what the run would refuse.
+ */
+export function planCloudUpload(
+  draft: Draft,
+  opts: CaptionOptions,
+): { path: string; bytes: number; duration_ms: number; audio_stream?: number } {
+  checkCaptionOptions(opts);
+  const path = resolveAudio(draft, opts);
+  return {
+    path,
+    bytes: statSync(path).size,
+    duration_ms: Math.round(cloudAudioDurationMs(draft, opts, path)),
+    ...(opts.audioStream !== undefined ? { audio_stream: opts.audioStream } : {}),
+  };
+}
+
+/** CapCut's recognition picks the spoken language itself; the request has no language field. */
+export function cloudLanguageWarning(opts: Pick<CaptionOptions, "cloud" | "language">): string | undefined {
+  if (!opts.cloud || opts.language === undefined) return undefined;
+  return `WARNING: --language ${opts.language} has no effect with --cloud: CapCut's recognition detects the spoken language itself.\n`;
+}
+
 interface TranscriptionResult {
   cues: CaptionCue[];
   words: CaptionWord[];
-  engine: "openai" | "whisper-cpp" | "faster-whisper";
+  engine: "openai" | "whisper-cpp" | "faster-whisper" | "words" | "capcut-cloud";
 }
 
-function detectEngine(opts: CaptionOptions): TranscriptionResult["engine"] {
+/**
+ * The word-timing shapes --words recognises:
+ *   whisper   — openai-whisper / whisper.cpp JSON, segments[].words[] {word,start,end}
+ *   whisperx  — WhisperX, word_segments[] (or segments[].words[] carrying a score)
+ *   word-list — a plain array of {word|text|char, start, end} in seconds, or
+ *               start_ms/end_ms, or start_time/end_time (Qwen3-ForcedAligner)
+ *   whisper-cpp — whisper.cpp full JSON (whisper-cli -ojf), transcription[].tokens[]
+ */
+export type WordsFormat = "whisper" | "whisperx" | "word-list" | "whisper-cpp";
+
+export interface ParsedWordTimings {
+  format: WordsFormat;
+  words: CaptionWord[];
+  /** Entries with text but no usable start/end (WhisperX leaves digits unaligned). */
+  skipped: number;
+}
+
+function timeValue(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Parse word timings from an external aligner into caption words, detecting
+ * the shape. Entries without timing are skipped and counted; an entry whose
+ * end precedes its start, or that starts before the previous timed entry, is
+ * refused with its index, since every cue built from it would be wrong.
+ */
+export function parseWordTimings(raw: string): ParsedWordTimings {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`refused [words-format]: --words is not valid JSON (${(error as Error).message}).`);
+  }
+  let format: WordsFormat;
+  const entries: Array<{ item: unknown; path: string }> = [];
+  if (Array.isArray(parsed)) {
+    format = "word-list";
+    parsed.forEach((item, index) => {
+      entries.push({ item, path: `[${index}]` });
+    });
+  } else if (parsed !== null && typeof parsed === "object") {
+    const record = parsed as Record<string, unknown>;
+    const segments = Array.isArray(record.segments) ? (record.segments as unknown[]) : [];
+    if (Array.isArray(record.word_segments)) {
+      format = "whisperx";
+      record.word_segments.forEach((item, index) => {
+        entries.push({ item, path: `word_segments[${index}]` });
+      });
+    } else if (Array.isArray(record.transcription)) {
+      // whisper.cpp -ojf: words built from the tokens; a segment whose tokens
+      // do not spell its text stays one entry with the segment's own timing.
+      format = "whisper-cpp";
+      record.transcription.forEach((segment, segmentIndex) => {
+        const item = (segment ?? {}) as Record<string, unknown>;
+        const words = whisperCppWords(item);
+        const path = `transcription[${segmentIndex}]`;
+        if (words) {
+          for (const word of words) {
+            entries.push({ item: { text: word.word, start_ms: word.startUs / 1000, end_ms: word.endUs / 1000 }, path });
+          }
+        } else {
+          const offsets = (item.offsets ?? {}) as Record<string, unknown>;
+          entries.push({ item: { text: item.text, start_ms: offsets.from, end_ms: offsets.to }, path });
+        }
+      });
+    } else if (segments.some((segment) => Array.isArray((segment as Record<string, unknown> | null)?.words))) {
+      // WhisperX writes the same segments[].words[] layout plus a per-word score.
+      let scored = false;
+      segments.forEach((segment, segmentIndex) => {
+        const words = (segment as Record<string, unknown> | null)?.words;
+        if (!Array.isArray(words)) return;
+        words.forEach((item, index) => {
+          if (item !== null && typeof item === "object" && "score" in item) scored = true;
+          entries.push({ item, path: `segments[${segmentIndex}].words[${index}]` });
+        });
+      });
+      format = scored ? "whisperx" : "whisper";
+    } else {
+      throw new Error(
+        "refused [words-format]: --words JSON has no word timings. Expected segments[].words[], word_segments[], " +
+          "whisper.cpp transcription[] (whisper-cli -ojf), or an array of {word|text|char, start, end}.",
+      );
+    }
+  } else {
+    throw new Error("refused [words-format]: --words JSON must be an object or an array of word entries.");
+  }
+
+  const words: CaptionWord[] = [];
+  let skipped = 0;
+  let previous: { startUs: number; path: string } | undefined;
+  for (const { item, path } of entries) {
+    if (item === null || typeof item !== "object") {
+      throw new Error(`refused [words-invalid]: entry ${path} is not an object.`);
+    }
+    const entry = item as Record<string, unknown>;
+    const text = String(entry.word ?? entry.text ?? entry.char ?? "").trim();
+    if (!text) continue;
+    let start: number | undefined;
+    let end: number | undefined;
+    let scale = 1_000_000; // seconds → µs
+    if (timeValue(entry.start) !== undefined || timeValue(entry.end) !== undefined) {
+      start = timeValue(entry.start);
+      end = timeValue(entry.end);
+    } else if (timeValue(entry.start_ms) !== undefined || timeValue(entry.end_ms) !== undefined) {
+      start = timeValue(entry.start_ms);
+      end = timeValue(entry.end_ms);
+      scale = 1000;
+    } else {
+      start = timeValue(entry.start_time);
+      end = timeValue(entry.end_time);
+    }
+    if (start === undefined || end === undefined) {
+      skipped++;
+      continue;
+    }
+    const startUs = Math.round(start * scale);
+    const endUs = Math.round(end * scale);
+    if (startUs < 0) throw new Error(`refused [words-invalid]: entry ${path} ("${text}") starts before 0.`);
+    if (endUs < startUs) {
+      throw new Error(`refused [words-invalid]: entry ${path} ("${text}") ends before it starts (${start} > ${end}).`);
+    }
+    if (previous && startUs < previous.startUs) {
+      throw new Error(
+        `refused [words-invalid]: entry ${path} ("${text}") starts before entry ${previous.path}; ` +
+          "word timings must be in time order.",
+      );
+    }
+    previous = { startUs, path };
+    words.push({ word: text, startUs, endUs });
+  }
+  return { format, words, skipped };
+}
+
+/**
+ * The Whisper binary to run: the caller's `--whisper-cmd` wins, otherwise the
+ * first dialect actually installed on PATH, otherwise the historical default.
+ * `doctor` has always probed all three names; `caption` used to spawn only
+ * `whisper`, so on a host with whisper.cpp (`whisper-cli`) installed and no
+ * `whisper`, doctor said ok and caption died with ENOENT.
+ */
+export function whisperCommand(opts: CaptionOptions): string {
+  return opts.whisperCmd ?? resolveWhisperCommand() ?? "whisper";
+}
+
+export function detectEngine(opts: CaptionOptions): TranscriptionResult["engine"] {
   if (opts.whisperEngine && opts.whisperEngine !== "auto") return opts.whisperEngine;
-  const command = (opts.whisperCmd ?? "whisper").toLowerCase();
-  if (command.includes("faster-whisper")) return "faster-whisper";
-  if (command.includes("whisper-cli") || /(^|[/\\])main(?:\.exe)?$/.test(command)) return "whisper-cpp";
-  return "openai";
+  return whisperDialect(whisperCommand(opts));
 }
 
 export function buildWhisperInvocation(
@@ -414,7 +860,8 @@ export function buildWhisperInvocation(
   const prefix = join(outputDir, "transcript");
   if (engine === "whisper-cpp") {
     return {
-      args: ["-m", model, "-f", audio, "-l", language, json ? "-oj" : "-osrt", "-of", prefix],
+      // -ojf (full JSON) carries per-token timings; plain -oj has segments only.
+      args: ["-m", model, "-f", audio, "-l", language, json ? "-ojf" : "-osrt", "-of", prefix],
       prefix,
       extension: json ? ".json" : ".srt",
     };
@@ -438,7 +885,7 @@ export function buildWhisperInvocation(
 }
 
 function runWhisper(audio: string, opts: CaptionOptions): TranscriptionResult {
-  const cmd = opts.whisperCmd ?? "whisper";
+  const cmd = whisperCommand(opts);
   const model = opts.whisperModel ?? "base";
   const language = opts.language ?? "auto";
   const engine = detectEngine(opts);
@@ -513,17 +960,71 @@ export function parseWhisperJson(raw: string): { cues: CaptionCue[]; words: Capt
   const transcription = Array.isArray(parsed.transcription) ? parsed.transcription : [];
   for (const value of transcription) {
     const item = value as Record<string, unknown>;
-    const offsets = (item.offsets ?? {}) as Record<string, unknown>;
-    const startUs = Math.round(Number(offsets.from ?? 0) * 1000);
-    const endUs = Math.round(Number(offsets.to ?? offsets.from ?? 0) * 1000);
     const text = String(item.text ?? "").trim();
-    if (text) cues.push({ startUs, endUs, text });
+    if (!text) continue;
+    const cue: CaptionCue = { ...whisperCppSpanUs(item), text };
+    if (Array.isArray(item.tokens)) {
+      cue.words = whisperCppWords(item) ?? wordsFromCues([cue]);
+      words.push(...cue.words);
+    }
+    cues.push(cue);
   }
 
   if (cues.length === 0 && typeof parsed.text === "string") {
     cues.push({ startUs: 0, endUs: 1_000_000, text: parsed.text.trim() });
   }
   return { cues, words: words.length > 0 ? words : wordsFromCues(cues) };
+}
+
+/** A whisper.cpp segment's or token's `offsets` (ms) as µs; a missing `to` ends where it starts. */
+function whisperCppSpanUs(holder: Record<string, unknown>): { startUs: number; endUs: number } {
+  const offsets = (holder.offsets ?? {}) as Record<string, unknown>;
+  return {
+    startUs: Math.round(Number(offsets.from ?? 0) * 1000),
+    endUs: Math.round(Number(offsets.to ?? offsets.from ?? 0) * 1000),
+  };
+}
+
+/**
+ * Words of one whisper.cpp full-JSON segment (whisper-cli -ojf), timed from its
+ * tokens' offsets (ms). Special tokens ([_BEG_], [_TT_n]) are skipped. In a
+ * Chinese or Japanese segment every token is its own word; otherwise a token
+ * that starts with whitespace opens a word and any other token (a sub-word
+ * piece, punctuation) continues it. A word stamped from == to runs to the
+ * next word's start. Returns null when the segment carries no
+ * tokens, or when its tokens do not spell its text: a character split across
+ * tokens decodes as U+FFFD, and timing words from those would mislabel them.
+ */
+function whisperCppWords(segment: Record<string, unknown>): CaptionWord[] | null {
+  if (!Array.isArray(segment.tokens)) return null;
+  const text = String(segment.text ?? "");
+  const tokens = segment.tokens
+    .map((token) => (token ?? {}) as Record<string, unknown>)
+    .filter((token) => typeof token.text === "string" && !/^\[_[^\]]*\]$/.test(token.text));
+  const spelled = tokens.map((token) => token.text).join("");
+  if (text.trim() === "" || spelled.trim() !== text.trim()) return null;
+  const eachTokenAWord = wordSeparator(captionScript(text)) === "";
+  const words: CaptionWord[] = [];
+  for (const token of tokens) {
+    const piece = token.text as string;
+    const { startUs, endUs } = whisperCppSpanUs(token);
+    const current = words[words.length - 1];
+    if (current && !eachTokenAWord && !/^\s/.test(piece)) {
+      current.word += piece;
+      current.endUs = Math.max(current.endUs, endUs);
+    } else if (piece.trim() !== "") {
+      words.push({ word: piece.trim(), startUs, endUs });
+    }
+  }
+  // whisper.cpp can stamp a token with from == to; such a word runs until the
+  // next word starts (or the segment ends) instead of lasting no time at all.
+  const segmentEndUs = Math.round(Number(((segment.offsets ?? {}) as Record<string, unknown>).to ?? 0) * 1000);
+  words.forEach((word, index) => {
+    if (word.endUs > word.startUs) return;
+    const until = words[index + 1]?.startUs ?? segmentEndUs;
+    if (until > word.startUs) word.endUs = until;
+  });
+  return words.length > 0 ? words : null;
 }
 
 export function wordsFromCues(cues: CaptionCue[]): CaptionWord[] {

@@ -1,4 +1,5 @@
 import { type TextRangeInput, type TextStyleOptions } from "./decorators.js";
+import { type DraftStoreOptions } from "./store.js";
 export interface CompileItem {
     ref?: string;
     path?: string;
@@ -136,3 +137,17 @@ export declare function validateSpec(spec: unknown): asserts spec is CompileSpec
 export declare function substitutePlaceholders<T>(value: T, row: Record<string, unknown>): T;
 export declare function planCompile(spec: CompileSpec, specDir: string): CompilePlan;
 export declare function compileDraft(spec: CompileSpec, opts: CompileOptions): CompileResult;
+export interface CompileIntoOptions extends DraftStoreOptions {
+    intoDir: string;
+    specDir: string;
+}
+export type CompileIntoResult = Omit<CompileResult, "template"> & {
+    into: true;
+};
+/** Validate both the specification and destination without staging assets or changing registration. */
+export declare function planCompileInto(spec: CompileSpec, opts: CompileIntoOptions): CompilePlan & {
+    into: true;
+    file_path: string;
+};
+/** Fill an app-owned empty shell. Asset cleanup and the timeline/sidecar transaction own only this call's writes. */
+export declare function compileIntoDraft(spec: CompileSpec, opts: CompileIntoOptions): CompileIntoResult;

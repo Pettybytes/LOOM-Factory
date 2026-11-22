@@ -201,6 +201,8 @@ def fake_ok(store):
     test_capcut_runner.py::test_the_draft_carries_its_own_media_copy.
     """
     def invoke(cmd, timeout):
+        if 'compile' not in cmd:
+            return 0, json.dumps({'ok': True, 'in_sync': True}), ''
         target = cmd[cmd.index("--out") + 1]
         os.makedirs(target, exist_ok=True)
         Path(target, "draft_content.json").write_text("{}")

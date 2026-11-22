@@ -1,23 +1,10 @@
 import { existsSync } from "node:fs";
 import { platform, release } from "node:os";
-import { delimiter, join } from "node:path";
 import { appVersionsPath, scanTrackedStores } from "./app-versions.js";
 import { scanStore } from "./factory.js";
 import { probeFfmpegCapabilities } from "./render.js";
 import { draftDirCandidates } from "./store.js";
-/** Minimal cross-platform PATH lookup — no `which`/`where` shell-out. */
-function onPath(cmd) {
-    const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
-    const exts = platform() === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""];
-    for (const dir of dirs) {
-        for (const ext of exts) {
-            const full = join(dir, cmd + ext);
-            if (existsSync(full))
-                return full;
-        }
-    }
-    return null;
-}
+import { onPath, resolveWhisperCommand } from "./whisper.js";
 function nodeMajor() {
     return Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
 }
@@ -88,13 +75,16 @@ export function runDoctor(options = {}) {
         fix: capabilities?.available ? undefined : "Install ffmpeg or pass --ffmpeg-cmd <path> to render.",
     });
     // whisper — needed by `caption`.
-    const whisper = onPath("whisper") ?? onPath("whisper-cli") ?? onPath("faster-whisper");
+    const whisper = resolveWhisperCommand();
     checks.push({
         name: "whisper",
         status: whisper ? "ok" : "warn",
         detail: whisper ? `found: ${whisper}` : "no whisper binary on PATH",
         affects: ["caption"],
-        fix: whisper ? undefined : "pip install openai-whisper · brew install whisper-cpp · or pass --whisper-cmd <path>",
+        fix: whisper
+            ? undefined
+            : "pip install openai-whisper · brew install whisper-cpp · or pass --whisper-cmd <path>" +
+                " · without Whisper: caption --words <aligner.json> or import-srt <file.srt>",
     });
     // TTS — needed by `tts`. --tts-cmd takes any local tool, so this only
     // reports whether one of the common engines is on PATH.

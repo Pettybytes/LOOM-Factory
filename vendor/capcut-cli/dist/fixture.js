@@ -8,10 +8,12 @@
 // half of the "compatibility proof pack" — the other half (running it in a real
 // CapCut 8.7 desktop) can only happen on Windows.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync, } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { stripBom } from "./bom.js";
 import { keyframePropertyTypes } from "./decorators.js";
+import { BundleAnonymizer } from "./fixture-anonymize.js";
+import { MASK_FIELD_NAMES } from "./mask-fields.js";
 import { diagnoseDraftStore, discoverDraftStore, parseCandidate } from "./store.js";
 import { detectVersion } from "./version.js";
 // Only the timeline envelopes are bundled — never assets/ media.
@@ -19,7 +21,7 @@ const TIMELINE_FILES = ["draft_content.json", "draft_info.json", "draft_meta_inf
 // Applied to the raw file text so it works regardless of envelope shape
 // (root JSON, nested object, or the string-JSON used by template-2.tmp).
 const REDACTORS = [
-    { kind: "windows_user", pattern: /([A-Za-z]:\\Users\\)[^\\/"<>:|?*]+/g, replace: "$1USER" },
+    { kind: "windows_user", pattern: /([A-Za-z]:\\+Users\\+)[^\\/"<>:|?*]+/g, replace: "$1USER" },
     { kind: "windows_user_fwd", pattern: /([A-Za-z]:\/Users\/)[^/"<>:|?*]+/g, replace: "$1USER" },
     { kind: "macos_user", pattern: /(\/Users\/)[^/"]+/g, replace: "$1USER" },
     { kind: "linux_user", pattern: /(\/home\/)[^/"]+/g, replace: "$1USER" },
@@ -64,8 +66,7 @@ function redact(raw, tally) {
 // reporter who animated a mask in the desktop app can hand issue #44 exactly
 // the missing encoding. Extraction runs on the REDACTED text — nothing the
 // redactors scrubbed can re-enter through this report.
-/** The three mask material array variants seen in the wild (see decorators.ts). */
-const MASK_ARRAY_KEYS = new Set(["masks", "common_mask", "common_masks"]);
+const MASK_ARRAY_KEYS = new Set(MASK_FIELD_NAMES);
 // Keys addMask() itself writes. Anything beyond these on an app-authored mask
 // entry is surfaced — one of them may be the keyframe container #44 needs.
 const CLI_MASK_ENTRY_KEYS = new Set([
@@ -228,7 +229,7 @@ export function buildMaskKeyframeReport(files) {
         files: evidence,
     };
 }
-function reporterReadme(version, modernStorage, nestedTimelines, maskEvidenceFound) {
+function reporterReadme(version, modernStorage, nestedTimelines, maskEvidenceFound, anonymized) {
     const nestedLine = nestedTimelines.length > 0
         ? `\n- Nested Timelines/ layout captured (issue #50): ${nestedTimelines.join(", ")}`
         : "";
@@ -244,7 +245,7 @@ This folder was produced by \`capcut fixture\`. It contains **only** the timelin
 JSON files from a real project, with user home paths, email addresses and the
 device identifiers CapCut stamps into every draft (\`device_id\`,
 \`mac_address\`, \`hard_disk_id\`) redacted. No media from \`assets/\` was copied.
-
+${anonymized ? ANONYMIZED_README : ""}
 - Detected app version: ${version ?? "unknown"}
 - Modern storage layout (CapCut >= 8.7): ${modernStorage ? "yes" : "no"}${nestedLine}
 
@@ -273,24 +274,91 @@ edits open correctly in the CapCut desktop app on your version — that still
 needs a manual open-in-CapCut check on the real machine.
 `;
 }
+const ANONYMIZED_README = `
+It was also built with \`--anonymize\`: media file names became \`media-001\`,
+\`media-002\`, … (each keeps its extension), folder names on media and project
+paths became \`folder-001\`, … (standard folders such as Desktop and the app's
+own are kept), the project name became \`project\`, and every text was replaced
+character by character (CJK with 字, Latin letters with x/X, digits with 0;
+spaces, punctuation and style ranges kept), so lengths and line wrapping match
+the original. \`SANITIZE_REPORT.json\` counts what was replaced.
+`;
 /**
  * Build a shareable, redacted fixture bundle from a real draft folder.
  * Reuses the same storage discovery the `diagnose` command uses, so the
  * reported version/canonical-file analysis matches.
  */
-export function sanitizeDraftBundle(input, outDir) {
+export function sanitizeDraftBundle(input, outDir, options = {}) {
     const store = discoverDraftStore(input); // throws if no readable draft
-    const out = resolve(outDir);
-    mkdirSync(out, { recursive: true });
+    const displayOut = resolve(outDir);
+    emptyBundleDestination(displayOut);
+    const destination = resolveBundleDestination(displayOut);
+    const fromSource = relative(realpathSync(store.projectDir), destination);
+    if (!fromSource || (!isAbsolute(fromSource) && fromSource !== ".." && !fromSource.startsWith(`..${sep}`))) {
+        throw new Error("Fixture --out must be outside the source project; choose a separate directory.");
+    }
+    const parent = dirname(destination);
+    mkdirSync(parent, { recursive: true });
+    const original = emptyBundleDestination(destination);
+    const stage = mkdtempSync(join(parent, ".capcut-fixture-"));
+    let removedEmptyDestination = false;
+    try {
+        const report = writeDraftBundle(input, store, stage, displayOut, options);
+        const current = emptyBundleDestination(destination);
+        if (original?.dev !== current?.dev || original?.ino !== current?.ino) {
+            throw new Error("Fixture output changed while building the bundle; choose a new --out directory.");
+        }
+        // Windows cannot rename a directory over an existing empty directory.
+        // rmdir refuses a newly occupied destination instead of deleting its files.
+        if (current) {
+            rmdirSync(destination);
+            removedEmptyDestination = true;
+        }
+        renameSync(stage, destination);
+        return report;
+    }
+    catch (error) {
+        if (removedEmptyDestination && !lstatSync(destination, { throwIfNoEntry: false })) {
+            mkdirSync(destination);
+        }
+        throw error;
+    }
+    finally {
+        rmSync(stage, { recursive: true, force: true });
+    }
+}
+// Resolve existing ancestors before creating directories, including aliases
+// into the source project. Missing output parents remain valid.
+function resolveBundleDestination(out) {
+    if (lstatSync(out, { throwIfNoEntry: false }))
+        return realpathSync(out);
+    return join(resolveBundleDestination(dirname(out)), basename(out));
+}
+function emptyBundleDestination(out) {
+    const stat = lstatSync(out, { throwIfNoEntry: false });
+    if (stat && (!stat.isDirectory() || readdirSync(out).length > 0)) {
+        throw new Error("Fixture --out must be a new or empty directory; existing files and source projects are never overwritten.");
+    }
+    return stat;
+}
+function writeDraftBundle(input, store, out, displayOut, options) {
     const tally = {};
     const files = [];
     const bundledTexts = [];
+    // Anonymization runs on the redacted text, so every path it sees already
+    // carries the home placeholder, and one instance keeps names consistent
+    // across all the mirrors below.
+    const anonymizer = options.anonymize ? new BundleAnonymizer(projectNames(store)) : null;
+    const sanitizeText = (raw) => {
+        const redacted = redact(raw, tally);
+        return anonymizer ? { text: anonymizer.anonymizeDocument(redacted.text), count: redacted.count } : redacted;
+    };
     for (const name of TIMELINE_FILES) {
         const src = join(store.projectDir, name);
         if (!existsSync(src))
             continue;
         const raw = stripBom(readFileSync(src, "utf-8"));
-        const { text, count } = redact(raw, tally);
+        const { text, count } = sanitizeText(raw);
         writeFileSync(join(out, name), text, "utf-8");
         files.push({ file: name, bytes_in: Buffer.byteLength(raw), bytes_out: Buffer.byteLength(text), redactions: count });
         bundledTexts.push({ file: name, text });
@@ -305,7 +373,7 @@ export function sanitizeDraftBundle(input, outDir) {
         if (!existsSync(src))
             continue;
         const raw = stripBom(readFileSync(src, "utf-8"));
-        const { text, count } = redact(raw, tally);
+        const { text, count } = sanitizeText(raw);
         const dest = join(out, ...rel.split("/"));
         mkdirSync(dirname(dest), { recursive: true });
         writeFileSync(dest, text, "utf-8");
@@ -326,12 +394,19 @@ export function sanitizeDraftBundle(input, outDir) {
     const nestedEvidence = buildNestedTimelinesEvidence(input);
     const reportOut = nestedEvidence ? { ...report, nested_evidence: nestedEvidence } : report;
     writeFileSync(join(out, "diagnose.json"), `${JSON.stringify(reportOut, null, 2)}\n`, "utf-8");
-    writeFileSync(join(out, "README.md"), reporterReadme(store.version, store.modernStorage, store.nestedTimelines, maskEvidenceFound), "utf-8");
+    writeFileSync(join(out, "README.md"), reporterReadme(store.version, store.modernStorage, store.nestedTimelines, maskEvidenceFound, anonymizer !== null), "utf-8");
     // The report ships inside the bundle, so its own path fields go through the
     // redactor too (#59). Written raw, they reintroduce the username that every
     // bundled timeline file just had scrubbed.
-    const { text: safeSourceDir } = redact(store.projectDir, tally);
-    const { text: safeOutDir } = redact(out, tally);
+    // With --anonymize their folder names are replaced like those on media paths
+    // (after the counts are taken, which describe the bundled draft files).
+    const anonymization = anonymizer?.summary();
+    const reportPath = (path) => {
+        const { text } = redact(path, tally);
+        return anonymizer ? anonymizer.anonymizeFolderPath(text) : text;
+    };
+    const safeSourceDir = reportPath(store.projectDir);
+    const safeOutDir = reportPath(displayOut);
     const sanitize = {
         ok: true,
         source_dir: safeSourceDir,
@@ -341,11 +416,20 @@ export function sanitizeDraftBundle(input, outDir) {
         files,
         redaction_kinds: tally,
         media_excluded: true,
+        anonymized: anonymizer !== null,
+        ...(anonymization ? { anonymization } : {}),
         mask_keyframe_evidence: maskReport.summary,
         notes: [
             "Binary media under assets/ was intentionally excluded — only timeline JSON files are bundled.",
             "User home paths, email addresses and device identifiers (device_id, mac_address, hard_disk_id) " +
                 "were redacted; review the files before sharing.",
+            ...(anonymizer
+                ? [
+                    "Anonymized (--anonymize): media file names, folder names on media and project paths, the project " +
+                        "name and every text were replaced with neutral placeholders of the same length; `anonymization` " +
+                        "counts them. Media files are never copied, so none were substituted.",
+                ]
+                : []),
             "Attach this folder to issue #35 (or a new issue) to move the version toward fixture-tested.",
             "mask-keyframe-report.json maps the draft's mask + keyframe structures — the #44 harvest " +
                 "(the mask-geometry keyframe encoding has no public ground truth).",
@@ -363,7 +447,32 @@ export function sanitizeDraftBundle(input, outDir) {
         ],
     };
     writeFileSync(join(out, "SANITIZE_REPORT.json"), `${JSON.stringify(sanitize, null, 2)}\n`, "utf-8");
-    return sanitize;
+    // Check the finished bundle, including generated reports. Never advertise
+    // success based only on the number of substitutions made by the redactors.
+    const check = verifyBundleRedaction(out);
+    const checked = {
+        ...sanitize,
+        ok: check.ok,
+        redaction_check: { ...check, bundle_dir: safeOutDir },
+    };
+    writeFileSync(join(out, "SANITIZE_REPORT.json"), `${JSON.stringify(checked, null, 2)}\n`, "utf-8");
+    return checked;
+}
+// The names a project goes by: its folder, the display name the app lists it
+// under (draft_meta_info.json), and the timeline's own name.
+function projectNames(store) {
+    const names = [basename(store.projectDir)];
+    try {
+        const meta = JSON.parse(stripBom(readFileSync(join(store.projectDir, "draft_meta_info.json"), "utf-8")));
+        if (typeof meta?.draft_name === "string")
+            names.push(meta.draft_name);
+    }
+    catch {
+        // No readable sidecar: the folder name still identifies the project.
+    }
+    if (typeof store.canonical.draft?.name === "string")
+        names.push(store.canonical.draft.name);
+    return names;
 }
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const EVIDENCE_TREE_NAMES = /^(?:draft_.*\.json|template-2\.tmp|project\.json)$/;
@@ -453,7 +562,11 @@ export function buildNestedTimelinesEvidence(input) {
             pointer = null;
         }
     }
-    const root = store.canonical;
+    const root = store.activeTimeline
+        ? (store.candidates.find((candidate) => candidate.name === "template-2.tmp" && candidate.parseable) ??
+            store.candidates.find((candidate) => candidate.name === "draft_content.json" && candidate.parseable) ??
+            store.canonical)
+        : store.canonical;
     const comparisons = [];
     for (const rel of store.nestedTimelines) {
         if (!/^Timelines\/[^/]+\/draft_(?:info|content)\.json$/.test(rel))
@@ -525,7 +638,7 @@ const CHECK_ALLOWED_EMAIL = "redacted@example.com";
 // C:\Users), keeping the path shape — a bundle built from a home-dir project
 // legitimately contains those placeholder paths, and flagging them would fail
 // every correctly redacted bundle.
-const CHECK_HOME_PATH = /(?:\/Users\/|\/home\/|[A-Za-z]:\\+Users\\+)([A-Za-z0-9._-]{2,})/;
+const CHECK_HOME_PATH = /(?:\/Users\/|\/home\/|[A-Za-z]:\\+Users\\+)([^\\/"<>:|?*\r\n]+)/g;
 const CHECK_HOME_PLACEHOLDER = "USER";
 const CHECK_EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 // A device key whose value is a non-empty string other than the redactor's
@@ -582,8 +695,8 @@ export function verifyBundleRedaction(bundleDir) {
         const lines = text.split("\n");
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
-            const home = line.match(CHECK_HOME_PATH);
-            if (home && home[1] !== CHECK_HOME_PLACEHOLDER) {
+            const homes = [...line.matchAll(CHECK_HOME_PATH)];
+            if (homes.some((home) => home[1] !== CHECK_HOME_PLACEHOLDER)) {
                 findings.push({ file: rel, line: i + 1, kind: "home-path" });
             }
             else if (usernameRe?.test(line)) {

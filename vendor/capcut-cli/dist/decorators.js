@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { findMaterial, findSegment } from "./draft.js";
+import { findMaterial } from "./draft.js";
 import { findEnum, slugsFor } from "./enums.js";
+import { jianyingMaskField, MASK_FIELDS, maskEntries } from "./mask-fields.js";
+import { requireSegment } from "./segment-lookup.js";
 import { storedTextLength, toStoredOffset } from "./text-offsets.js";
-import { atLeast } from "./version.js";
 const PROPERTY_MAP = {
     position_x: "KFTypePositionX",
     position_y: "KFTypePositionY",
@@ -250,9 +251,7 @@ function applyHolds(holds, fps, warnings) {
 }
 export function addKeyframes(draft, segmentId, keyframes, easing) {
     resolveEasing(easing); // fail fast even when every keyframe overrides it
-    const found = findSegment(draft, segmentId);
-    if (!found)
-        throw new Error(`Segment not found: ${segmentId}`);
+    const found = requireSegment(draft, segmentId);
     const seg = found.segment;
     if (!Array.isArray(seg.common_keyframes)) {
         seg.common_keyframes = [];
@@ -320,9 +319,7 @@ export function addTransition(draft, segmentId, slug, durationUs, namespace = "c
         const hint = namespace === "jianying" ? " --jianying" : "";
         throw new Error(`Unknown transition: ${slug}. Run 'capcut enums --transitions${hint}' for the full list.`);
     }
-    const found = findSegment(draft, segmentId);
-    if (!found)
-        throw new Error(`Segment not found: ${segmentId}`);
+    const found = requireSegment(draft, segmentId);
     const seg = found.segment;
     draft.materials.transitions ??= [];
     const transitions = draft.materials.transitions;
@@ -358,13 +355,6 @@ const MASK_ALIASES = {
 export function maskSlugs(namespace = "capcut") {
     return [...Object.keys(MASK_ALIASES), ...slugsFor("masks", namespace)];
 }
-// Priority newest-first: when consistency-following has to pick between
-// multiple populated variants, prefer the newest-era array.
-export const MASK_FIELDS = ["common_masks", "common_mask", "masks"];
-function maskEntries(draft, field) {
-    const arr = draft.materials[field];
-    return Array.isArray(arr) ? arr : [];
-}
 /**
  * Which materials array a new mask should be written into. Three variants
  * exist: `masks` (legacy JianYing 5.9 era), `common_masks` (JianYing 9.6+ —
@@ -384,7 +374,7 @@ export function maskTargetField(draft, override) {
     const source = draft.platform?.app_source;
     const version = draft.platform?.app_version ?? null;
     if (source === "lv" && version)
-        return atLeast(version, "9.6") ? "common_masks" : "masks";
+        return jianyingMaskField(version);
     const populated = MASK_FIELDS.find((field) => maskEntries(draft, field).length > 0);
     if (populated)
         return populated;
@@ -396,9 +386,7 @@ export function addMask(draft, segmentId, slug, opts, namespace = "capcut") {
         const hint = namespace === "jianying" ? " --jianying" : "";
         throw new Error(`Unknown mask: ${slug}. Run 'capcut enums --masks${hint}' for the full list.`);
     }
-    const found = findSegment(draft, segmentId);
-    if (!found)
-        throw new Error(`Segment not found: ${segmentId}`);
+    const found = requireSegment(draft, segmentId);
     const seg = found.segment;
     const field = maskTargetField(draft, opts.field);
     draft.materials[field] ??= [];
@@ -451,9 +439,7 @@ export function addMask(draft, segmentId, slug, opts, namespace = "capcut") {
 // CapCut's four-step UI blur maps to these four values (upstream comment).
 const BLUR_LEVELS = [0.0625, 0.375, 0.75, 1.0];
 export function setBgBlur(draft, segmentId, level) {
-    const found = findSegment(draft, segmentId);
-    if (!found)
-        throw new Error(`Segment not found: ${segmentId}`);
+    const found = requireSegment(draft, segmentId);
     const seg = found.segment;
     draft.materials.canvases ??= [];
     const canvases = draft.materials.canvases;
@@ -492,9 +478,7 @@ export function setBgBlur(draft, segmentId, level) {
  * Commands that happily edit a text material on any track omit it.
  */
 export function requireTextMaterial(draft, segmentId, label) {
-    const found = findSegment(draft, segmentId);
-    if (!found)
-        throw new Error(`Segment not found: ${segmentId}`);
+    const found = requireSegment(draft, segmentId);
     if (label !== undefined && found.track.type !== "text") {
         throw new Error(`${label} only applies to text segments (track type: ${found.track.type})`);
     }
@@ -508,6 +492,42 @@ export function setTextStyle(draft, segmentId, opts) {
     const { text } = requireTextMaterial(draft, segmentId);
     const applied = [];
     const t = text;
+    if (opts.color !== undefined && !/^#[0-9a-fA-F]{6}$/.test(opts.color)) {
+        throw new Error(`--color must be #RRGGBB, got: ${opts.color}`);
+    }
+    if (opts.fontSize !== undefined || opts.color !== undefined) {
+        if (opts.fontSize !== undefined) {
+            t.font_size = opts.fontSize;
+            applied.push("font_size");
+        }
+        if (opts.color !== undefined) {
+            t.text_color = opts.color;
+            applied.push("color");
+        }
+        // CapCut renders from `content`'s style blocks, not the material fields, and
+        // these flags cover the whole text, so stamp every block.
+        let content = null;
+        try {
+            content = JSON.parse(text.content);
+        }
+        catch {
+            content = null;
+        }
+        if (content?.styles) {
+            for (const block of content.styles) {
+                if (opts.fontSize !== undefined)
+                    block.size = opts.fontSize;
+                if (opts.color !== undefined) {
+                    block.fill = solidFill(hexToRgb01(opts.color));
+                }
+            }
+            text.content = JSON.stringify(content);
+        }
+    }
+    if (opts.alignment !== undefined) {
+        t.alignment = opts.alignment;
+        applied.push("alignment");
+    }
     if (opts.alpha !== undefined) {
         t.text_alpha = opts.alpha;
         applied.push("alpha");
@@ -720,13 +740,46 @@ function ensureAnimContainer(draft, seg) {
     seg.extra_material_refs.push(id);
     return fresh;
 }
+/**
+ * Put one animation into a segment's animation container. Each slot type
+ * (in / out / group) holds one animation per segment, an outro is anchored to
+ * the segment end, and the duration must fit the segment. The entry carries
+ * the fixed fields every CapCut material_animations entry has; the caller
+ * supplies what differs between video and text animations.
+ */
+function placeAnimation(container, targetDur, anim) {
+    if (container.animations.some((a) => a.type === anim.type)) {
+        throw new Error(`segment already has a ${anim.type} ${anim.materialType} animation`);
+    }
+    const dur = anim.durationUs;
+    if (dur > targetDur)
+        throw new Error(`duration (${dur}us) exceeds segment duration (${targetDur}us)`);
+    const start = anim.type === "out" ? targetDur - dur : 0;
+    container.animations.push({
+        anim_adjust_params: null,
+        category_id: anim.categoryId,
+        category_name: anim.categoryId,
+        duration: dur,
+        id: anim.effectId,
+        material_type: anim.materialType,
+        name: anim.name,
+        panel: anim.panel,
+        path: anim.path,
+        platform: "all",
+        request_id: "",
+        resource_id: anim.resourceId,
+        source_platform: 1,
+        start,
+        third_resource_id: anim.thirdResourceId,
+        type: anim.type,
+    });
+    return { type: anim.type, name: anim.name, duration_us: dur, start_us: start };
+}
 export function addImageAnim(draft, segmentId, opts, namespace = "capcut") {
     if (!opts.intro && !opts.outro && !opts.combo) {
         throw new Error("at least one of --intro, --outro, --combo is required");
     }
-    const found = findSegment(draft, segmentId);
-    if (!found)
-        throw new Error(`Segment not found: ${segmentId}`);
+    const found = requireSegment(draft, segmentId);
     const seg = found.segment;
     const container = ensureAnimContainer(draft, seg);
     const added = [];
@@ -753,46 +806,32 @@ export function addImageAnim(draft, segmentId, opts, namespace = "capcut") {
             thirdResourceId = inline.third_resource_id;
         }
         else {
-            const category = animType === "in" ? "image_intros" : animType === "out" ? "image_outros" : "image_combos";
-            const meta = findEnum(category, slug, namespace);
+            const slot = ANIM_SLOTS[animType];
+            const meta = findEnum(slot.image, slug, namespace);
             if (!meta?.effect_id || !meta.resource_id) {
                 const hint = namespace === "jianying" ? " --jianying" : "";
-                throw new Error(`Unknown image ${animType} animation: ${slug}. Run 'capcut enums --image-${animType === "in" ? "intros" : animType === "out" ? "outros" : "combos"}${hint}' for the full list.`);
+                throw new Error(`Unknown image ${animType} animation: ${slug}. Run 'capcut enums --image-${slot.listWord}${hint}' for the full list.`);
             }
             name = meta.title ?? meta.name ?? slug;
             effectId = meta.effect_id;
             resourceId = meta.resource_id;
             md5 = meta.md5 ?? "";
             defaultDur = meta.duration ?? meta.default_duration ?? 500000;
-            categoryId = animType === "in" ? "in_fav" : animType === "out" ? "out_fav" : "";
+            categoryId = slot.favCategory;
             thirdResourceId = "0";
         }
-        if (container.animations.some((a) => a.type === animType)) {
-            throw new Error(`segment already has a ${animType} video animation`);
-        }
-        const dur = overrideDur ?? defaultDur;
-        if (dur > targetDur)
-            throw new Error(`duration (${dur}us) exceeds segment duration (${targetDur}us)`);
-        const start = animType === "out" ? targetDur - dur : 0;
-        container.animations.push({
-            anim_adjust_params: null,
-            category_id: categoryId,
-            category_name: categoryId,
-            duration: dur,
-            id: effectId,
-            material_type: "video",
+        added.push(placeAnimation(container, targetDur, {
+            type: animType,
+            materialType: "video",
+            durationUs: overrideDur ?? defaultDur,
             name,
+            effectId,
+            resourceId,
+            categoryId,
             panel: "video",
             path: md5 ? `${CACHE_BASE}/${effectId}/${md5}` : "",
-            platform: "all",
-            request_id: "",
-            resource_id: resourceId,
-            source_platform: 1,
-            start,
-            third_resource_id: thirdResourceId,
-            type: animType,
-        });
-        added.push({ type: animType, name, duration_us: dur, start_us: start });
+            thirdResourceId,
+        }));
     };
     if (opts.intro)
         addOne(opts.intro, opts.introDurationUs, "in");
@@ -802,51 +841,43 @@ export function addImageAnim(draft, segmentId, opts, namespace = "capcut") {
         addOne(opts.combo, opts.comboDurationUs, "group");
     return { segmentId: seg.id, added, material_id: container.id };
 }
+/**
+ * Per animation slot: the catalogue it is looked up in (image and text
+ * catalogues are separate; text has no combo slot), the word `capcut enums`
+ * lists it under, and the favourites category CapCut files a catalogue pick in.
+ */
+const ANIM_SLOTS = {
+    in: { image: "image_intros", text: "text_intros", listWord: "intros", label: "intro", favCategory: "in_fav" },
+    out: { image: "image_outros", text: "text_outros", listWord: "outros", label: "outro", favCategory: "out_fav" },
+    group: { image: "image_combos", listWord: "combos", favCategory: "" },
+};
 export function addTextAnim(draft, segmentId, opts, namespace = "capcut") {
     if (!opts.intro && !opts.outro)
         throw new Error("at least one of --intro or --outro is required");
-    const found = findSegment(draft, segmentId);
-    if (!found)
-        throw new Error(`Segment not found: ${segmentId}`);
+    const found = requireSegment(draft, segmentId);
     const seg = found.segment;
     const container = ensureAnimContainer(draft, seg);
     const added = [];
     const targetDur = seg.target_timerange.duration;
     const addOne = (slug, overrideDur, animType) => {
-        const category = animType === "in" ? "text_intros" : "text_outros";
-        const meta = findEnum(category, slug, namespace, TEXT_ANIM_ALIASES);
+        const slot = ANIM_SLOTS[animType];
+        const meta = findEnum(slot.text, slug, namespace, TEXT_ANIM_ALIASES);
         if (!meta?.effect_id || !meta.resource_id) {
             const hint = namespace === "jianying" ? " --jianying" : "";
-            throw new Error(`Unknown text ${animType === "in" ? "intro" : "outro"}: ${slug}. Run 'capcut enums --text-${animType === "in" ? "intros" : "outros"}${hint}' for the full list.`);
+            throw new Error(`Unknown text ${slot.label}: ${slug}. Run 'capcut enums --text-${slot.listWord}${hint}' for the full list.`);
         }
-        const name = meta.title ?? meta.name ?? slug;
-        if (container.animations.some((a) => a.type === animType)) {
-            throw new Error(`segment already has a ${animType} text animation`);
-        }
-        const dur = overrideDur ?? meta.duration ?? meta.default_duration ?? 500000;
-        if (dur > targetDur)
-            throw new Error(`duration (${dur}us) exceeds segment duration (${targetDur}us)`);
-        const start = animType === "out" ? targetDur - dur : 0;
-        const categoryId = animType === "in" ? "in_fav" : "out_fav";
-        container.animations.push({
-            anim_adjust_params: null,
-            category_id: categoryId,
-            category_name: categoryId,
-            duration: dur,
-            id: meta.effect_id,
-            material_type: "text",
-            name,
+        added.push(placeAnimation(container, targetDur, {
+            type: animType,
+            materialType: "text",
+            durationUs: overrideDur ?? meta.duration ?? meta.default_duration ?? 500000,
+            name: meta.title ?? meta.name ?? slug,
+            effectId: meta.effect_id,
+            resourceId: meta.resource_id,
+            categoryId: slot.favCategory,
             panel: "",
             path: "",
-            platform: "all",
-            request_id: "",
-            resource_id: meta.resource_id,
-            source_platform: 1,
-            start,
-            third_resource_id: "",
-            type: animType,
-        });
-        added.push({ type: animType, name, duration_us: dur, start_us: start });
+            thirdResourceId: "",
+        }));
     };
     if (opts.intro)
         addOne(opts.intro, opts.introDurationUs, "in");
@@ -854,9 +885,29 @@ export function addTextAnim(draft, segmentId, opts, namespace = "capcut") {
         addOne(opts.outro, opts.outroDurationUs, "out");
     return { segmentId: seg.id, added, material_id: container.id };
 }
+// --- Text colour as CapCut stores it ---
+// A style block's colour is three channels in 0..1 inside a solid fill; the CLI
+// speaks "#RRGGBB". These three are the only places that know either encoding.
 export function hexToRgb01(hex) {
     const h = hex.replace("#", "");
     return [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255];
+}
+/** Stored 0..1 channels back to "#RRGGBB" (upper case), each channel clamped to a byte. */
+export function rgb01ToHex(rgb) {
+    const byte = (c) => Math.max(0, Math.min(255, Math.round(c * 255)))
+        .toString(16)
+        .padStart(2, "0")
+        .toUpperCase();
+    return `#${byte(rgb[0])}${byte(rgb[1])}${byte(rgb[2])}`;
+}
+/** The fill a style block stores for one solid colour (0..1 channels) at `alpha`. */
+export function solidFill(color, alpha = 1) {
+    return { alpha: 1, content: { render_type: "solid", solid: { alpha, color } } };
+}
+/** The solid colour and alpha of a stored fill, when it has one. */
+export function fillSolid(fill) {
+    return fill?.content
+        ?.solid;
 }
 export function setTextRanges(draft, segmentId, ranges) {
     if (ranges.length === 0)
@@ -867,7 +918,7 @@ export function setTextRanges(draft, segmentId, ranges) {
     const fullLen = storedTextLength(full);
     // Baseline style inherited for fields the user didn't override.
     const base = content.styles?.[0] ?? {};
-    const baseFill = base.fill?.content?.solid;
+    const baseFill = fillSolid(base.fill);
     const defaultColor = baseFill?.color ?? [1, 1, 1];
     const defaultAlpha = baseFill?.alpha ?? 1;
     const defaultSize = base.size ?? 15;
@@ -902,13 +953,7 @@ export function setTextRanges(draft, segmentId, ranges) {
             bold: r?.bold ?? defaultBold,
             italic: r?.italic ?? defaultItalic,
             underline: r?.underline ?? defaultUnderline,
-            fill: {
-                alpha: 1,
-                content: {
-                    render_type: "solid",
-                    solid: { alpha, color },
-                },
-            },
+            fill: solidFill(color, alpha),
         };
     };
     // Fill gaps with a plain block (default style) so CapCut renders the whole text.

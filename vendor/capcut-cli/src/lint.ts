@@ -1,11 +1,12 @@
 import { existsSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { bubbleCatalogue, imageAnimCatalogue } from "./decorators.js";
-import type { Draft, Segment, Track } from "./draft.js";
+import type { Draft, MaterialVideo, Segment, Track } from "./draft.js";
 import { extractStyleRanges, extractText, findMaterial, getTracksByType } from "./draft.js";
 import { type Category, listEnum, type Namespace } from "./enums.js";
 import { copyAssetDeduped, effectCatalogue, filterCatalogue, storeOutgrowsTemplate } from "./factory.js";
-import { linkLocalMaterialIds, readSidecar, unlinkedMaterials } from "./materials-register.js";
+import { jianyingMaskField, MASK_FIELD_NAMES, populatedMaskFields } from "./mask-fields.js";
+import { isLocalPath, linkLocalMaterialIds, readSidecar, unlinkedMaterials } from "./materials-register.js";
 import { ffprobeAvailable, isVfr, probeMedia } from "./probe.js";
 import { type CaptionScript, CJK_SCRIPT_LIMITS, captionScript, type ScriptLimit, type ScriptLimits } from "./script.js";
 import { assessMediaRegistrationAt } from "./store.js";
@@ -40,7 +41,8 @@ export interface LintIssue {
 
 // Codes that lintDraft can mechanically repair via fixDraft. Membership here
 // is necessary but not sufficient for fixable:true — line-too-long,
-// caption-gap-too-small, main-track-gap, and media-outside-draft are
+// caption-gap-too-small, main-track-gap, segment-overlap (only overlaps of at
+// most one frame), and media-outside-draft are
 // additionally stamped per instance, so an issue is only marked fixable when
 // fixDraft can actually clear that exact instance. dangling-companion-ref is
 // always safely fixable: the repair drops a ref that points at nothing —
@@ -62,6 +64,8 @@ const FIXABLE_CODES = new Set<string>([
   "media-unlinked",
   "text-range-doubled",
   "segment-off-frame-grid",
+  "segment-overlap",
+  "sound-separated-orphan",
 ]);
 
 // Floor for any duration --fix writes: 100ms = three frames at the 30fps
@@ -157,6 +161,15 @@ export interface LintOptions {
    * start and end are snapped together so duration is derived, never rounded
    * independently into a 1us overlap. */
   frameGrid?: boolean;
+  /** Opt-in pacing: report still-too-long for a still image (a photo
+   * material) that plays longer than this on the timeline, in microseconds. */
+  maxStillUs?: number;
+  /** Opt-in pacing: report shot-too-long for a video clip (any material but a
+   * photo) that plays longer than this on the timeline, in microseconds. */
+  maxShotUs?: number;
+  /** Opt-in: report silent-stretch for every range of at least this many
+   * microseconds, inside the timeline, where nothing audible plays. */
+  minSilentUs?: number;
 }
 
 export const DEFAULT_LINT_OPTIONS: LintOptions = {
@@ -182,7 +195,7 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
   };
 
   if (opts.frameGrid) {
-    const fps = typeof draft.fps === "number" && Number.isFinite(draft.fps) && draft.fps > 0 ? draft.fps : 30;
+    const fps = draftFps(draft);
     for (const track of draft.tracks) {
       for (const segment of track.segments) {
         const start = segment.target_timerange.start;
@@ -372,6 +385,128 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
     }
   }
 
+  // Overlaps on every other track type. Text tracks keep caption-overlap
+  // above; on a video, audio, sticker, effect or filter track two segments
+  // sharing the same microseconds is a draft the app either refuses or
+  // resolves by its own rule (one clip hides the other, or the later one is
+  // pushed to a new track on the first edit). Consecutive pairs by start, the
+  // caption-overlap walk. The classic cause is independent rounding — start
+  // and duration rounded separately leave the earlier clip a microsecond past
+  // the next one's start — so an overlap of at most one frame is fixable
+  // (--fix pulls the earlier end back to the next start); anything wider is a
+  // real edit collision and stays report-only, because which clip should give
+  // way is an authoring decision.
+  const overlapFrameUs = Math.ceil(1_000_000 / draftFps(draft));
+  for (const track of draft.tracks) {
+    if (track.type === "text") continue;
+    const segs = [...track.segments].sort((a, b) => a.target_timerange.start - b.target_timerange.start);
+    for (let i = 0; i < segs.length - 1; i++) {
+      const s = segs[i];
+      const next = segs[i + 1];
+      const overlap = s.target_timerange.start + s.target_timerange.duration - next.target_timerange.start;
+      if (overlap <= 0) continue;
+      const repairable = overlap <= overlapFrameUs && s.target_timerange.duration - overlap > 0;
+      issues.push({
+        severity: "error",
+        code: "segment-overlap",
+        message:
+          `Segments ${shortId(s.id)} and ${shortId(next.id)} overlap by ${overlap}us on ${track.type} track "${track.name}"` +
+          (repairable
+            ? " — a sub-frame rounding overlap; --fix ends the earlier segment where the next begins"
+            : ` — wider than one frame (${overlapFrameUs}us at ${draftFps(draft)}fps), so --fix leaves it: trim or move one of them`),
+        fixable: FIXABLE_CODES.has("segment-overlap") && repairable,
+        location: { track: track.name, segment_id: s.id },
+      });
+    }
+  }
+
+  // Visual segments nobody can see: a clip transform that parks the whole
+  // bounding box off the canvas, a zero scale on either axis, or zero
+  // opacity. Usually the leftover of a botched batch edit (a percent written
+  // where a fraction was meant, x in pixels instead of canvas units), and
+  // invisible in every timeline view except the preview itself.
+  //
+  // Transform convention (render.ts's overlay math, the same one the app
+  // uses): clip.transform x/y are normalized to the canvas with the origin at
+  // its centre, one unit = half the canvas — x = +/-1 puts the clip's centre
+  // on the right/left edge, y = +/-1 on the top/bottom edge (y points up).
+  // The material is first fitted inside the canvas (contain, aspect kept),
+  // then multiplied by clip.scale. A box of width w (pixels) is therefore
+  // fully off-canvas once |x| * W/2 >= W/2 + w/2, i.e. |x| >= 1 + w/W; same
+  // for y. Rotation widens the box to its rotated bounding box. Without a
+  // known material size (stickers, text, a video material with no
+  // width/height) the material is assumed to fill the canvas at scale 1 —
+  // the generous reading, so an unknown size never produces a false alarm.
+  //
+  // `visible` is not judged: the CLI only ever writes `visible: true` and
+  // nothing in the code base establishes how the app treats false.
+  //
+  // Keyframes: a reason is skipped when the segment animates the property
+  // behind it (position for off-canvas, scale for zero scale, alpha for zero
+  // opacity) — the static value is then only the pre-animation value, and a
+  // fade-in from alpha 0 is the most common keyframe there is. Warning, no
+  // --fix: where the clip was meant to be is not recoverable.
+  const canvasW = draft.canvas_config?.width;
+  const canvasH = draft.canvas_config?.height;
+  const hasCanvas = typeof canvasW === "number" && canvasW > 0 && typeof canvasH === "number" && canvasH > 0;
+  for (const track of draft.tracks) {
+    if (track.type !== "video" && track.type !== "sticker" && track.type !== "text") continue;
+    for (const s of track.segments) {
+      const clip = s.clip;
+      if (!clip || typeof clip !== "object") continue;
+      const animated = keyframedProperties(s);
+      const reasons: string[] = [];
+      const sx = clip.scale?.x;
+      const sy = clip.scale?.y;
+      const scaleAnimated =
+        animated.has("KFTypeScaleX") || animated.has("KFTypeScaleY") || animated.has("UNIFORM_SCALE");
+      if (!scaleAnimated && (sx === 0 || sy === 0)) reasons.push("zero scale");
+      if (!animated.has("KFTypeAlpha") && clip.alpha === 0) reasons.push("zero opacity");
+      const x = clip.transform?.x;
+      const y = clip.transform?.y;
+      const positionAnimated = animated.has("KFTypePositionX") || animated.has("KFTypePositionY");
+      if (!positionAnimated && typeof x === "number" && typeof y === "number" && !reasons.includes("zero scale")) {
+        // Fitted material size as a fraction of the canvas (1 = fills that axis).
+        let fitW = 1;
+        let fitH = 1;
+        if (track.type === "video" && hasCanvas) {
+          const mat = findMaterial(draft.materials?.videos ?? [], s.material_id) as
+            | { width?: unknown; height?: unknown }
+            | undefined;
+          const mw = mat?.width;
+          const mh = mat?.height;
+          if (typeof mw === "number" && mw > 0 && typeof mh === "number" && mh > 0) {
+            const fit = Math.min(canvasW / mw, canvasH / mh);
+            fitW = (mw * fit) / canvasW;
+            fitH = (mh * fit) / canvasH;
+          }
+        }
+        // Work in pixels so a rotation mixes the axes at the right aspect; an
+        // unknown canvas uses a square unit canvas (only the ratio matters).
+        const W = hasCanvas ? canvasW : 1;
+        const H = hasCanvas ? canvasH : 1;
+        const w = fitW * W * Math.abs(typeof sx === "number" ? sx : 1);
+        const h = fitH * H * Math.abs(typeof sy === "number" ? sy : 1);
+        const rad = ((typeof clip.rotation === "number" ? clip.rotation : 0) * Math.PI) / 180;
+        const cos = Math.abs(Math.cos(rad));
+        const sin = Math.abs(Math.sin(rad));
+        const boxW = w * cos + h * sin;
+        const boxH = w * sin + h * cos;
+        if (Math.abs(x) >= 1 + boxW / W || Math.abs(y) >= 1 + boxH / H) reasons.push("outside canvas");
+      }
+      if (reasons.length === 0) continue;
+      issues.push({
+        severity: "warning",
+        code: "segment-offscreen",
+        message:
+          `Segment ${shortId(s.id)} on ${track.type} track "${track.name}" cannot be seen: ${reasons.join(", ")}` +
+          ` (scale ${sx ?? "?"}x${sy ?? "?"}, alpha ${clip.alpha ?? "?"}, position ${x ?? "?"},${y ?? "?"} in canvas half-widths)`,
+        fixable: false,
+        location: { track: track.name, segment_id: s.id },
+      });
+    }
+  }
+
   // Source range against the material it reads from. CapCut treats a
   // `source_timerange` that reaches past the material's duration as out of
   // range and clamps the in-point to zero, so every such clip plays from the
@@ -505,6 +640,57 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
         issue.suggested_command = `capcut shift <project> <each-segment-at-or-after-the-gap> -${gap / 1000}ms`;
       }
       issues.push(issue);
+    }
+  }
+
+  // Pacing, opt-in: a still image held on screen, or one shot running on,
+  // longer than the limit the caller set. Judged on the timeline duration
+  // (what the viewer sits through), every video track included, by the
+  // material's kind (materials.videos marks a still as type "photo"); a
+  // segment whose material is missing is missing-material's finding.
+  // Report-only: where to cut, or what motion to add, is an editing decision.
+  if (opts.maxStillUs !== undefined || opts.maxShotUs !== undefined) {
+    const videoMaterials = new Map((draft.materials?.videos ?? []).map((m) => [m.id, m]));
+    for (const track of draft.tracks) {
+      if (track.type !== "video" && track.type !== "image") continue;
+      for (const s of track.segments) {
+        const mat = videoMaterials.get(s.material_id);
+        if (!mat) continue;
+        const still = mat.type === "photo";
+        const limit = still ? opts.maxStillUs : opts.maxShotUs;
+        const { start, duration } = s.target_timerange;
+        if (limit === undefined || !(duration > limit)) continue;
+        const code = still ? "still-too-long" : "shot-too-long";
+        issues.push({
+          severity: "warning",
+          code,
+          message:
+            `${still ? "Still image" : "Video clip"} ${shortId(s.id)} on ${track.type} track "${track.name}" ` +
+            `starts at ${formatSecs(start)} and plays ${formatSecs(duration)}, longer than the ` +
+            `${formatSecs(limit)} ${still ? "--max-still-secs" : "--max-shot-secs"} limit`,
+          fixable: FIXABLE_CODES.has(code),
+          location: { track: track.name, segment_id: s.id, material_id: mat.id },
+        });
+      }
+    }
+  }
+
+  // Silent stretches, opt-in: dead air the export carries. Conservative by
+  // design, so it never cries wolf: a clip counts as silent only when the
+  // draft itself says so (see playsSound), and everything else counts as
+  // sound. Report-only: what belongs in the gap is an editing decision.
+  if (opts.minSilentUs !== undefined) {
+    const limit = opts.minSilentUs;
+    for (const [start, end] of silentStretches(draft, limit)) {
+      issues.push({
+        severity: "warning",
+        code: "silent-stretch",
+        message:
+          `Nothing audible plays from ${formatSecs(start)} to ${formatSecs(end)} (${formatSecs(end - start)}, ` +
+          `at least the ${formatSecs(limit)} --min-silent-secs limit): no audio clip above volume 0 and no ` +
+          "video clip with its own sound covers it",
+        fixable: FIXABLE_CODES.has("silent-stretch"),
+      });
     }
   }
 
@@ -818,11 +1004,7 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
   // `common_mask` is the CLI's own CapCut-verified write target. Info-severity
   // and report-only: `capcut migrate` is the repair, and guessing would move
   // app-authored materials.
-  const maskVariants = ["masks", "common_mask", "common_masks"] as const;
-  const populatedMaskVariants = maskVariants.filter((key) => {
-    const arr = (draft.materials as Record<string, unknown>)[key];
-    return Array.isArray(arr) && arr.length > 0;
-  });
+  const populatedMaskVariants = populatedMaskFields(draft);
   if (populatedMaskVariants.length > 1) {
     issues.push({
       severity: "info",
@@ -837,7 +1019,7 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
     const version = draft.platform.app_version ?? null;
     const actual = populatedMaskVariants[0];
     if (version) {
-      const expected = atLeast(version, "9.6") ? "common_masks" : "masks";
+      const expected = jianyingMaskField(version);
       if (actual !== expected) {
         const hint = expected === "common_masks" ? "--from 5.9 --to 9.6" : "--from 9.6 --to 5.9";
         issues.push({
@@ -849,6 +1031,83 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
           fixable: FIXABLE_CODES.has("mask-field-mismatch"),
         });
       }
+    }
+  }
+
+  // A video clip marked has_sound_separated plays without its own sound: the
+  // app expects the sound on an audio track (an extract_music or
+  // video_original_sound material). Copied from another draft, the mark
+  // comes along without that audio, and the clip plays silent. Flagged only
+  // when no separated audio is on the timeline at all, so a draft whose
+  // sound was really split in the app is never touched; --fix clears the mark.
+  for (const material of soundSeparatedOrphans(draft)) {
+    issues.push({
+      severity: "warning",
+      code: "sound-separated-orphan",
+      message:
+        `Video ${shortId(material.id)} is marked as having its sound moved to an audio track (has_sound_separated), ` +
+        "but no separated audio is on the timeline, so the clip plays silent. --fix clears the mark and the clip plays its own sound again",
+      fixable: FIXABLE_CODES.has("sound-separated-orphan"),
+      location: { material_id: material.id },
+    });
+  }
+
+  // Keyframe clock on trimmed or speed-changed clips: capcut-cli writes
+  // keyframe times from the segment's start, but an exporter for Jianying Pro
+  // 11.6 found that editor reading visual keyframes on the source clock
+  // (source start + offset x speed), so on a clip trimmed at its head or
+  // played at another speed the motion may land at other moments. Info-only:
+  // nothing here is known to be wrong for every build; the note says where
+  // to look.
+  for (const { track, segment } of allSegments(draft)) {
+    if (track.type !== "video") continue;
+    const lists = (segment.common_keyframes ?? []) as Array<{ property_type?: string; keyframe_list?: unknown[] }>;
+    const visual = lists.filter(
+      (list) =>
+        Array.isArray(list.keyframe_list) && list.keyframe_list.length > 0 && list.property_type !== "KFTypeVolume",
+    );
+    if (visual.length === 0) continue;
+    const sourceStart = segment.source_timerange?.start ?? 0;
+    const speed = typeof segment.speed === "number" ? segment.speed : 1;
+    if (sourceStart <= 0 && speed === 1) continue;
+    const why = [
+      sourceStart > 0 ? `starts ${sourceStart}us into its media` : "",
+      speed !== 1 ? `plays at ${speed}x` : "",
+    ]
+      .filter(Boolean)
+      .join(" and ");
+    issues.push({
+      severity: "info",
+      code: "keyframe-trimmed-clock",
+      message:
+        `Segment ${shortId(segment.id)} has keyframes and ${why}. Keyframe times are written from the segment's start; ` +
+        "Jianying Pro 11.6 has been reported to read them on the media's own clock (media start + time x speed), " +
+        "so check in the app that the motion lands where you expect",
+      fixable: false,
+      location: { track: track.name, segment_id: segment.id },
+    });
+  }
+
+  // UNIFORM_SCALE is the scale keyframe CapCut writes and reads, but an
+  // exporter for Jianying Pro 11.6 found that build ignoring it and animating
+  // KFTypeScaleX with the segment's uniform_scale switched on instead. Info,
+  // on JianYing 11.6+ drafts only: capcut-cli keeps writing UNIFORM_SCALE.
+  if (draft.platform?.app_source === "lv" && atLeast(draft.platform.app_version ?? null, "11.6")) {
+    for (const { track, segment } of allSegments(draft)) {
+      const lists = (segment.common_keyframes ?? []) as Array<{ property_type?: string; keyframe_list?: unknown[] }>;
+      if (!lists.some((list) => list.property_type === "UNIFORM_SCALE" && (list.keyframe_list?.length ?? 0) > 0)) {
+        continue;
+      }
+      issues.push({
+        severity: "info",
+        code: "uniform-scale-keyframe",
+        message:
+          `Segment ${shortId(segment.id)} animates scale with UNIFORM_SCALE keyframes; JianYing ${draft.platform.app_version} ` +
+          "has been reported to ignore them (it reads KFTypeScaleX with uniform scaling on). Check the zoom in the app, " +
+          "or key scale_x and scale_y instead",
+        fixable: false,
+        location: { track: track.name, segment_id: segment.id },
+      });
     }
   }
 
@@ -866,7 +1125,7 @@ export function lintDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS
   const presentLocalMedia = (["videos", "audios"] as const).some((kind) =>
     (draft.materials?.[kind] ?? []).some((mat) => {
       const p = (mat as { path?: unknown }).path;
-      return typeof p === "string" && p.length > 0 && !/^https?:\/\//i.test(p) && fileExists(p);
+      return isLocalPath(p) && fileExists(p);
     }),
   );
   if (opts.draftDir && presentLocalMedia) {
@@ -943,7 +1202,7 @@ function maskAttachment(draft: Draft): { attached: string[]; orphaned: string[] 
   }
   const attached: string[] = [];
   const orphaned: string[] = [];
-  for (const key of ["masks", "common_mask", "common_masks"]) {
+  for (const key of MASK_FIELD_NAMES) {
     const arr = (draft.materials as Record<string, unknown> | undefined)?.[key];
     if (!Array.isArray(arr)) continue;
     for (const mat of arr) {
@@ -1059,7 +1318,7 @@ export function fixDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS)
   // Pass -2: snap the two boundaries, then derive duration. Rounding start
   // and duration independently is the exact 1us-overlap failure this fixes.
   if (opts.frameGrid) {
-    const fps = typeof draft.fps === "number" && Number.isFinite(draft.fps) && draft.fps > 0 ? draft.fps : 30;
+    const fps = draftFps(draft);
     const timelineEnd = (): number => {
       let maxEnd = 0;
       for (const track of draft.tracks) {
@@ -1078,10 +1337,7 @@ export function fixDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS)
         const newEnd = quantizeToFrame(oldStart + oldDuration, fps);
         if (newEnd <= newStart) continue;
         segment.target_timerange.start = newStart;
-        segment.target_timerange.duration = newEnd - newStart;
-        if (segment.source_timerange?.duration === oldDuration && (segment.speed ?? 1) === 1) {
-          segment.source_timerange.duration = newEnd - newStart;
-        }
+        setTargetDuration(segment, newEnd - newStart);
       }
     }
     if (draft.duration === oldMaxEnd) {
@@ -1119,6 +1375,25 @@ export function fixDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS)
       const gap = original[i].start - original[i - 1].end;
       if (gap > 0 && canCloseMainTrackGap(draft, mainTrack, original[i - 1].end)) shift += gap;
       if (shift > 0) original[i].seg.target_timerange.start = original[i].start - shift;
+    }
+  }
+
+  // Pass 0b: end the earlier of two overlapping non-text segments where the
+  // next one begins — only for overlaps of at most one frame, exactly the
+  // instances lintDraft stamped fixable. After pass 0 on purpose: shortening
+  // a non-main-track clip could flip canCloseMainTrackGap from unsafe to
+  // safe, and pass 0 must act on the state the stamp was read from. Pass 0
+  // moves both members of an overlapping pair by the same shift, so the
+  // overlap widths read here are the ones lint reported.
+  const overlapFrameUs = Math.ceil(1_000_000 / draftFps(draft));
+  for (const track of draft.tracks) {
+    if (track.type === "text") continue;
+    const segs = [...track.segments].sort((a, b) => a.target_timerange.start - b.target_timerange.start);
+    for (let i = 0; i < segs.length - 1; i++) {
+      const s = segs[i];
+      const overlap = s.target_timerange.start + s.target_timerange.duration - segs[i + 1].target_timerange.start;
+      if (overlap <= 0 || overlap > overlapFrameUs || s.target_timerange.duration - overlap <= 0) continue;
+      setTargetDuration(s, s.target_timerange.duration - overlap);
     }
   }
 
@@ -1250,6 +1525,10 @@ export function fixDraft(draft: Draft, opts: LintOptions = DEFAULT_LINT_OPTIONS)
       }
     }
   }
+
+  // Pass 6: a copied has_sound_separated mark with no separated audio on the
+  // timeline (sound-separated-orphan) — clearing it gives the clip its sound back.
+  for (const material of soundSeparatedOrphans(draft)) material.has_sound_separated = false;
 
   const after = lintDraft(draft, opts);
   const remaining: LintIssue[] = [];
@@ -1451,6 +1730,49 @@ function undoubleContent(content: string): string | null {
   return JSON.stringify(parsed);
 }
 
+// The draft's frame rate, 30 when absent or malformed (the template default).
+function draftFps(draft: Draft): number {
+  return typeof draft.fps === "number" && Number.isFinite(draft.fps) && draft.fps > 0 ? draft.fps : 30;
+}
+
+// Set a segment's target duration and keep its source span consistent with
+// it: source.duration = target.duration * speed, the invariant `capcut speed`
+// maintains. The source span is only rewritten when it satisfied that
+// invariant before (exactly at speed 1, within the speed-timerange-mismatch
+// 1% tolerance otherwise) — a span that already disagreed is
+// speed-timerange-mismatch's report, not something a timing repair should
+// silently reinterpret.
+function setTargetDuration(segment: Segment, newDuration: number): void {
+  const oldDuration = segment.target_timerange.duration;
+  segment.target_timerange.duration = newDuration;
+  const src = segment.source_timerange;
+  if (!src || typeof src.duration !== "number") return;
+  const speed =
+    typeof segment.speed === "number" && Number.isFinite(segment.speed) && segment.speed > 0 ? segment.speed : 1;
+  if (speed === 1) {
+    if (src.duration === oldDuration) src.duration = newDuration;
+    return;
+  }
+  if (oldDuration > 0 && Math.abs(src.duration / oldDuration - speed) / speed <= 0.01) {
+    src.duration = Math.round(newDuration * speed);
+  }
+}
+
+// Keyframed property types on a segment (common_keyframes[].property_type,
+// e.g. KFTypePositionX), for checks that judge a static clip value only when
+// nothing animates it.
+function keyframedProperties(segment: Segment): Set<string> {
+  const out = new Set<string>();
+  const lists = (segment as { common_keyframes?: unknown }).common_keyframes;
+  if (!Array.isArray(lists)) return out;
+  for (const list of lists as Array<{ property_type?: unknown; keyframe_list?: unknown }>) {
+    if (typeof list?.property_type !== "string") continue;
+    if (Array.isArray(list.keyframe_list) && list.keyframe_list.length === 0) continue;
+    out.add(list.property_type);
+  }
+  return out;
+}
+
 // True when closing the main-track gap that opens at `gapStartUs` is
 // mechanically safe: no OTHER track has a segment still playing at or
 // starting after that point, so the later main-track segments can move left
@@ -1470,6 +1792,69 @@ function canCloseMainTrackGap(draft: Draft, mainTrack: Track, gapStartUs: number
 
 function issueKey(i: LintIssue): string {
   return `${i.code}|${i.location?.segment_id ?? ""}|${i.location?.material_id ?? ""}|${i.location?.path ?? ""}`;
+}
+
+/** Video materials marked has_sound_separated, on the timeline, while no separated audio is. */
+function soundSeparatedOrphans(draft: Draft): Array<{ id: string; has_sound_separated?: unknown }> {
+  const used = new Set<string>();
+  for (const track of draft.tracks) for (const segment of track.segments) used.add(segment.material_id);
+  const separatedAudio = (draft.materials?.audios ?? []).some(
+    (audio) => (audio.type === "extract_music" || audio.type === "video_original_sound") && used.has(audio.id),
+  );
+  if (separatedAudio) return [];
+  return (draft.materials?.videos ?? []).filter((video) => video.has_sound_separated === true && used.has(video.id));
+}
+
+// Whether a segment on an audio or video track sends sound to the export.
+// Silent only on the draft's own word: volume 0 with no volume keyframes, a
+// photo, or a video whose sound was separated to an audio track (the
+// sound-separated-orphan reading: the clip itself then plays silent, and the
+// separated audio counts on its own track). A material the draft does not
+// hold, or a video file that may have no audio stream, counts as sound.
+function playsSound(track: Track, segment: Segment, videos: Map<string, MaterialVideo>): boolean {
+  const volume = typeof segment.volume === "number" ? segment.volume : 1;
+  if (volume <= 0 && !keyframedProperties(segment).has("KFTypeVolume")) return false;
+  if (track.type === "audio") return true;
+  const material = videos.get(segment.material_id);
+  if (!material) return true;
+  return material.type !== "photo" && material.has_sound_separated !== true;
+}
+
+// Ranges of at least minUs where no segment plays sound, from 0 to the end of
+// the export: draft.duration, but never past the last segment on any track (a
+// stale duration is no silence the export carries). A muted track (attribute
+// bit 1, as `tracks` reads it) contributes nothing.
+function silentStretches(draft: Draft, minUs: number): Array<[number, number]> {
+  let contentEnd = 0;
+  for (const { segment } of allSegments(draft)) {
+    contentEnd = Math.max(contentEnd, segment.target_timerange.start + segment.target_timerange.duration);
+  }
+  const declared = draft.duration;
+  const end =
+    typeof declared === "number" && Number.isFinite(declared) && declared > 0
+      ? Math.min(declared, contentEnd)
+      : contentEnd;
+  const videos = new Map((draft.materials?.videos ?? []).map((m) => [m.id, m]));
+  const sound: Array<[number, number]> = [];
+  for (const track of draft.tracks) {
+    if (track.type !== "audio" && track.type !== "video") continue;
+    if (typeof track.attribute === "number" && (track.attribute & 1) !== 0) continue;
+    for (const segment of track.segments) {
+      if (!playsSound(track, segment, videos)) continue;
+      const start = segment.target_timerange.start;
+      sound.push([start, start + segment.target_timerange.duration]);
+    }
+  }
+  sound.sort((a, b) => a[0] - b[0]);
+  const stretches: Array<[number, number]> = [];
+  let cursor = 0;
+  for (const [start, stop] of sound) {
+    if (start >= end) break;
+    if (start - cursor >= minUs) stretches.push([cursor, start]);
+    cursor = Math.max(cursor, stop);
+  }
+  if (end - cursor >= minUs) stretches.push([cursor, end]);
+  return stretches;
 }
 
 function allSegments(draft: Draft): Array<{ track: Track; segment: Segment }> {
@@ -1529,4 +1914,9 @@ function isUnderDir(p: string, dir: string): boolean {
 
 function shortId(id: string): string {
   return id.slice(0, 8);
+}
+
+// Microseconds as seconds for a message, to the millisecond: 12500000 -> "12.5s".
+function formatSecs(us: number): string {
+  return `${Number((us / 1_000_000).toFixed(3))}s`;
 }

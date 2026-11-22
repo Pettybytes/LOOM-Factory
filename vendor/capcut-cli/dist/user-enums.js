@@ -1,7 +1,9 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeSync, } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 import { stripBom } from "./bom.js";
+import { MASK_FIELD_NAMES } from "./mask-fields.js";
 /**
  * User enum catalogue (`harvest-enums`).
  *
@@ -178,7 +180,7 @@ export function harvestDraft(draft, knownIds) {
         consider("transitions", raw);
     for (const raw of arrayOf("audio_effects"))
         consider("audio_effects", raw);
-    for (const key of ["masks", "common_mask", "common_masks"]) {
+    for (const key of MASK_FIELD_NAMES) {
         for (const raw of arrayOf(key))
             consider("masks", raw);
     }
@@ -211,19 +213,6 @@ export function harvestDraft(draft, knownIds) {
     }
     return { found, known, candidates };
 }
-function writeAtomicLocal(path, content) {
-    mkdirSync(dirname(path), { recursive: true });
-    const temp = `${path}.capcut-cli-${process.pid}-${Date.now()}.tmp`;
-    const fd = openSync(temp, "w", 0o600);
-    try {
-        writeSync(fd, content, undefined, "utf-8");
-        fsyncSync(fd);
-    }
-    finally {
-        closeSync(fd);
-    }
-    renameSync(temp, path);
-}
 /** Merge candidates into the catalogue file (created if absent). Existing
  * entries win: a candidate whose id pair is already present is a duplicate. */
 export function mergeUserEnums(path, candidates) {
@@ -245,7 +234,7 @@ export function mergeUserEnums(path, candidates) {
     }
     if (added > 0) {
         const file = { version: 1, entries: merged };
-        writeAtomicLocal(path, `${JSON.stringify(file, null, 2)}\n`);
+        writeFileAtomic(path, `${JSON.stringify(file, null, 2)}\n`);
         clearUserEnumsCache();
     }
     return { added, duplicates, total: merged.length };

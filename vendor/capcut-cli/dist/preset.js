@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { stripBom } from "./bom.js";
-import { hexToRgb01, requireTextMaterial, setBubble, setTextRanges } from "./decorators.js";
+import { hexToRgb01, requireTextMaterial, rgb01ToHex, setBubble, setTextRanges, solidFill, } from "./decorators.js";
 import { STYLE_FIELDS } from "./factory.js";
 import { fromStoredOffset, repairDoubledRanges, storedTextLength } from "./text-offsets.js";
 // --- Text style presets (make-preset / --preset) ---
@@ -13,12 +13,6 @@ import { fromStoredOffset, repairDoubledRanges, storedTextLength } from "./text-
 // survive a portable preset. Fork prior art: Davidb-2107/capcut-cli-david
 // v1.14.0 (make-preset --out / restyle --preset).
 export const PRESET_VERSION = 1;
-function rgb01ToHex(rgb) {
-    const channel = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255)
-        .toString(16)
-        .padStart(2, "0");
-    return `#${channel(rgb[0])}${channel(rgb[1])}${channel(rgb[2])}`.toUpperCase();
-}
 function parseContent(mat) {
     try {
         return JSON.parse(mat.content);
@@ -273,10 +267,7 @@ export function applyTextPreset(draft, segmentId, preset) {
         if (typeof preset.style.underline === "boolean")
             base.underline = preset.style.underline;
         if (typeof preset.style.text_color === "string") {
-            base.fill = {
-                alpha: 1,
-                content: { render_type: "solid", solid: { alpha: 1, color: hexToRgb01(preset.style.text_color) } },
-            };
+            base.fill = solidFill(hexToRgb01(preset.style.text_color));
         }
         if (typeof preset.style.font_path === "string") {
             base.font = {
@@ -330,7 +321,7 @@ export function captionStyleFromPreset(preset) {
         bold: preset.style.bold ?? false,
         italic: preset.style.italic ?? false,
         underline: preset.style.underline ?? false,
-        fill: { alpha: 1, content: { render_type: "solid", solid: { alpha: 1, color: hexToRgb01(color) } } },
+        fill: solidFill(hexToRgb01(color)),
     };
     if (typeof preset.style.font_path === "string") {
         block.font = {

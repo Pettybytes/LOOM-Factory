@@ -20,7 +20,7 @@
 // this is an evidence-gated write in the same sense as the rest of the schema
 // docs: the shape is recorded with its source, and `fixture` will capture the
 // real thing the moment a matted app draft is shared.
-import { findSegment } from "./draft.js";
+import { requireSegment } from "./segment-lookup.js";
 export const MATTING_OFF = 0;
 export const MATTING_SMART_PORTRAIT = 3;
 function isRecord(v) {
@@ -44,9 +44,7 @@ export function mattingObject(flag, existing) {
     };
 }
 function resolveVideoMaterial(draft, segId) {
-    const found = findSegment(draft, segId);
-    if (!found)
-        throw new Error(`Segment not found: ${segId}`);
+    const found = requireSegment(draft, segId);
     if (found.track.type !== "video") {
         throw new Error(`Smart matting only applies to video/photo segments (segment ${segId} is on a ${found.track.type} track)`);
     }
@@ -87,10 +85,4 @@ export function clearMatting(draft, segId) {
         enabled: false,
         shared_segments: shared,
     };
-}
-/** Read the matting state of a segment's material without writing. */
-export function mattingState(draft, segId) {
-    const { segment, material } = resolveVideoMaterial(draft, segId);
-    const flag = isRecord(material.matting) && typeof material.matting.flag === "number" ? material.matting.flag : 0;
-    return { segmentId: segment.id, materialId: material.id, flag };
 }

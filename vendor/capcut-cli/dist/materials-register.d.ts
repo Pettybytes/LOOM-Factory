@@ -40,6 +40,8 @@ export interface ReferencedMedium {
     height: number;
 }
 export declare function buildMetaMaterialEntry(medium: ReferencedMedium): MetaMaterialEntry;
+/** A non-empty path that is not an http(s) URL — media a project must register. */
+export declare function isLocalPath(path: unknown): path is string;
 /**
  * Distinct local media the timeline references, in material order: video and
  * photo materials from `materials.videos`, audio from `materials.audios`. URLs
@@ -88,6 +90,25 @@ export declare function registerMediumInSidecar(projectDir: string, medium: Refe
     entryId: string;
     created: boolean;
 } | null;
+export interface ChangedMediaRegistration {
+    path: string;
+    /** Sidecar bytes used to plan this edit, for the caller's conflict check and backup. */
+    raw: string;
+    content: string;
+}
+/**
+ * Refresh registration for changed media without writing files. The caller
+ * commits the returned sidecar together with the timeline after its write
+ * guards pass. Only the requested materials are linked; every existing entry
+ * is preserved, including the old source's entry.
+ * A reused entry returns a byte-identical plan so the caller can check its
+ * sidecar snapshot without rewriting the file or creating a backup.
+ *
+ * Missing or unreadable sidecars, or no selected local media, return null.
+ * Unavailable sidecars leave links unchanged. A bare timeline remains editable;
+ * `register --materials --apply` repairs its sidecar.
+ */
+export declare function planChangedMediaRegistration(draft: Draft, projectDir: string, materialIds: Iterable<string>): ChangedMediaRegistration | null;
 export interface UnlinkedMaterial {
     materialId: string;
     kind: "videos" | "audios";

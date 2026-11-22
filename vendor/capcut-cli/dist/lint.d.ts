@@ -87,6 +87,15 @@ export interface LintOptions {
      * start and end are snapped together so duration is derived, never rounded
      * independently into a 1us overlap. */
     frameGrid?: boolean;
+    /** Opt-in pacing: report still-too-long for a still image (a photo
+     * material) that plays longer than this on the timeline, in microseconds. */
+    maxStillUs?: number;
+    /** Opt-in pacing: report shot-too-long for a video clip (any material but a
+     * photo) that plays longer than this on the timeline, in microseconds. */
+    maxShotUs?: number;
+    /** Opt-in: report silent-stretch for every range of at least this many
+     * microseconds, inside the timeline, where nothing audible plays. */
+    minSilentUs?: number;
 }
 export declare const DEFAULT_LINT_OPTIONS: LintOptions;
 export declare function lintDraft(draft: Draft, opts?: LintOptions): LintIssue[];

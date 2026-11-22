@@ -12,6 +12,8 @@ export interface RenderOptions {
     allVideoTracks?: boolean;
     dryRun?: boolean;
     progress?: boolean;
+    strict?: boolean;
+    ffprobeCmd?: string;
 }
 /**
  * `--soft-captions`: reviewers asked for subtitle STREAMS they can toggle in
@@ -72,6 +74,11 @@ export interface RenderPlan {
         path: string;
         content: string;
     };
+    /** Present only with --burn-captions: how many burned captions use the draft's own font file, how many ffmpeg's default face. */
+    caption_fonts?: {
+        from_draft: number;
+        default: number;
+    };
     quality: {
         mode: "crf";
         crf: number;
@@ -79,11 +86,20 @@ export interface RenderPlan {
         mode: "bitrate";
         bitrate: string;
     };
+    /** What the draft carries that this proxy does not reproduce (see fidelityCensus). */
+    fidelity: FidelityCensus;
 }
 export interface RenderResult extends RenderPlan {
     ok: boolean;
     executed: boolean;
+    /** Present after a real render: the written file's duration against the draft's. */
+    verification?: OutputVerification;
 }
+/**
+ * The --strict gate, shared by renderDraft and the CLI's ffmpeg-free dry-run
+ * path. Throws before anything is written.
+ */
+export declare function assertFaithful(census: FidelityCensus): void;
 /**
  * Every filter name the -filters probe checks. The chain/probe guard test
  * asserts the generated filter_complex never uses a name outside this list
@@ -142,6 +158,61 @@ export declare function probeFfmpegEncoders(command?: string): {
     listed: boolean;
     encoders: Set<string>;
 };
+/**
+ * Fidelity census: what the draft carries that this proxy does not put on the
+ * picture. The header comment above states the limits (main track only unless
+ * --all-video-tracks, no effects/transitions); the census turns those limits
+ * into counts for THIS draft, so a reader of `render`'s JSON knows whether the
+ * preview can be trusted as "what the app shows" or only as a timing check.
+ *
+ * Pure, deterministic and one pass over tracks + materials (no ffmpeg, no
+ * clock). It is computed from the options the plan was actually built with,
+ * so renderDraft's drawtext/overlay fallbacks show up as dropped text/overlays.
+ */
+export declare const FIDELITY_CATEGORIES: readonly ["missing_media", "main_track_gaps", "overlay_tracks", "text", "stickers", "transitions", "effects", "filters", "masks", "keyframes", "text_animations", "video_animations", "mix_modes", "chroma", "matting"];
+export type FidelityCategory = (typeof FIDELITY_CATEGORIES)[number];
+/** Affected segment ids are listed up to this many per category; `count` is always the full total. */
+export declare const FIDELITY_ID_CAP = 20;
+export interface FidelityEntry {
+    count: number;
+    segment_ids: string[];
+    hint: string;
+}
+export interface FidelityCensus {
+    /** True when no category below has anything dropped. */
+    faithful: boolean;
+    /** The draft duration the proxy targets (draft.duration, else the last segment end). */
+    expected_duration_us: number;
+    /** Only categories with at least one affected segment, in FIDELITY_CATEGORIES order. */
+    dropped: Partial<Record<FidelityCategory, FidelityEntry>>;
+    /** Every category the census checks, so an absent key reads as "checked, none". */
+    checked: FidelityCategory[];
+}
+export declare function expectedDurationUs(draft: Draft): number;
+export declare function fidelityCensus(draft: Draft, opts: Pick<RenderOptions, "allVideoTracks" | "burnCaptions">, skipped?: Array<{
+    segmentId: string;
+    reason: string;
+}>): FidelityCensus;
+/** One-line summary of a census for refusal messages: "transitions 2, masks 1". */
+export declare function describeDropped(census: FidelityCensus): string;
+/**
+ * Output verification: the written file's duration against the draft's, with
+ * a one-frame tolerance at the render fps. Pure so the arithmetic is testable
+ * without ffprobe; probeRenderOutput does the probing.
+ */
+export interface OutputVerification {
+    verified: boolean;
+    /** Present when verified is false. */
+    reason?: string;
+    duration_us?: number;
+    expected_duration_us: number;
+    drift_us?: number;
+    tolerance_us: number;
+    within_tolerance?: boolean;
+}
+export declare function frameToleranceUs(fps: number): number;
+export declare function checkOutputDuration(durationUs: number, expectedUs: number, fps: number): OutputVerification;
+export declare function probeRenderOutput(output: string, expectedUs: number, fps: number, ffprobeCmd?: string): OutputVerification;
 /**
  * Build the ffmpeg invocation for a draft. Pure and deterministic given the
  * draft + options (no uuids, no clock) so it can be asserted in tests.

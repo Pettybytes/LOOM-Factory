@@ -13,6 +13,13 @@ export declare function resolveAssetPath(path: string, draftFilePath: string, ki
     warning?: string;
 }>;
 export declare function uuid(): string;
+export interface AssetCopyPlan {
+    destination: string;
+    copyNeeded: boolean;
+    collision: boolean;
+}
+/** Choose a content-correct destination without creating directories or files. */
+export declare function planAssetCopy(srcPath: string, assetsDir: string, fallbackName: string): AssetCopyPlan;
 /**
  * Copy a source file into an assets directory, keyed by its basename.
  *
@@ -42,6 +49,10 @@ export interface InitOptions {
      * as-is (`--template bundled`, or an explicit --template directory).
      */
     seed?: "auto" | "always" | "off";
+    /** Initialize the local sidecar now, but register in the root index after a successful build. */
+    deferRegistration?: boolean;
+    /** Remove this newly created directory if initialization fails. */
+    cleanupOnError?: boolean;
 }
 export interface CanvasConfig {
     width: number;
@@ -137,13 +148,6 @@ export declare function encryptedStoreWarning(scan: StoreScan, seedMode: "auto" 
 export declare function findStoreSeed(draftsDir: string, options?: {
     exclude?: string;
 }): StoreSeed | null;
-/**
- * Newest `platform.app_version` across the drafts already in a drafts ROOT, or
- * null when the folder holds no readable draft. store.ts's highestVersion does
- * the same job across one project's siblings; `init` has no project to discover
- * yet, so it scans the store instead.
- */
-export declare function detectStoreAppVersion(draftsDir: string): string | null;
 /** True when the store's projects come from a materially newer app than the template declares (#67's gate). */
 export declare function storeOutgrowsTemplate(templateVersion: string | null, storeVersion: string | null): boolean;
 /**
@@ -215,6 +219,7 @@ interface RegisterOptions {
     name: string;
     nowMs: number;
     durationUs?: number;
+    index?: boolean;
 }
 /**
  * Add the new draft to root_meta_info.json (creating the file if absent) and write
@@ -387,6 +392,7 @@ export interface AddAudioOptions {
     path: string;
     start: number;
     duration: number;
+    sourceDuration?: number;
     volume?: number;
     trackName?: string;
     placeholder?: {
@@ -404,6 +410,7 @@ export interface AddVideoOptions {
     path: string;
     start: number;
     duration: number;
+    sourceDuration?: number;
     type?: "video" | "photo";
     width?: number;
     height?: number;

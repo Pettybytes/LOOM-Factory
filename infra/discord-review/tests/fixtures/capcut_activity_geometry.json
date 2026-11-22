@@ -1,0 +1,430 @@
+{
+  "canvas": {
+    "width": 576,
+    "height": 1024
+  },
+  "text": "Stepping into a freezing cold ice bath in the backyard",
+  "sources": {
+    "openshorts/dashboard/src/components/TextOverlayPreview.jsx": "551c67d7ea7fa3695a1d9480e36fe8c2f8f3f5912cc403c6b568ef27a8d0da41",
+    "openshorts/dashboard/src/lib/overlayLayout.js": "1bbc8b47d476e53c29761768d8d1d2e7921d25e950d1fa75e2bd90f69def292b",
+    "openshorts/dashboard/src/lib/editorPreviewState.js": "99fa20444669e40067e5d52b111e30b41f2749217569f3dcded26da08f175c11"
+  },
+  "hook_cases": [
+    {
+      "region": "overlay",
+      "position": "top",
+      "size": "S",
+      "card": {
+        "x": 70.265625,
+        "y": 172.875,
+        "width": 435.453125,
+        "height": 63.84375,
+        "centerX": 287.9921875,
+        "centerY": 204.796875
+      },
+      "fontSize": 19.3538,
+      "lineHeight": 27.0953,
+      "paddingX": 5.80613,
+      "paddingY": 4.83844,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "overlay",
+      "position": "top",
+      "size": "M",
+      "card": {
+        "x": 70.265625,
+        "y": 164.890625,
+        "width": 435.453125,
+        "height": 79.8125,
+        "centerX": 287.9921875,
+        "centerY": 204.796875
+      },
+      "fontSize": 24.1922,
+      "lineHeight": 33.8691,
+      "paddingX": 7.25766,
+      "paddingY": 6.04805,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "overlay",
+      "position": "top",
+      "size": "L",
+      "card": {
+        "x": 70.265625,
+        "y": 130.890625,
+        "width": 435.453125,
+        "height": 147.8125,
+        "centerX": 287.9921875,
+        "centerY": 204.796875
+      },
+      "fontSize": 31.4498,
+      "lineHeight": 44.0298,
+      "paddingX": 9.43495,
+      "paddingY": 7.86246,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "overlay",
+      "position": "center",
+      "size": "S",
+      "card": {
+        "x": 70.265625,
+        "y": 480.078125,
+        "width": 435.453125,
+        "height": 63.84375,
+        "centerX": 287.9921875,
+        "centerY": 512
+      },
+      "fontSize": 19.3538,
+      "lineHeight": 27.0953,
+      "paddingX": 5.80613,
+      "paddingY": 4.83844,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "overlay",
+      "position": "center",
+      "size": "M",
+      "card": {
+        "x": 70.265625,
+        "y": 472.09375,
+        "width": 435.453125,
+        "height": 79.8125,
+        "centerX": 287.9921875,
+        "centerY": 512
+      },
+      "fontSize": 24.1922,
+      "lineHeight": 33.8691,
+      "paddingX": 7.25766,
+      "paddingY": 6.04805,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "overlay",
+      "position": "center",
+      "size": "L",
+      "card": {
+        "x": 70.265625,
+        "y": 438.09375,
+        "width": 435.453125,
+        "height": 147.8125,
+        "centerX": 287.9921875,
+        "centerY": 512
+      },
+      "fontSize": 31.4498,
+      "lineHeight": 44.0298,
+      "paddingX": 9.43495,
+      "paddingY": 7.86246,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "overlay",
+      "position": "bottom",
+      "size": "S",
+      "card": {
+        "x": 70.265625,
+        "y": 684.875,
+        "width": 435.453125,
+        "height": 63.84375,
+        "centerX": 287.9921875,
+        "centerY": 716.796875
+      },
+      "fontSize": 19.3538,
+      "lineHeight": 27.0953,
+      "paddingX": 5.80613,
+      "paddingY": 4.83844,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "overlay",
+      "position": "bottom",
+      "size": "M",
+      "card": {
+        "x": 70.265625,
+        "y": 676.890625,
+        "width": 435.453125,
+        "height": 79.8125,
+        "centerX": 287.9921875,
+        "centerY": 716.796875
+      },
+      "fontSize": 24.1922,
+      "lineHeight": 33.8691,
+      "paddingX": 7.25766,
+      "paddingY": 6.04805,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "overlay",
+      "position": "bottom",
+      "size": "L",
+      "card": {
+        "x": 70.265625,
+        "y": 642.890625,
+        "width": 435.453125,
+        "height": 147.8125,
+        "centerX": 287.9921875,
+        "centerY": 716.796875
+      },
+      "fontSize": 31.4498,
+      "lineHeight": 44.0298,
+      "paddingX": 9.43495,
+      "paddingY": 7.86246,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "dedicated",
+      "position": "top",
+      "size": "S",
+      "card": {
+        "x": 70.265625,
+        "y": 320.328125,
+        "width": 435.453125,
+        "height": 63.84375,
+        "centerX": 287.9921875,
+        "centerY": 352.25
+      },
+      "fontSize": 19.3538,
+      "lineHeight": 27.0953,
+      "paddingX": 5.80613,
+      "paddingY": 4.83844,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "dedicated",
+      "position": "top",
+      "size": "M",
+      "card": {
+        "x": 70.265625,
+        "y": 312.34375,
+        "width": 435.453125,
+        "height": 79.8125,
+        "centerX": 287.9921875,
+        "centerY": 352.25
+      },
+      "fontSize": 24.1922,
+      "lineHeight": 33.8691,
+      "paddingX": 7.25766,
+      "paddingY": 6.04805,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "dedicated",
+      "position": "top",
+      "size": "L",
+      "card": {
+        "x": 70.265625,
+        "y": 278.34375,
+        "width": 435.453125,
+        "height": 147.8125,
+        "centerX": 287.9921875,
+        "centerY": 352.25
+      },
+      "fontSize": 31.4498,
+      "lineHeight": 44.0298,
+      "paddingX": 9.43495,
+      "paddingY": 7.86246,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "dedicated",
+      "position": "center",
+      "size": "S",
+      "card": {
+        "x": 70.265625,
+        "y": 572.234375,
+        "width": 435.453125,
+        "height": 63.84375,
+        "centerX": 287.9921875,
+        "centerY": 604.15625
+      },
+      "fontSize": 19.3538,
+      "lineHeight": 27.0953,
+      "paddingX": 5.80613,
+      "paddingY": 4.83844,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "dedicated",
+      "position": "center",
+      "size": "M",
+      "card": {
+        "x": 70.265625,
+        "y": 564.25,
+        "width": 435.453125,
+        "height": 79.8125,
+        "centerX": 287.9921875,
+        "centerY": 604.15625
+      },
+      "fontSize": 24.1922,
+      "lineHeight": 33.8691,
+      "paddingX": 7.25766,
+      "paddingY": 6.04805,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "dedicated",
+      "position": "center",
+      "size": "L",
+      "card": {
+        "x": 70.265625,
+        "y": 530.25,
+        "width": 435.453125,
+        "height": 147.8125,
+        "centerX": 287.9921875,
+        "centerY": 604.15625
+      },
+      "fontSize": 31.4498,
+      "lineHeight": 44.0298,
+      "paddingX": 9.43495,
+      "paddingY": 7.86246,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "dedicated",
+      "position": "bottom",
+      "size": "S",
+      "card": {
+        "x": 70.265625,
+        "y": 740.171875,
+        "width": 435.453125,
+        "height": 63.84375,
+        "centerX": 287.9921875,
+        "centerY": 772.09375
+      },
+      "fontSize": 19.3538,
+      "lineHeight": 27.0953,
+      "paddingX": 5.80613,
+      "paddingY": 4.83844,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "dedicated",
+      "position": "bottom",
+      "size": "M",
+      "card": {
+        "x": 70.265625,
+        "y": 732.1875,
+        "width": 435.453125,
+        "height": 79.8125,
+        "centerX": 287.9921875,
+        "centerY": 772.09375
+      },
+      "fontSize": 24.1922,
+      "lineHeight": 33.8691,
+      "paddingX": 7.25766,
+      "paddingY": 6.04805,
+      "borderRadius": 20,
+      "header": null
+    },
+    {
+      "region": "dedicated",
+      "position": "bottom",
+      "size": "L",
+      "card": {
+        "x": 70.265625,
+        "y": 698.1875,
+        "width": 435.453125,
+        "height": 147.8125,
+        "centerX": 287.9921875,
+        "centerY": 772.09375
+      },
+      "fontSize": 31.4498,
+      "lineHeight": 44.0298,
+      "paddingX": 9.43495,
+      "paddingY": 7.86246,
+      "borderRadius": 20,
+      "header": null
+    }
+  ],
+  "header_cases": [
+    {
+      "region": "overlay",
+      "position": "top",
+      "card": null,
+      "fontSize": null,
+      "lineHeight": null,
+      "paddingX": null,
+      "paddingY": null,
+      "borderRadius": null,
+      "header": {
+        "x": 199.296875,
+        "y": 55.671875,
+        "width": 177.390625,
+        "height": 32,
+        "centerX": 287.9921875,
+        "centerY": 71.671875
+      }
+    },
+    {
+      "region": "overlay",
+      "position": "upper",
+      "card": null,
+      "fontSize": null,
+      "lineHeight": null,
+      "paddingX": null,
+      "paddingY": null,
+      "borderRadius": null,
+      "header": {
+        "x": 199.296875,
+        "y": 20.46875,
+        "width": 177.390625,
+        "height": 32,
+        "centerX": 287.9921875,
+        "centerY": 36.46875
+      }
+    },
+    {
+      "region": "dedicated",
+      "position": "top",
+      "card": null,
+      "fontSize": null,
+      "lineHeight": null,
+      "paddingX": null,
+      "paddingY": null,
+      "borderRadius": null,
+      "header": {
+        "x": 199.296875,
+        "y": 55.671875,
+        "width": 177.390625,
+        "height": 32,
+        "centerX": 287.9921875,
+        "centerY": 71.671875
+      }
+    },
+    {
+      "region": "dedicated",
+      "position": "upper",
+      "card": null,
+      "fontSize": null,
+      "lineHeight": null,
+      "paddingX": null,
+      "paddingY": null,
+      "borderRadius": null,
+      "header": {
+        "x": 199.296875,
+        "y": 15.921875,
+        "width": 177.390625,
+        "height": 32,
+        "centerX": 287.9921875,
+        "centerY": 31.921875
+      }
+    }
+  ]
+}

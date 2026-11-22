@@ -1,26 +1,28 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
-  closeSync,
+  appendFileSync,
   existsSync,
-  fsyncSync,
-  linkSync,
   mkdirSync,
-  openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { appVersionEvidence, formatAppVersionDriftWarning, trackAppVersion } from "./app-versions.js";
+import { writeTemp } from "./atomic-write.js";
 import { stripBom } from "./bom.js";
+import { journalDigest } from "./journal-digest.js";
 import {
+  assertActiveTimelineUnchanged,
   type DraftCandidate,
   type DraftStore,
+  type DraftStoreOptions,
   discoverDraftStore,
+  draftProjectDir,
   editorProcesses,
   isManagedDraftPath,
   nestedTimelinesWriteWarning,
@@ -135,8 +137,8 @@ export interface Draft {
   [key: string]: unknown;
 }
 
-export function findDraft(input: string): string {
-  return discoverDraftStore(input).canonical.path;
+export function findDraft(input: string, options: DraftStoreOptions = {}): string {
+  return discoverDraftStore(input, options).canonical.path;
 }
 
 interface LoadContext {
@@ -145,12 +147,11 @@ interface LoadContext {
 
 const loadContexts = new Map<string, LoadContext>();
 
-export function loadDraft(path: string): { draft: Draft; filePath: string } {
-  const store = discoverDraftStore(path);
+export function loadDraft(path: string, options: DraftStoreOptions = {}): { draft: Draft; filePath: string } {
+  const store = discoverDraftStore(path, options);
   const filePath = store.canonical.path;
   // The caller gets the parsed timeline itself, not a copy of it. The store
-  // kept here never escapes this module — `loadContexts` is private and
-  // `saveDraft` is its only reader — and everything saveDraft takes from it is
+  // snapshot is also used for asset roots and compiler preflight. Everything saveDraft takes from it is
   // either fixed at discovery (`version`, `layout`, `projectDir`) or a string
   // snapshot of the file on disk (`raw`, `path`, `envelopePath`), never
   // anything re-derived from `canonical.draft`. So nothing observes the
@@ -160,6 +161,15 @@ export function loadDraft(path: string): { draft: Draft; filePath: string } {
   // on disk must re-read it rather than reach for `store.canonical.draft`.
   loadContexts.set(resolve(filePath), { store });
   return { draft: store.canonical.draft as Draft, filePath };
+}
+
+/** Project root captured at load, including an explicit active-timeline selection. */
+export function loadedDraftProjectDir(filePath: string): string {
+  return loadContexts.get(resolve(filePath))?.store.projectDir ?? draftProjectDir(filePath);
+}
+
+export function loadedDraftStore(filePath: string): DraftStore {
+  return loadContexts.get(resolve(filePath))?.store ?? discoverDraftStore(filePath);
 }
 
 // Canonical bottom->top layer order CapCut expects in the tracks array.
@@ -224,39 +234,176 @@ function snapshotFiles(filePath: string): string[] {
     .sort(); // zero-padded indices => lexicographic === numeric order, oldest first
 }
 
-// `source`, when given, is a file already holding exactly `content` — the
-// `.bak` written moments earlier from the same pre-write bytes. The snapshot
-// is then published as a second name for it instead of serializing the whole
-// draft to disk a second time, which on a large project is another
-// multi-megabyte write per target for bytes already on disk. The two names
-// never diverge afterwards: every writer here replaces a name by rename or
-// unlink, never edits a file in place, so the next write gives `.bak` a fresh
-// file and leaves this snapshot holding what it always held.
-function writeHistorySnapshot(filePath: string, content: string, source?: string): void {
+// The snapshot is its own file, never a second name for `.bak`: the app
+// rewrites `<draft>.bak` in place when it saves (CapCut 9.5, issue #151), and
+// a hard link would carry that rewrite into the history the CLI restores from.
+function writeHistorySnapshot(filePath: string, content: string, after?: string): void {
   const dir = historyDir(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const existing = snapshotFiles(filePath);
   const last = existing[existing.length - 1];
-  const lastIndex = last ? Number.parseInt(last.match(/\.(\d+)\.snap$/)?.[1] ?? "0", 10) : 0;
+  const lastIndex = last ? snapshotIndex(last) : 0;
   const name = `${basename(filePath)}.${String(lastIndex + 1).padStart(6, "0")}.snap`;
   const snapshot = join(dir, name);
-  let linked = false;
-  if (source !== undefined) {
-    try {
-      linkSync(source, snapshot);
-      linked = true;
-    } catch {
-      // Hard links are not universal — FAT/exFAT sticks and some network
-      // shares refuse them. Fall back to the full write so the snapshot is
-      // always there, whatever the draft folder is sitting on.
-    }
-  }
-  if (!linked) writeFileSync(snapshot, content, "utf-8");
+  writeFileSync(snapshot, content, "utf-8");
+  appendJournal(filePath, {
+    index: lastIndex + 1,
+    time: new Date().toISOString(),
+    command: writeContext.command,
+    argv: writeContext.argv,
+    before_sha256: journalDigest(content),
+    after_sha256: after === undefined ? null : journalDigest(after),
+  });
   // Trim oldest beyond the cap.
   const all = snapshotFiles(filePath);
+  let trimmed = false;
   while (all.length > HISTORY_MAX) {
     const oldest = all.shift();
     if (oldest) rmSync(join(dir, oldest));
+    trimmed = true;
+  }
+  if (trimmed) trimJournal(filePath, new Set(all.map(snapshotIndex)));
+}
+
+// Write journal: one JSON line per snapshot in `<draftbase>.journal.jsonl`,
+// naming the command that made the write, so `restore --list` can say what
+// each step undoes. The journal is a best-effort annotation of the snapshots,
+// never part of the recovery path: a journal that cannot be written, read or
+// parsed is skipped and the write or restore goes ahead regardless.
+export interface JournalEntry {
+  index: number;
+  time: string;
+  command: string | null;
+  argv: string[] | null;
+  before_sha256: string;
+  after_sha256: string | null;
+}
+
+// Set once by the CLI entry point (like setDryRun). Library callers that never
+// set it journal `command: null`.
+let writeContext: { command: string | null; argv: string[] | null } = { command: null, argv: null };
+
+export function setWriteContext(command: string | null, argv: string[] | null): void {
+  writeContext = { command, argv: argv === null ? null : [...argv] };
+}
+
+function snapshotIndex(name: string): number {
+  return Number.parseInt(name.match(/\.(\d+)\.snap$/)?.[1] ?? "0", 10);
+}
+
+function journalPath(filePath: string): string {
+  return join(historyDir(filePath), `${basename(filePath)}.journal.jsonl`);
+}
+
+function appendJournal(filePath: string, entry: JournalEntry): void {
+  try {
+    appendFileSync(journalPath(filePath), `${JSON.stringify(entry)}\n`, "utf-8");
+  } catch {
+    // Best effort: the snapshot is the record that matters.
+  }
+}
+
+// Parsed journal lines keyed by snapshot index. Unreadable files and lines
+// that are not a JSON object with a numeric index are skipped.
+export function readJournal(filePath: string): Map<number, JournalEntry> {
+  const entries = new Map<number, JournalEntry>();
+  let raw: string;
+  try {
+    raw = readFileSync(journalPath(filePath), "utf-8");
+  } catch {
+    return entries;
+  }
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line) as JournalEntry;
+      if (entry && typeof entry === "object" && Number.isInteger(entry.index)) entries.set(entry.index, entry);
+    } catch {
+      // A torn or hand-edited line never breaks the history listing.
+    }
+  }
+  return entries;
+}
+
+// Keep the journal aligned with the snapshots HISTORY_MAX left on disk.
+function trimJournal(filePath: string, kept: Set<number>): void {
+  try {
+    const entries = readJournal(filePath);
+    const lines = [...entries.values()]
+      .filter((entry) => kept.has(entry.index))
+      .sort((a, b) => a.index - b.index)
+      .map((entry) => `${JSON.stringify(entry)}\n`);
+    writeAtomic(journalPath(filePath), lines.join(""));
+  } catch {
+    // Best effort, like the append.
+  }
+}
+
+// The state the most recent write left: `<draftbase>.last-write` in the
+// history directory, one per draft file, replaced on every write. Snapshots
+// and `.bak` keep the content BEFORE each write and the journal only hashes,
+// so this is the one copy of what the CLI itself wrote, which `diff
+// --since-write` compares the file on disk with to show what the app changed
+// afterwards. It is not a snapshot: restore never reads it, `restore --list`
+// never lists it, and the history cap does not count it.
+export interface LastWrite {
+  written_at: string;
+  sha256: string;
+  command: string | null;
+  content: string;
+}
+
+function lastWritePath(filePath: string): string {
+  return join(historyDir(filePath), `${basename(filePath)}.last-write`);
+}
+
+/** The digest a record carries (the journal's rule), for comparing a file with it. */
+export function contentDigest(content: string): string {
+  return journalDigest(content);
+}
+
+/** Record `content` as what the CLI just wrote to `filePath` (temp + rename). */
+export function recordLastWrite(filePath: string, content: string): void {
+  const record: LastWrite = {
+    written_at: new Date().toISOString(),
+    sha256: journalDigest(content),
+    command: writeContext.command,
+    content,
+  };
+  try {
+    mkdirSync(historyDir(filePath), { recursive: true });
+    writeAtomic(lastWritePath(filePath), `${JSON.stringify(record)}\n`);
+  } catch {
+    // Best effort, like the journal: the draft write already happened. A
+    // record of an older write must not outlive this one, though, or the
+    // comparison would show this write as a change made by the app.
+    try {
+      rmSync(lastWritePath(filePath), { force: true });
+    } catch {
+      // Nothing more to do; `diff --since-write` then reports no record.
+    }
+  }
+}
+
+/** The last recorded write to `filePath`, or null when there is none (or it is unreadable). */
+export function readLastWrite(filePath: string): LastWrite | null {
+  try {
+    const record = JSON.parse(readFileSync(lastWritePath(filePath), "utf-8")) as Partial<LastWrite>;
+    if (
+      typeof record?.content !== "string" ||
+      typeof record.sha256 !== "string" ||
+      typeof record.written_at !== "string"
+    ) {
+      return null;
+    }
+    return {
+      written_at: record.written_at,
+      sha256: record.sha256,
+      command: typeof record.command === "string" ? record.command : null,
+      content: record.content,
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -264,7 +411,7 @@ function writeHistorySnapshot(filePath: string, content: string, source?: string
 export function listSnapshots(filePath: string): Array<{ step: number; index: number; path: string }> {
   const dir = historyDir(filePath);
   return snapshotFiles(filePath)
-    .map((f) => ({ index: Number.parseInt(f.match(/\.(\d+)\.snap$/)?.[1] ?? "0", 10), path: join(dir, f) }))
+    .map((f) => ({ index: snapshotIndex(f), path: join(dir, f) }))
     .sort((a, b) => b.index - a.index)
     .map((s, i) => ({ step: i + 1, index: s.index, path: s.path }));
 }
@@ -295,31 +442,88 @@ export function assertTargetsUnchangedOnDisk(targets: DraftCandidate[]): void {
 // file actually written, rolling back on a partial commit. Writes EXACTLY the
 // given targets — callers decide the write set (saveDraft: every readable
 // sibling; sync-timelines: only the drifted mirrors). No-ops under --dry-run.
+export interface AdditionalDraftFile {
+  path: string;
+  /** Bytes observed while planning; null only when the file did not exist. */
+  raw: string | null;
+  content: string;
+}
+
 export function commitDraftTargets(
   targets: DraftCandidate[],
   draft: Draft,
-  options: { backup?: boolean } = {},
+  options: { backup?: boolean; additionalFiles?: AdditionalDraftFile[]; preserveProjectFields?: boolean } = {},
 ): Map<string, string> {
   const written = new Map<string, string>();
   if (dryRun) return written;
 
+  // A sidecar can also contain a timeline. Shell compilation merges its
+  // import group into that file's serialized timeline and commits it once.
+  const embeddedSidecars = new Map<string, AdditionalDraftFile>();
+  const additionalPaths = new Set<string>();
+  for (const file of options.additionalFiles ?? []) {
+    const path = resolve(file.path);
+    if (additionalPaths.has(path)) throw new Error(`Duplicate draft transaction target: ${path}`);
+    additionalPaths.add(path);
+    if (
+      options.preserveProjectFields &&
+      basename(path) === "draft_meta_info.json" &&
+      targets.some((target) => resolve(target.path) === path)
+    )
+      embeddedSidecars.set(path, file);
+  }
+
   // Prepare every replacement before renaming any target. This keeps the
   // multi-file write as close to a transaction as the filesystem allows.
-  const prepared = targets.map((target) => {
-    const content = serializeDraftCandidate(target, draft);
-    return { target, temp: writeTemp(target.path, content), content };
-  });
+  const replacements = [
+    ...targets.map((target) => ({
+      path: target.path,
+      raw: target.raw,
+      content: serializeDraftCandidate(
+        target,
+        draft,
+        options.preserveProjectFields,
+        embeddedSidecars.has(resolve(target.path))
+          ? { draft_materials: JSON.parse(embeddedSidecars.get(resolve(target.path))!.content).draft_materials }
+          : undefined,
+      ),
+    })),
+    ...(options.additionalFiles ?? []).filter((file) => !embeddedSidecars.has(resolve(file.path))),
+  ];
+  const paths = new Set<string>();
+  for (const item of replacements) {
+    let path = existsSync(item.path)
+      ? realpathSync.native(item.path)
+      : resolve(realpathSync.native(dirname(item.path)), basename(item.path));
+    if (process.platform === "win32") path = path.toLowerCase();
+    if (paths.has(path)) throw new Error(`Duplicate draft transaction target: ${path}`);
+    paths.add(path);
+  }
+  for (const item of options.additionalFiles ?? []) {
+    const current = existsSync(item.path) ? readFileSync(item.path, "utf-8") : null;
+    if (current !== item.raw) {
+      throw new Error(`refused [draft-changed-on-disk]: Draft sidecar changed after it was planned: ${item.path}`);
+    }
+  }
+  const prepared: Array<{ target: AdditionalDraftFile; temp: string; content: string }> = [];
+  try {
+    for (const target of replacements) {
+      if (options.additionalFiles?.includes(target) && target.content === target.raw) continue;
+      prepared.push({ target, temp: writeTemp(target.path, target.content), content: target.content });
+    }
+  } catch (error) {
+    for (const item of prepared) if (existsSync(item.temp)) unlinkSync(item.temp);
+    throw error;
+  }
 
   const committed: typeof prepared = [];
   try {
     for (const item of prepared) {
       if (options.backup !== false && item.target.raw !== null) {
-        // One write of the pre-write content, published under both recovery
-        // names: `.bak` (what `restore` reads) and the newest history snapshot
-        // (what `restore --step 1` reads).
-        const bak = `${item.target.path}.bak`;
-        writeAtomic(bak, item.target.raw);
-        writeHistorySnapshot(item.target.path, item.target.raw, bak);
+        // The pre-write content under both recovery names: `.bak` (what
+        // `restore` reads) and the newest history snapshot (`restore --step 1`).
+        writeAtomic(`${item.target.path}.bak`, item.target.raw);
+        writeHistorySnapshot(item.target.path, item.target.raw, item.content);
       }
     }
     for (const item of prepared) {
@@ -331,39 +535,32 @@ export function commitDraftTargets(
     // Roll back targets already renamed during a partial commit.
     for (const item of committed.reverse()) {
       if (item.target.raw !== null) writeAtomic(item.target.path, item.target.raw);
+      else if (existsSync(item.target.path)) unlinkSync(item.target.path);
     }
     for (const item of prepared) {
       if (existsSync(item.temp)) unlinkSync(item.temp);
     }
     throw error;
   }
+  // Every timeline file this commit wrote, recorded as written. Sidecars are
+  // not timelines and have nothing for `diff --since-write` to compare.
+  const timelinePaths = new Set(targets.map((target) => target.path));
+  for (const item of committed) {
+    if (timelinePaths.has(item.target.path)) recordLastWrite(item.target.path, item.content);
+  }
   // Target path -> the content committed there, so a caller holding a store
   // for these targets can roll it forward without re-reading the project.
   return written;
 }
 
-export function saveDraft(
+/** Run the normal save gates before a caller stages project assets. Save repeats them at commit. */
+export function assertDraftWriteable(
   filePath: string,
   draft: Draft,
-  options: { backup?: boolean; skipVersionGuard?: boolean } = {},
+  options: { skipVersionGuard?: boolean; warnings?: boolean } = {},
+  storeSnapshot?: DraftStore,
 ): void {
-  if (dryRun) {
-    // Version guard, warning only: dry-run writes nothing, so it never blocks,
-    // but the WARNING still previews what a real write would do. Draft-only
-    // assessment (no store discovery) keeps dry-run free of extra I/O.
-    if (options.skipVersionGuard !== true) {
-      const safety = assessWriteSafety(draft, null);
-      if (safety.action !== "ok") process.stderr.write(`WARNING: ${safety.reasons.join(" ")}\n`);
-    }
-    // Normalize in memory (so any read-back is consistent) but write nothing.
-    sortTracks(draft);
-    return;
-  }
-
-  const resolved = resolve(filePath);
-  const context = loadContexts.get(resolved) ?? { store: discoverDraftStore(filePath) };
-  const { store } = context;
-
+  const store = storeSnapshot ?? loadContexts.get(resolve(filePath))?.store ?? discoverDraftStore(filePath);
   if (!forceWrite && isManagedDraftPath(filePath)) {
     const running = editorProcesses();
     if (running.length > 0) {
@@ -392,7 +589,7 @@ export function saveDraft(
     if (safety.action === "refuse" && !forceWrite) {
       throw new Error(`refused [version-boundary]: ${safety.reasons.join("\n")}`);
     }
-    if (safety.action === "warn" || (safety.action === "refuse" && forceWrite)) {
+    if (options.warnings !== false && (safety.action === "warn" || (safety.action === "refuse" && forceWrite))) {
       process.stderr.write(`WARNING: ${safety.reasons.join(" ")}\n`);
     }
   }
@@ -405,11 +602,42 @@ export function saveDraft(
   // no longer silent: warn, never refuse. Shares skipVersionGuard with the
   // version guard: restore's mirror re-sync is the escape hatch, not a new
   // sighting of the hazard.
-  if (options.skipVersionGuard !== true && store.layout === "timelines-nested") {
+  if (options.warnings !== false && options.skipVersionGuard !== true && store.layout === "timelines-nested") {
     process.stderr.write(`WARNING: ${nestedTimelinesWriteWarning(store.version)}\n`);
   }
 
+  assertActiveTimelineUnchanged(store);
   if (!forceWrite) assertTargetsUnchangedOnDisk(store.targets);
+}
+
+export function saveDraft(
+  filePath: string,
+  draft: Draft,
+  options: {
+    backup?: boolean;
+    skipVersionGuard?: boolean;
+    additionalFiles?: AdditionalDraftFile[];
+    preserveProjectFields?: boolean;
+  } = {},
+): void {
+  if (dryRun) {
+    // Version guard, warning only: dry-run writes nothing, so it never blocks,
+    // but the WARNING still previews what a real write would do. Draft-only
+    // assessment (no store discovery) keeps dry-run free of extra I/O.
+    if (options.skipVersionGuard !== true) {
+      const safety = assessWriteSafety(draft, null);
+      if (safety.action !== "ok") process.stderr.write(`WARNING: ${safety.reasons.join(" ")}\n`);
+    }
+    // Normalize in memory (so any read-back is consistent) but write nothing.
+    sortTracks(draft);
+    return;
+  }
+
+  const resolved = resolve(filePath);
+  const context = loadContexts.get(resolved) ?? { store: discoverDraftStore(filePath) };
+  const { store } = context;
+
+  assertDraftWriteable(filePath, draft, options, store);
 
   sortTracks(draft);
   const written = commitDraftTargets(store.targets, draft, options);
@@ -433,45 +661,14 @@ export function saveDraft(
   // the project again: a re-discovery re-read, re-parsed and re-hashed every
   // sibling — the single most expensive step of a write on a large draft — to
   // establish what the write already knew.
-  loadContexts.set(resolved, { store: storeAfterWrite(store, draft, written) });
-}
-
-function writeAndSync(path: string, content: string): void {
-  // "wx" is O_CREAT|O_EXCL: it creates the file or fails, and never follows an
-  // existing symlink. See writeTemp for why that matters.
-  const fd = openSync(path, "wx", 0o600);
-  try {
-    writeSync(fd, content, undefined, "utf-8");
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/**
- * Create the scratch file a temp+fsync+rename write stages into, next to its
- * target, and return its path.
- *
- * The name carries crypto randomness and the open is exclusive. A predictable
- * name (pid + clock alone) is a write-through primitive: anyone able to create
- * files in the draft folder can pre-place a symlink at the path we are about
- * to open and redirect every draft save to a file of their choosing. O_EXCL is
- * the guarantee — it refuses a path that already exists, symlink included —
- * and the randomness keeps a legitimate concurrent writer from colliding with
- * us in the first place. A collision just draws another name; the bytes
- * written are unchanged.
- */
-function writeTemp(target: string, content: string): string {
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const temp = `${target}.capcut-cli-${process.pid}-${Date.now()}-${randomBytes(8).toString("hex")}.tmp`;
-    try {
-      writeAndSync(temp, content);
-      return temp;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-  }
-  throw new Error(`Could not create a temp file next to ${target} after 8 attempts.`);
+  const timelinePaths = new Set(store.targets.map((target) => target.path));
+  const timelineWrites = new Map([...written].filter(([path]) => timelinePaths.has(path)));
+  const embeddedSidecar = options.additionalFiles?.some((file) => timelinePaths.has(resolve(file.path)));
+  loadContexts.set(resolved, {
+    store: embeddedSidecar
+      ? discoverDraftStore(filePath, { activeTimeline: store.activeTimeline?.explicit === true })
+      : storeAfterWrite(store, draft, timelineWrites, options.preserveProjectFields),
+  });
 }
 
 // Exported for factory.ts (register): the same temp+fsync+rename write the

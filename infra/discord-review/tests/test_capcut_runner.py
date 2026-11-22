@@ -67,6 +67,8 @@ def _duration(path):
 def fake_ok(draft_dir):
     """An injected CLI that behaves like a successful compile."""
     def invoke(cmd, timeout):
+        if 'compile' not in cmd:
+            return 0, json.dumps({'ok': True, 'in_sync': True}), ''
         target = cmd[cmd.index("--out") + 1]
         os.makedirs(target, exist_ok=True)
         Path(target, "draft_content.json").write_text("{}")
@@ -354,10 +356,9 @@ class CaptionMappingTests(CapCutRunnerCase):
         # Caption blocks are clip-relative, like the CapCut timeline: a zero
         # offset. Applying the source origin here would double-offset them.
         report = self.run_it(self.rendered_clip(), caption_blocks=self.blocks(3))
-        items = _read_json(report["spec_path"])["operations"]
-        self.assertEqual(items[0]["timeOffset"], 0)
-        srt = _read_text(items[0]["path"])
-        self.assertIn("00:00:00,000 --> 00:00:00,900", srt)
+        tracks = [t for t in self.draft_json(report)['tracks'] if t.get('name') == 'captions']
+        self.assertEqual([s['target_timerange'] for t in tracks for s in t['segments']],
+            [{'start': i*1000000, 'duration': 900000} for i in range(3)])
 
     def test_a_version_without_blocks_still_succeeds(self):
         report = self.run_it(self.rendered_clip(), caption_blocks=[])
@@ -375,13 +376,15 @@ class CaptionMappingTests(CapCutRunnerCase):
         report = self.run_it(self.rendered_clip(), caption_blocks=blocks)
         self.assertEqual(report["captions"]["count"], 1)
 
-    def test_the_srt_is_well_formed_and_monotonic(self):
+    def test_the_ass_is_generated_by_openshorts_in_time_order(self):
         blocks = [{"text": "b", "startMs": 2000, "endMs": 2500},
                   {"text": "a", "startMs": 0, "endMs": 900}]
         report = self.run_it(self.rendered_clip(), caption_blocks=blocks)
-        srt = _read_text(report["captions"]["srt"])
-        self.assertTrue(srt.startswith("1\n00:00:00,000 --> 00:00:00,900\na"))
-        self.assertIn("2\n00:00:02,000 --> 00:00:02,500\nb", srt)
+        ass = _read_text(report['captions']['ass'])
+        self.assertIn('PlayResY: 288', ass)
+        self.assertIn('Dialogue: 0,0:00:00.00,0:00:00.90', ass)
+        self.assertIn('Dialogue: 0,0:00:02.00,0:00:02.50', ass)
+        self.assertLess(ass.index('0:00:00.00'), ass.index('0:00:02.00'))
 
 
 # ---------------------------------------------------------------------------
@@ -591,7 +594,7 @@ class VendoredRuntimeTests(CapCutRunnerCase):
             self.skipTest("vendor tree absent")
         with open(prov, encoding="utf-8") as fh:
             text = fh.read()
-        self.assertIn("a21cc9ce65ef169920f0e18cb130777a13bee838", text)
+        self.assertIn("6e7ef130aa7aff191a1a32a68fe2ff727fec4864", text)
         self.assertIn("MIT", text)
         self.assertTrue((VENDOR_CLI / "LICENSE").is_file())
 

@@ -1,5 +1,6 @@
 import type { Draft, MaterialText, Segment } from "./draft.js";
 import { type Namespace } from "./enums.js";
+import { type MaskFieldName } from "./mask-fields.js";
 export declare function keyframeProperties(): string[];
 export declare function keyframePropertyAliases(): Record<string, string>;
 /** Canonical property name for `name`, resolving aliases; throws on anything else. */
@@ -51,9 +52,6 @@ export interface MaskOptions {
     roundCorner?: number;
     field?: MaskFieldName;
 }
-/** The three mask material array variants seen in the wild. */
-export type MaskFieldName = "masks" | "common_mask" | "common_masks";
-export declare const MASK_FIELDS: readonly MaskFieldName[];
 /**
  * Which materials array a new mask should be written into. Three variants
  * exist: `masks` (legacy JianYing 5.9 era), `common_masks` (JianYing 9.6+ —
@@ -90,6 +88,9 @@ export declare function requireTextMaterial(draft: Draft, segmentId: string, lab
     text: MaterialText;
 };
 export interface TextStyleOptions {
+    fontSize?: number;
+    color?: string;
+    alignment?: number;
     alpha?: number;
     vertical?: boolean;
     fixedWidth?: number;
@@ -170,6 +171,24 @@ export interface TextRangeInput {
     underline?: boolean;
 }
 export declare function hexToRgb01(hex: string): [number, number, number];
+/** Stored 0..1 channels back to "#RRGGBB" (upper case), each channel clamped to a byte. */
+export declare function rgb01ToHex(rgb: [number, number, number]): string;
+/** The fill a style block stores for one solid colour (0..1 channels) at `alpha`. */
+export declare function solidFill(color: [number, number, number], alpha?: number): {
+    alpha: number;
+    content: {
+        render_type: string;
+        solid: {
+            alpha: number;
+            color: [number, number, number];
+        };
+    };
+};
+/** The solid colour and alpha of a stored fill, when it has one. */
+export declare function fillSolid(fill: unknown): {
+    color?: [number, number, number];
+    alpha?: number;
+} | undefined;
 export declare function setTextRanges(draft: Draft, segmentId: string, ranges: TextRangeInput[]): {
     segmentId: string;
     material_id: string;

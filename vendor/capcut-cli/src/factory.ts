@@ -1,23 +1,30 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
+  constants,
   copyFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { stripBom } from "./bom.js";
-import { uuidHex } from "./decorators.js";
+import { readJsonObjectFile, readTextIfPresent, stripBom } from "./bom.js";
+import { hexToRgb01, solidFill, uuidHex } from "./decorators.js";
 import { detectEncryption } from "./decrypt.js";
 import type { Draft, Segment, Timerange, Track } from "./draft.js";
-import { findMaterialGlobal, findSegment, makeTrack, writeAtomic } from "./draft.js";
+import { findMaterialGlobal, findSegment, loadedDraftProjectDir, makeTrack, writeAtomic } from "./draft.js";
 import { findEnum, type Namespace } from "./enums.js";
 import { PHOTO_META_DURATION_US, registerMediumInSidecar } from "./materials-register.js";
+import { requireSegment } from "./segment-lookup.js";
 import { isManagedDraftPath, parseCandidate } from "./store.js";
 import { storedTextLength } from "./text-offsets.js";
 import { atLeast, versionTuple } from "./version.js";
@@ -60,14 +67,83 @@ export function uuid(): string {
 
 // --- Asset copy (collision-safe) ---
 
+// Keep only the latest digest per absolute path, with a bound for long-lived
+// library callers. Metadata is checked on every use, including collision checks.
+const FILE_SHA1_CACHE_LIMIT = 256;
+const fileSha1Cache = new Map<string, { fingerprint: string; hash: string }>();
+
 function fileSha1(path: string): string {
-  return createHash("sha1").update(readFileSync(path)).digest("hex");
+  const key = resolve(path);
+  const stat = statSync(key, { bigint: true });
+  // ctime and inode catch same-size rewrites/replacements even if mtime was
+  // restored. Nanosecond timestamps avoid discarding filesystem precision.
+  const fingerprint = [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+  const cached = fileSha1Cache.get(key);
+  if (cached?.fingerprint === fingerprint) {
+    // Refresh insertion order so frequently reused media survives eviction.
+    fileSha1Cache.delete(key);
+    fileSha1Cache.set(key, cached);
+    return cached.hash;
+  }
+  const hash = createHash("sha1");
+  const fd = openSync(path, "r");
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  try {
+    for (;;) {
+      const count = readSync(fd, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      hash.update(buffer.subarray(0, count));
+    }
+    const digest = hash.digest("hex");
+    fileSha1Cache.delete(key);
+    fileSha1Cache.set(key, { fingerprint, hash: digest });
+    if (fileSha1Cache.size > FILE_SHA1_CACHE_LIMIT) {
+      fileSha1Cache.delete(fileSha1Cache.keys().next().value!);
+    }
+    return digest;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** True if both paths exist and have byte-identical content. */
 function sameContent(a: string, b: string): boolean {
-  if (statSync(a).size !== statSync(b).size) return false;
+  const source = statSync(a);
+  const destination = statSync(b);
+  if (!destination.isFile() || source.size !== destination.size) return false;
   return fileSha1(a) === fileSha1(b);
+}
+
+export interface AssetCopyPlan {
+  destination: string;
+  copyNeeded: boolean;
+  collision: boolean;
+}
+
+/** Choose a content-correct destination without creating directories or files. */
+export function planAssetCopy(srcPath: string, assetsDir: string, fallbackName: string): AssetCopyPlan {
+  if (!statSync(srcPath).isFile()) throw new Error(`Media source must be a regular file: ${srcPath}`);
+  const filename = basename(srcPath) || fallbackName;
+  const destination = resolve(assetsDir, filename);
+  if (!existsSync(destination)) return { destination, copyNeeded: true, collision: false };
+  if (sameContent(srcPath, destination)) return { destination, copyNeeded: false, collision: false };
+
+  const dot = filename.lastIndexOf(".");
+  const stem = dot > 0 ? filename.slice(0, dot) : filename;
+  const ext = dot > 0 ? filename.slice(dot) : "";
+  const hash = fileSha1(srcPath);
+  // A hash-suffixed filename can itself already hold unrelated content. Check
+  // each candidate rather than treating the suffix as proof of its bytes.
+  for (let length = 8; length <= hash.length; length += 4) {
+    const candidate = resolve(assetsDir, `${stem}.${hash.slice(0, length)}${ext}`);
+    if (!existsSync(candidate)) return { destination: candidate, copyNeeded: true, collision: true };
+    if (sameContent(srcPath, candidate)) return { destination: candidate, copyNeeded: false, collision: true };
+  }
+  for (let suffix = 1; ; suffix++) {
+    const candidate = resolve(assetsDir, `${stem}.${hash}.${suffix}${ext}`);
+    if (!existsSync(candidate)) return { destination: candidate, copyNeeded: true, collision: true };
+    if (sameContent(srcPath, candidate)) return { destination: candidate, copyNeeded: false, collision: true };
+  }
 }
 
 /**
@@ -83,31 +159,18 @@ function sameContent(a: string, b: string): boolean {
  * Returns the destination path the draft should reference.
  */
 export function copyAssetDeduped(srcPath: string, assetsDir: string, fallbackName: string): string {
+  const plan = planAssetCopy(srcPath, assetsDir, fallbackName);
+  if (!plan.copyNeeded) return plan.destination;
   mkdirSync(assetsDir, { recursive: true });
   const filename = basename(srcPath) || fallbackName;
-  const destPath = resolve(assetsDir, filename);
-
-  if (!existsSync(destPath)) {
-    copyFileSync(srcPath, destPath);
-    return destPath;
-  }
-  // Destination exists — same source (intentional no-op) or basename collision?
-  if (sameContent(srcPath, destPath)) return destPath;
-
-  // Different source resolving to the same basename: de-collide by content hash.
-  const dot = filename.lastIndexOf(".");
-  const stem = dot > 0 ? filename.slice(0, dot) : filename;
-  const ext = dot > 0 ? filename.slice(dot) : "";
-  const dedupName = `${stem}.${fileSha1(srcPath).slice(0, 8)}${ext}`;
-  const dedupPath = resolve(assetsDir, dedupName);
-  if (!existsSync(dedupPath)) {
-    copyFileSync(srcPath, dedupPath);
+  copyFileSync(srcPath, plan.destination, constants.COPYFILE_EXCL);
+  if (plan.collision) {
     console.warn(
       `Warning: "assets/${basename(assetsDir)}/${filename}" already exists from a different source file; ` +
-        `copied "${srcPath}" to "${dedupName}" instead. The draft references the correct content.`,
+        `copied "${srcPath}" to "${basename(plan.destination)}" instead. The draft references the correct content.`,
     );
   }
-  return dedupPath;
+  return plan.destination;
 }
 
 // --- Init (create new empty draft) ---
@@ -128,6 +191,10 @@ export interface InitOptions {
    * as-is (`--template bundled`, or an explicit --template directory).
    */
   seed?: "auto" | "always" | "off";
+  /** Initialize the local sidecar now, but register in the root index after a successful build. */
+  deferRegistration?: boolean;
+  /** Remove this newly created directory if initialization fails. */
+  cleanupOnError?: boolean;
 }
 
 export interface CanvasConfig {
@@ -346,16 +413,6 @@ function seedOutranks(a: StoreSeed, b: StoreSeed): boolean {
   return a.mtimeMs > b.mtimeMs;
 }
 
-/**
- * Newest `platform.app_version` across the drafts already in a drafts ROOT, or
- * null when the folder holds no readable draft. store.ts's highestVersion does
- * the same job across one project's siblings; `init` has no project to discover
- * yet, so it scans the store instead.
- */
-export function detectStoreAppVersion(draftsDir: string): string | null {
-  return scanStore(draftsDir).newestVersion;
-}
-
 /** True when the store's projects come from a materially newer app than the template declares (#67's gate). */
 export function storeOutgrowsTemplate(templateVersion: string | null, storeVersion: string | null): boolean {
   if (!templateVersion || !storeVersion) return false;
@@ -548,107 +605,123 @@ export function initDraft(opts: InitOptions): {
   const seed = seedMode === "off" ? null : scan.seed;
   const useSeed = seed !== null && (seedMode === "always" || storeOutgrowsTemplate(templateVersion, seed.appVersion));
 
-  let filePath: string;
-  let template: TemplateReport;
-  if (seed && useSeed) {
-    // Skeleton from the store's project: its schema markers and settings, no
-    // content. Canvas and fps stay the template's defaults (or the caller's
-    // override) so a portrait donor cannot flip every new draft to portrait.
-    const fps = typeof templateDoc.draft.fps === "number" && templateDoc.draft.fps > 0 ? templateDoc.draft.fps : 30;
-    const canvas: CanvasConfig = opts.canvas ??
-      (templateDoc.draft.canvas_config as CanvasConfig | undefined) ?? { width: 1920, height: 1080, ratio: "16:9" };
-    const { draft, reset } = seedDraftSkeleton(seed.draft, {
-      name: opts.name,
-      id: draftId,
-      canvas,
-      fps,
-      nowMs,
-      materialKeys: Object.keys(templateDoc.draft.materials ?? {}),
-    });
-    mkdirSync(draftPath, { recursive: true });
-    // The same file set the bundled template ships (both root mirrors), plus
-    // the template-2.tmp mirror when the seed project keeps a readable one —
-    // the >= 8.7 document the store's write path maintains from then on.
-    // draft_content.json is the registered identity file: the one `register`
-    // reads first, so the sidecar it verifies against agrees from the start.
-    const files = ["draft_content.json", "draft_info.json"];
-    if (parseCandidate(resolve(seed.projectDir, "template-2.tmp")).parseable) files.push("template-2.tmp");
-    const content = JSON.stringify(draft, null, 0);
-    for (const file of files) writeFileSync(resolve(draftPath, file), content, "utf-8");
-    filePath = resolve(draftPath, files[0]);
-    template = {
-      source: "store",
-      path: seed.projectDir,
-      app_version: seed.appVersion,
-      skipped: [],
-      reset,
-      store: scan.store,
-    };
-  } else {
-    const skipped = copyTemplateDir(opts.templateDir, draftPath);
-    const versionWarning =
-      templateVersionWarning(templateVersion, scan.newestVersion) ??
-      encryptedStoreWarning(scan, seedMode, templateVersion);
-    if (versionWarning) process.stderr.write(`WARNING: ${versionWarning}\n`);
-
-    // Identity (and the canvas override) land in EVERY plain timeline document
-    // the template ships — the bundled template carries draft_info.json and
-    // draft_content.json as mirrors, and a mirror left with id "" / name "" is
-    // exactly the drift sync-timelines exists to repair (and what made
-    // `register` refuse the CLI's own drafts, #111). An enveloped or binary
-    // template-2.tmp is left as copied; the first timeline write reconciles it.
-    const stamped: string[] = [];
-    for (const file of TEMPLATE_TIMELINE_FILES) {
-      const fp = resolve(draftPath, file);
-      if (!existsSync(fp)) continue;
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(stripBom(readFileSync(fp, "utf-8"))) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
-      if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.tracks)) continue;
-      if (opts.canvas) parsed.canvas_config = { ...opts.canvas };
-      parsed.name = opts.name;
-      parsed.id = draftId;
-      writeFileSync(fp, JSON.stringify(parsed, null, 0), "utf-8");
-      stamped.push(file);
-    }
-    // Registered identity file: draft_content.json when the template ships it
-    // (what `register` reads first, so its verification agrees with the sidecar
-    // init writes), else draft_info.json, else whatever was stamped.
-    const identityFile = ["draft_content.json", "draft_info.json"].find((file) => stamped.includes(file));
-    filePath = resolve(draftPath, identityFile ?? stamped[0] ?? templateDoc.file);
-    template = {
-      source: "path",
-      path: resolve(opts.templateDir),
-      app_version: templateVersion,
-      skipped,
-      reset: [],
-      store: scan.store,
-      ...(versionWarning ? { warning: versionWarning } : {}),
-    };
-  }
-
-  // CapCut's GUI does not scan the Projects folder — it lists drafts from a
-  // central index, root_meta_info.json, at the root of com.lveditor.draft/.
-  // Without an entry there a freshly created folder stays invisible. Register
-  // it (and write the per-folder draft_meta_info.json sidecar) so the new draft
-  // shows up. Best-effort: a failure here must not fail draft creation.
-  let registered = false;
+  // Exclusive creation establishes ownership: a concurrent creator is never
+  // mistaken for a directory this invocation may clean up.
+  mkdirSync(opts.draftsDir, { recursive: true });
+  mkdirSync(draftPath);
+  const owned = lstatSync(draftPath);
   try {
-    registered = registerDraftInIndex({
-      draftsDir: opts.draftsDir,
-      draftPath,
-      filePath,
-      draftId,
-      name: opts.name,
-      nowMs,
-    });
-  } catch {
-    registered = false;
+    let filePath: string;
+    let template: TemplateReport;
+    if (seed && useSeed) {
+      // Skeleton from the store's project: its schema markers and settings, no
+      // content. Canvas and fps stay the template's defaults (or the caller's
+      // override) so a portrait donor cannot flip every new draft to portrait.
+      const fps = typeof templateDoc.draft.fps === "number" && templateDoc.draft.fps > 0 ? templateDoc.draft.fps : 30;
+      const canvas: CanvasConfig = opts.canvas ??
+        (templateDoc.draft.canvas_config as CanvasConfig | undefined) ?? { width: 1920, height: 1080, ratio: "16:9" };
+      const { draft, reset } = seedDraftSkeleton(seed.draft, {
+        name: opts.name,
+        id: draftId,
+        canvas,
+        fps,
+        nowMs,
+        materialKeys: Object.keys(templateDoc.draft.materials ?? {}),
+      });
+      mkdirSync(draftPath, { recursive: true });
+      // The same file set the bundled template ships (both root mirrors), plus
+      // the template-2.tmp mirror when the seed project keeps a readable one —
+      // the >= 8.7 document the store's write path maintains from then on.
+      // draft_content.json is the registered identity file: the one `register`
+      // reads first, so the sidecar it verifies against agrees from the start.
+      const files = ["draft_content.json", "draft_info.json"];
+      if (parseCandidate(resolve(seed.projectDir, "template-2.tmp")).parseable) files.push("template-2.tmp");
+      const content = JSON.stringify(draft, null, 0);
+      for (const file of files) writeFileSync(resolve(draftPath, file), content, "utf-8");
+      filePath = resolve(draftPath, files[0]);
+      template = {
+        source: "store",
+        path: seed.projectDir,
+        app_version: seed.appVersion,
+        skipped: [],
+        reset,
+        store: scan.store,
+      };
+    } else {
+      const skipped = copyTemplateDir(opts.templateDir, draftPath);
+      const versionWarning =
+        templateVersionWarning(templateVersion, scan.newestVersion) ??
+        encryptedStoreWarning(scan, seedMode, templateVersion);
+      if (versionWarning) process.stderr.write(`WARNING: ${versionWarning}\n`);
+
+      // Identity (and the canvas override) land in EVERY plain timeline document
+      // the template ships — the bundled template carries draft_info.json and
+      // draft_content.json as mirrors, and a mirror left with id "" / name "" is
+      // exactly the drift sync-timelines exists to repair (and what made
+      // `register` refuse the CLI's own drafts, #111). An enveloped or binary
+      // template-2.tmp is left as copied; the first timeline write reconciles it.
+      const stamped: string[] = [];
+      for (const file of TEMPLATE_TIMELINE_FILES) {
+        const fp = resolve(draftPath, file);
+        if (!existsSync(fp)) continue;
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(stripBom(readFileSync(fp, "utf-8"))) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.tracks)) continue;
+        if (opts.canvas) parsed.canvas_config = { ...opts.canvas };
+        parsed.name = opts.name;
+        parsed.id = draftId;
+        writeFileSync(fp, JSON.stringify(parsed, null, 0), "utf-8");
+        stamped.push(file);
+      }
+      // Registered identity file: draft_content.json when the template ships it
+      // (what `register` reads first, so its verification agrees with the sidecar
+      // init writes), else draft_info.json, else whatever was stamped.
+      const identityFile = ["draft_content.json", "draft_info.json"].find((file) => stamped.includes(file));
+      filePath = resolve(draftPath, identityFile ?? stamped[0] ?? templateDoc.file);
+      template = {
+        source: "path",
+        path: resolve(opts.templateDir),
+        app_version: templateVersion,
+        skipped,
+        reset: [],
+        store: scan.store,
+        ...(versionWarning ? { warning: versionWarning } : {}),
+      };
+    }
+
+    // CapCut's GUI does not scan the Projects folder — it lists drafts from a
+    // central index, root_meta_info.json, at the root of com.lveditor.draft/.
+    // Without an entry there a freshly created folder stays invisible. Register
+    // it (and write the per-folder draft_meta_info.json sidecar) so the new draft
+    // shows up. Best-effort: a failure here must not fail draft creation.
+    let registered = false;
+    try {
+      registered = registerDraftInIndex({
+        draftsDir: opts.draftsDir,
+        draftPath,
+        filePath,
+        draftId,
+        name: opts.name,
+        nowMs,
+        index: !opts.deferRegistration,
+      });
+    } catch {
+      registered = false;
+    }
+    return { draftPath, filePath, registered, canvas: opts.canvas ? { ...opts.canvas } : null, template };
+  } catch (error) {
+    if (opts.cleanupOnError && existsSync(draftPath)) {
+      const current = lstatSync(draftPath);
+      if (current.isDirectory() && current.dev === owned.dev && current.ino === owned.ino) {
+        rmSync(draftPath, { recursive: true, force: true });
+      }
+    }
+    throw error;
   }
-  return { draftPath, filePath, registered, canvas: opts.canvas ? { ...opts.canvas } : null, template };
 }
 
 interface RegisterOptions {
@@ -659,6 +732,7 @@ interface RegisterOptions {
   name: string;
   nowMs: number;
   durationUs?: number; // draft duration in microseconds (tm_duration); init drafts start at 0
+  index?: boolean; // false initializes only the per-folder sidecar
 }
 
 /**
@@ -724,13 +798,32 @@ export function registerDraftInIndex(opts: RegisterOptions): boolean {
   const metaPath = resolve(opts.draftPath, "draft_meta_info.json");
   if (!existsSync(metaPath)) {
     writeFileSync(metaPath, JSON.stringify(buildDraftEntry(opts), null, 0), "utf-8");
+  } else if (opts.durationUs !== undefined) {
+    // A deferred compile has accumulated imported media in this sidecar.
+    // Stamp its final identity/timing without discarding those registrations.
+    const meta = JSON.parse(stripBom(readFileSync(metaPath, "utf-8"))) as unknown;
+    if (!meta || typeof meta !== "object" || Array.isArray(meta)) return false;
+    const fields = meta as Record<string, unknown>;
+    writeAtomic(
+      metaPath,
+      JSON.stringify(
+        {
+          ...fields,
+          ...IDENTIFYING_FIELDS(opts),
+          tm_draft_create: fields.tm_draft_create ?? opts.nowMs * 1000,
+        },
+        null,
+        0,
+      ),
+    );
   }
+  if (opts.index === false) return false;
 
   const indexPath = resolve(opts.draftsDir, "root_meta_info.json");
 
   if (!existsSync(indexPath)) {
     // No index yet (fresh CapCut / custom --drafts dir): create a minimal one.
-    writeFileSync(indexPath, JSON.stringify({ all_draft_store: [buildDraftEntry(opts)] }, null, 0), "utf-8");
+    writeAtomic(indexPath, JSON.stringify({ all_draft_store: [buildDraftEntry(opts)] }, null, 0));
     return true;
   }
 
@@ -757,7 +850,7 @@ export function registerDraftInIndex(opts: RegisterOptions): boolean {
 
   // Back up the user's index (it lists ALL their projects) before overwriting.
   writeFileSync(`${indexPath}.bak`, raw, "utf-8");
-  writeFileSync(indexPath, JSON.stringify(index, null, 0), "utf-8");
+  writeAtomic(indexPath, JSON.stringify(index, null, 0));
   return true;
 }
 
@@ -976,17 +1069,8 @@ export function planDraftRegistration(
 
   // Target 1: the per-folder draft_meta_info.json sidecar.
   const metaPath = resolve(projectDir, "draft_meta_info.json");
-  const metaRaw = existsSync(metaPath) ? stripBom(readFileSync(metaPath, "utf-8")) : null;
-  let metaParsed: Record<string, unknown> | null = null;
-  if (metaRaw !== null) {
-    try {
-      const parsed = JSON.parse(metaRaw) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-        metaParsed = parsed as Record<string, unknown>;
-    } catch {
-      // Unparseable sidecar: metaParsed stays null and is treated as corrupt below.
-    }
-  }
+  // An unparseable sidecar leaves metaParsed null and is treated as corrupt below.
+  const { raw: metaRaw, obj: metaParsed } = readJsonObjectFile(metaPath);
   if (storeRoot === null) {
     // Without a known store root there is no draft_root_path to derive and no
     // index to update — report only, never write (the contract for drafts
@@ -1071,7 +1155,7 @@ export function planDraftRegistration(
 
     // Target 2: the draft's entry in the store's root_meta_info.json index.
     const indexPath = resolve(storeRoot, "root_meta_info.json");
-    const indexRaw = existsSync(indexPath) ? stripBom(readFileSync(indexPath, "utf-8")) : null;
+    const { raw: indexRaw, obj: index } = readJsonObjectFile(indexPath);
     if (indexRaw === null) {
       // No index yet (fresh CapCut / custom --drafts dir): create a minimal
       // one, exactly like init's registerDraftInIndex.
@@ -1090,13 +1174,7 @@ export function planDraftRegistration(
         previous: null,
       });
     } else {
-      let index: Record<string, unknown> | null = null;
-      try {
-        const parsed = JSON.parse(indexRaw) as unknown;
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) index = parsed as Record<string, unknown>;
-      } catch {
-        // Unreadable index — leave it untouched rather than corrupt it (it lists every draft).
-      }
+      // Unreadable index — leave it untouched rather than corrupt it (it lists every draft).
       if (index === null) {
         targets.push({
           file: "root_meta_info.json",
@@ -1192,6 +1270,25 @@ export function planDraftRegistration(
 }
 
 /**
+ * The sync-timelines optimistic-concurrency rule for register and rename:
+ * refuse when a planned file's text is no longer what the plan read
+ * (`previous`, null for a file that was absent).
+ */
+function assertPlannedFilesUnchanged(
+  writes: Array<{ file: string; path: string; previous: string | null }>,
+  command: "register" | "rename",
+): void {
+  for (const write of writes) {
+    if (readTextIfPresent(write.path) !== write.previous) {
+      throw new Error(
+        `Draft changed on disk after it was planned: ${write.file}. ` +
+          `Re-run ${command}, or pass --force-write to overwrite intentionally.`,
+      );
+    }
+  }
+}
+
+/**
  * Perform the writes a registration plan prepared: temp+fsync+rename per file,
  * with a `.bak` of the pre-plan content for every file that already existed.
  * Unless forceWrite, refuses when a target changed on disk between the plan
@@ -1201,17 +1298,7 @@ export function applyDraftRegistration(
   result: RegistrationResult,
   options: { forceWrite?: boolean } = {},
 ): { applied: string[]; backups: string[] } {
-  if (!options.forceWrite) {
-    for (const write of result.writes) {
-      const current = existsSync(write.path) ? stripBom(readFileSync(write.path, "utf-8")) : null;
-      if (current !== write.previous) {
-        throw new Error(
-          `Draft changed on disk after it was planned: ${write.file}. ` +
-            "Re-run register, or pass --force-write to overwrite intentionally.",
-        );
-      }
-    }
-  }
+  if (!options.forceWrite) assertPlannedFilesUnchanged(result.writes, "register");
   const applied: string[] = [];
   const backups: string[] = [];
   for (const write of result.writes) {
@@ -1358,22 +1445,12 @@ export function planDraftRename(
   // proceeding would leave the app a sidecar whose recorded name/paths can
   // never be updated. register --apply repairs it (with a .bak) first.
   const metaPath = resolve(projectDir, "draft_meta_info.json");
-  const metaRaw = existsSync(metaPath) ? stripBom(readFileSync(metaPath, "utf-8")) : null;
-  let metaParsed: Record<string, unknown> | null = null;
-  if (metaRaw !== null) {
-    try {
-      const parsed = JSON.parse(metaRaw) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-        metaParsed = parsed as Record<string, unknown>;
-    } catch {
-      // metaParsed stays null → refused below.
-    }
-    if (metaParsed === null) {
-      throw new Error(
-        "rename must update draft_meta_info.json but it does not parse as JSON. " +
-          `Repair it first — capcut register ${projectDir} --apply rewrites the sidecar with a .bak — then re-run rename.`,
-      );
-    }
+  const { raw: metaRaw, obj: metaParsed } = readJsonObjectFile(metaPath);
+  if (metaRaw !== null && metaParsed === null) {
+    throw new Error(
+      "rename must update draft_meta_info.json but it does not parse as JSON. " +
+        `Repair it first — capcut register ${projectDir} --apply rewrites the sidecar with a .bak — then re-run rename.`,
+    );
   }
 
   const oldName =
@@ -1432,7 +1509,7 @@ export function planDraftRename(
     });
   } else {
     const indexPath = resolve(storeRoot, "root_meta_info.json");
-    const indexRaw = existsSync(indexPath) ? stripBom(readFileSync(indexPath, "utf-8")) : null;
+    const { raw: indexRaw, obj: index } = readJsonObjectFile(indexPath);
     if (indexRaw === null) {
       targets.push({
         file: "root_meta_info.json",
@@ -1443,13 +1520,7 @@ export function planDraftRename(
         updated_fields: [],
       });
     } else {
-      let index: Record<string, unknown> | null = null;
-      try {
-        const parsed = JSON.parse(indexRaw) as unknown;
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) index = parsed as Record<string, unknown>;
-      } catch {
-        // Unreadable index — refused below rather than renamed around (it lists every draft).
-      }
+      // Unreadable index — refused below rather than renamed around (it lists every draft).
       if (index === null) {
         throw new Error(
           "rename must update the draft's entry in root_meta_info.json, but the index does not parse as JSON; " +
@@ -1540,15 +1611,10 @@ export function applyDraftRename(
 ): { renamed: boolean; applied: string[]; backups: string[] } {
   const { plan, writes } = result;
   if (!options.forceWrite) {
-    for (const write of writes) {
-      const current = existsSync(write.readPath) ? stripBom(readFileSync(write.readPath, "utf-8")) : null;
-      if (current !== write.previous) {
-        throw new Error(
-          `Draft changed on disk after it was planned: ${write.file}. ` +
-            "Re-run rename, or pass --force-write to overwrite intentionally.",
-        );
-      }
-    }
+    assertPlannedFilesUnchanged(
+      writes.map((write) => ({ ...write, path: write.readPath })),
+      "rename",
+    );
   }
   if (existsSync(plan.new_path)) {
     throw new Error(`Refusing to rename: the target folder already exists: ${plan.new_path}`);
@@ -1720,11 +1786,6 @@ export interface AddTextOptions {
   trackName?: string;
 }
 
-function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace("#", "");
-  return [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255];
-}
-
 function buildTextContent(text: string, fontSize: number, color: [number, number, number]): string {
   return JSON.stringify({
     styles: [
@@ -1734,13 +1795,7 @@ function buildTextContent(text: string, fontSize: number, color: [number, number
         bold: false,
         italic: false,
         underline: false,
-        fill: {
-          alpha: 1,
-          content: {
-            render_type: "solid",
-            solid: { alpha: 1, color },
-          },
-        },
+        fill: solidFill(color),
       },
     ],
     text,
@@ -1837,7 +1892,7 @@ export function addText(
   const matId = uuid();
   const fontSize = opts.fontSize ?? 15;
   const color = opts.color ?? "#FFFFFF";
-  const rgb = hexToRgb(color);
+  const rgb = hexToRgb01(color);
   const alignment = opts.alignment ?? 1;
   const trackName = opts.trackName ?? "text";
 
@@ -1889,6 +1944,7 @@ export interface AddAudioOptions {
   path: string; // absolute path to audio file
   start: number; // microseconds
   duration: number; // microseconds (0 = use file duration)
+  sourceDuration?: number; // full media duration, independent of the segment
   volume?: number; // 0.0-1.0, default 1.0
   trackName?: string; // default "audio"
   // Placeholder clip (import-timeline: MissingReference / media not on disk):
@@ -1909,7 +1965,7 @@ export function addAudio(
 
   // Copy file into draft assets directory (collision-safe). Placeholder clips
   // reference their (possibly empty/broken) path verbatim — nothing to copy.
-  const draftDir = dirname(filePath);
+  const draftDir = loadedDraftProjectDir(filePath);
   const assetsDir = resolve(draftDir, "assets", "audio");
   const destPath = opts.placeholder ? opts.placeholder.path : copyAssetDeduped(opts.path, assetsDir, "audio.mp3");
   // Use the local assets path — CapCut rewrites to placeholder on open
@@ -1932,7 +1988,7 @@ export function addAudio(
     id: matId,
     path: localPath,
     name: filename,
-    duration: opts.duration,
+    duration: opts.sourceDuration ?? opts.duration,
     type: "extract_music",
     category_id: "",
     category_name: "local",
@@ -1964,7 +2020,7 @@ export function addAudio(
         path: localPath,
         name: filename,
         kind: "music",
-        durationUs: opts.duration,
+        durationUs: opts.sourceDuration ?? opts.duration,
         width: 0,
         height: 0,
       });
@@ -1991,6 +2047,7 @@ export interface AddVideoOptions {
   path: string; // absolute path to video/image file
   start: number; // microseconds
   duration: number; // microseconds
+  sourceDuration?: number; // full media duration, independent of the segment
   type?: "video" | "photo"; // default: inferred from extension
   width?: number; // default 1920
   height?: number; // default 1080
@@ -2018,7 +2075,7 @@ export function addVideo(
 
   // Copy file into draft assets directory (collision-safe). Placeholder clips
   // reference their (possibly empty/broken) path verbatim — nothing to copy.
-  const draftDir = dirname(filePath);
+  const draftDir = loadedDraftProjectDir(filePath);
   const assetsDir = resolve(draftDir, "assets", "video");
   const destPath = opts.placeholder ? opts.placeholder.path : copyAssetDeduped(opts.path, assetsDir, "media");
   // Use the local assets path — CapCut rewrites to placeholder on open
@@ -2042,7 +2099,7 @@ export function addVideo(
     path: localPath,
     material_name: filename,
     type: materialType,
-    duration: opts.duration,
+    duration: opts.sourceDuration ?? opts.duration,
     width,
     height,
     category_id: "",
@@ -2102,7 +2159,7 @@ export function addVideo(
         path: localPath,
         name: filename,
         kind: materialType === "photo" ? "photo" : "video",
-        durationUs: materialType === "photo" ? PHOTO_META_DURATION_US : opts.duration,
+        durationUs: materialType === "photo" ? PHOTO_META_DURATION_US : (opts.sourceDuration ?? opts.duration),
         width,
         height,
       });
@@ -2280,8 +2337,7 @@ export interface RemoveSegmentResult {
  * fresh init draft).
  */
 export function removeSegment(draft: Draft, segId: string, opts: RemoveSegmentOptions = {}): RemoveSegmentResult {
-  const found = findSegment(draft, segId);
-  if (!found) throw new Error(`Segment not found: ${segId}`);
+  const found = requireSegment(draft, segId);
   const { track, segment, index } = found;
   const durationBefore = draft.duration;
   const removedStart = segment.target_timerange.start;
@@ -2369,22 +2425,7 @@ export interface Template {
 }
 
 export function saveTemplate(draft: Draft, segId: string, name: string, outPath: string): Template {
-  const shortId = segId.toLowerCase();
-  let foundSeg: Segment | null = null;
-  let foundTrack: Track | null = null;
-
-  for (const track of draft.tracks) {
-    for (const seg of track.segments) {
-      if (seg.id === segId || seg.id.toLowerCase().startsWith(shortId)) {
-        foundSeg = seg;
-        foundTrack = track;
-        break;
-      }
-    }
-    if (foundSeg) break;
-  }
-
-  if (!foundSeg || !foundTrack) throw new Error(`Segment not found: ${segId}`);
+  const { segment: foundSeg, track: foundTrack } = requireSegment(draft, segId);
 
   // Resolve primary material
   const mat = findMaterialGlobal(draft, foundSeg.material_id);
@@ -2553,8 +2594,7 @@ export function duplicateSegment(
   segId: string,
   opts: DuplicateSegmentOptions = {},
 ): DuplicateSegmentResult {
-  const found = findSegment(draft, segId);
-  if (!found) throw new Error(`Segment not found: ${segId}`);
+  const found = requireSegment(draft, segId);
   const { track: sourceTrack, segment: sourceSeg } = found;
   const { start, duration } = sourceSeg.target_timerange;
 
@@ -2893,8 +2933,7 @@ export function addEffect(
   // full segment id so the written reference never dangles.
   let bindSegmentId = "";
   if (opts.bindSegmentId) {
-    const bound = findSegment(draft, opts.bindSegmentId);
-    if (!bound) throw new Error(`Segment not found: ${opts.bindSegmentId}`);
+    const bound = requireSegment(draft, opts.bindSegmentId);
     bindSegmentId = bound.segment.id;
   }
 
@@ -3019,8 +3058,7 @@ function findCropMaterial(
   segmentId: string,
   label = "crop",
 ): { seg: Segment; mat: Record<string, unknown> & { id: string; type?: string } } {
-  const found = findSegment(draft, segmentId);
-  if (!found) throw new Error(`Segment not found: ${segmentId}`);
+  const found = requireSegment(draft, segmentId);
   const seg = found.segment;
   const videos = (draft.materials.videos ?? []) as Array<Record<string, unknown> & { id: string; type?: string }>;
   const mat = videos.find((v) => v.id === seg.material_id);
@@ -3120,8 +3158,7 @@ export function setAudioFade(
   if (fadeIn <= 0 && fadeOut <= 0) {
     throw new Error(`audio-fade requires at least one of --in or --out (> 0)`);
   }
-  const found = findSegment(draft, segmentId);
-  if (!found) throw new Error(`Segment not found: ${segmentId}`);
+  const found = requireSegment(draft, segmentId);
   if (found.track.type !== "audio") {
     throw new Error(`audio-fade only applies to audio segments (track type: ${found.track.type})`);
   }

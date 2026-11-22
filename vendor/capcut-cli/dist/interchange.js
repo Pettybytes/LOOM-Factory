@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { basename, isAbsolute, resolve, win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 import { extractText } from "./draft.js";
 import { framesFor } from "./time.js";
 /** The marker colour every caption marker carries — one colour, so an NLE user can filter them. */
@@ -239,7 +240,22 @@ function clipPlan(node, rate, trackLabel, skipped) {
         mediaDurationUs,
     };
 }
-export function otioToImportPlan(doc) {
+/** Resolve local references without fetching remote URLs or changing foreign Windows paths. */
+export function resolveOtioMediaPath(reference, mediaDir) {
+    if (/^file:/i.test(reference)) {
+        try {
+            return fileURLToPath(reference);
+        }
+        catch {
+            return reference;
+        }
+    }
+    if (isAbsolute(reference) || win32.isAbsolute(reference) || /^[a-z][a-z0-9+.-]*:/i.test(reference)) {
+        return reference;
+    }
+    return mediaDir === undefined ? reference : resolve(mediaDir, reference);
+}
+export function otioToImportPlan(doc, options = {}) {
     if (schemaOf(doc) !== "Timeline.1") {
         throw new Error(`import-timeline: not an OpenTimelineIO Timeline.1 document (OTIO_SCHEMA: ${schemaOf(doc) || "missing"})`);
     }
@@ -405,6 +421,8 @@ export function otioToImportPlan(doc) {
                 const clip = clipPlan(item, rate, label, skipped);
                 if (!clip)
                     continue;
+                if (clip.mediaPath !== null)
+                    clip.mediaPath = resolveOtioMediaPath(clip.mediaPath, options.mediaDir);
                 clip.targetStartUs = cursorUs;
                 cursorUs += clip.targetDurationUs;
                 clips.push(clip);

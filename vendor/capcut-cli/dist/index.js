@@ -1,13 +1,14 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appVersionEvidence, assessAppVersionDrift, formatAppVersionDriftWarning, takeAppVersionDrift, trackAppVersion, } from "./app-versions.js";
-import { stripBom } from "./bom.js";
+import { parseJsonObject, readSubtitleText, stripBom } from "./bom.js";
 import { buildCommandSpecs, commandDeclaresFlag, completionWords, GLOBAL_OPTION_SPECS, RELEASE_SCOPED_FLAGS, renderCommandIndex, } from "./command-specs.js";
-import { assertTargetsUnchangedOnDisk, commitDraftTargets, extractCodeUnitStyleRanges, extractText, findDraft, findMaterial, findMaterialGlobal, findSegment, getMaterialTypes, getTracksByType, isDryRun, listSnapshots, loadDraft, saveDraft, setDryRun, setForceWrite, updateTextContent, } from "./draft.js";
-import { defaultDraftsDir, diagnoseDraftStore, discoverDraftStore, editorProcesses, NESTED_TIMELINES_MODERN_ACTION, nestedTimelinesAction, nestedTimelinesWriteWarning, planTimelineSync, } from "./store.js";
+import { assertTargetsUnchangedOnDisk, commitDraftTargets, contentDigest, extractCodeUnitStyleRanges, extractText, findDraft, findMaterial, findMaterialGlobal, findSegment, getMaterialTypes, getTracksByType, isDryRun, loadDraft, loadedDraftStore, readLastWrite, recordLastWrite, saveDraft, setDryRun, setForceWrite, setWriteContext, updateTextContent, } from "./draft.js";
+import { ACTIVE_TIMELINE_WINDOWS_ACTION, assertActiveTimelineUnchanged, defaultDraftsDir, diagnoseDraftStore, discoverDraftStore, draftProjectDir, editorProcesses, NESTED_TIMELINES_MODERN_ACTION, nestedTimelinesAction, nestedTimelinesWriteWarning, parseCandidate, planTimelineSync, setActiveTimelineSelection, timelineFromText, } from "./store.js";
 import { formatDuration, formatTime, parseTimeInput } from "./time.js";
 import { assessWriteSafety, detectVersion } from "./version.js";
 export const COMMANDS = [
@@ -95,6 +96,7 @@ export const COMMANDS = [
     "quickstart",
     "compile",
     "render",
+    "loudness",
     "detect-scenes",
     "detect-silence",
     "detect-retakes",
@@ -102,6 +104,7 @@ export const COMMANDS = [
 const HELP = `capcut-cli -- fast edits to CapCut projects
 
 Usage: capcut <command> <project> [options]
+       capcut <command> --help    One command's usage, options and exit codes
 
   <project> = path to draft_content.json, draft_info.json, or their parent directory
 
@@ -111,6 +114,8 @@ Global flags:
   -q, --quiet     No output on success, exit code only (write commands)
   --dry-run       Preview a mutating command: print the result (with
                   "dryRun":true) but leave the draft and its .bak untouched
+  --active-timeline  Follow the validated Timelines/project.json pointer explicitly
+                    on an unverified build; existing write guards still apply.
   --force-write   Override editor-running, changed-on-disk, and
                   version-boundary safety checks
   --jianying      Use JianYing enum namespace (default: CapCut) for
@@ -131,6 +136,15 @@ Overview (start here):
                --max-cue-secs <n>  Caption duration cap (default 7)
                --min-gap-ms <n>    Min gap between captions (default 0)
                --no-check-paths    Skip local-file existence checks
+               --max-still-secs <n> Warn (still-too-long) on a still image
+                                   that plays longer than n seconds
+               --max-shot-secs <n> Warn (shot-too-long) on a video clip
+                                   that plays longer than n seconds
+               --min-silent-secs <n> Warn (silent-stretch) on every range of
+                                   n seconds or more where nothing audible
+                                   plays; a clip counts as silent only when
+                                   the draft says so (volume 0, muted
+                                   track, photo, sound separated)
                --fix               Auto-repair issues stamped fixable:true
                                    (cue-too-long, caption-overlap,
                                    caption-gap-too-small, line-too-long,
@@ -173,7 +187,7 @@ Create:
              Durations come from ffprobe when available (5s placeholder if not).
              --ratio / --width / --height set the canvas exactly as in init.
              Exit codes: 0 created & lint-clean · 2 created but lint errors
-  compile    <spec.json> [--out <draftdir>] [--drafts <dir>] [--data <rows.jsonl|->]
+  compile    <spec.json> [--out <draftdir> | --into <project>] [--drafts <dir>] [--data <rows.jsonl|->]
              Build a whole draft from a declarative JSON spec (the inverse of
              describe). Times are in seconds. Media paths resolve relative to
              the spec file. Validates the full spec before writing anything.
@@ -187,6 +201,19 @@ Create:
              draft, so use --drafts (not --out) with --data.
 
 Preview:
+  loudness   <project> [--target <LUFS>] [--per-clip] [--max-gain-db <dB>] [--apply]
+             [--tolerance <LU>] [--max-true-peak <dBTP>]
+             Measure every audible clip with ffmpeg's EBU R128 meter (over the
+             part of its media the timeline plays) and estimate the export's
+             integrated loudness. A draft carries no master gain, so a quiet
+             recording exports quiet. --target (e.g. -14 long-form, -11 shorts)
+             adds the gain that reaches it, one gain for the whole mix (keeps
+             the balance) or per clip with --per-clip; --apply writes it as
+             segment volume. Boosts are capped at --max-gain-db (default 20).
+             Delivery gate: --tolerance (needs --target) and --max-true-peak
+             judge the mix after this run's gain with --apply, the mix as it
+             stands without; a miss exits 1 with the reason on stderr, and
+             the result's "gate" object says which check failed.
   render     <project> [--out <file.mp4>] [options]
              Render a low-res ffmpeg PROXY preview of the timeline so you can
              watch an edit without opening CapCut. Flattens the main video
@@ -195,7 +222,11 @@ Preview:
              Options:
                --scale <f>        Proxy scale of canvas dims (default 0.5)
                --fps <n>          Output fps (default draft fps)
-               --burn-captions    Draw text-track segments onto the video
+               --burn-captions    Draw text-track segments onto the video, each
+                                  in its text material's font file when the
+                                  draft names an existing .ttf/.otf/.ttc
+                                  (else ffmpeg's default face); the result's
+                                  caption_fonts counts both
                --soft-captions    Mux the text-track cues as a toggleable
                                   subtitle stream (mov_text) instead of, or
                                   as well as, burning them: the SRT is written
@@ -313,6 +344,9 @@ Add:
                --tts-cmd 'say -o {out} {text}'          (macOS)
                --tts-cmd 'espeak-ng -w {out} {text}'
              Options:
+               --lexicon <file>   Pronunciation rules {"rules":[{"text","say",
+                                  "case_sensitive"?}]} applied to the spoken
+                                  text only (longest match, word boundaries)
                --volume <n>       Volume 0.0-1.0 (default: 1.0)
                --track-name <s>   Track name (default: "audio")
 
@@ -428,13 +462,16 @@ Maintenance & inspection:
   timeline   <project> [--cols N]               Show track/segment layout (JSON, or -H ASCII bars)
   projects   [query] [--drafts <dir>] [--names] List CapCut/JianYing draft folders on disk
   diff       <projectA> <projectB>             Compare two drafts (added/removed/changed)
+             --since-write: compare <projectA> with what capcut-cli last wrote
+             to it, to see what the app changed after opening or saving it.
   concat     <projectA> <draftB> [--out <p>]   Append draftB onto projectA's timeline (id-safe)
   config                                       Show resolved .capcutrc + effective defaults
-  describe                                      Emit the full command surface as JSON (agent tool spec)
+  describe [--compact] [--command <name>]        Emit command contracts or a compact discovery index
   diagnose   <project> [--bundle <report.json>] Inspect canonical draft files and divergence
   fixture    <project> --out <dir>              Build a shareable, redacted compatibility bundle
              (timeline JSON only, no media; home paths + emails redacted) to
-             attach to a version-support issue like #35.
+             attach to a version-support issue like #35. --anonymize also
+             replaces media names, folder names, the project name and texts.
   sync-timelines <project-dir> [--apply]        Reconcile timeline mirrors (template-2.tmp,
              draft_info.json) that drifted from draft_content.json, so a CLI
              edit is honored by CapCut >= 8.7 (issue #35). Prints the plan
@@ -615,12 +652,53 @@ Discovery (Phase 3):
 Caption (v0.4 — real subtitle objects, fixes import-srt mimicry):
   caption    <project> --audio <path> [options]
   caption    <project> --from-segment <id> [options]
+  caption    <project> --words <file.json|-> [options]
              Auto-caption via whisper; emits real CapCut subtitle-track objects.
+             --words takes word timings from any external aligner instead
+             (Whisper / whisper.cpp JSON with segments[].words[], WhisperX
+             word_segments[], or a plain [{word|text|char, start, end}] array
+             in seconds, start_ms/end_ms or start_time/end_time keys — e.g.
+             Qwen3-ForcedAligner's per-character Chinese output) and does not
+             need Whisper installed. Times are timeline positions, as with
+             --audio. Entries without timing are skipped (words_skipped);
+             end<start or out-of-order entries are refused. Not combinable
+             with --audio/--from-segment/--audio-stream/--whisper-*.
              Options:
+               --cloud              Experimental, unofficial: upload the audio to
+                                    ByteDance's CapCut servers and transcribe it
+                                    there instead of with local Whisper (needs ffprobe)
+               --translate <lang>   Experimental, unofficial: send the caption text to
+                                    ByteDance's CapCut servers and translate it there,
+                                    word timings kept (nothing is sent under --dry-run)
                --whisper-cmd <cmd>  Path to whisper binary (default: "whisper")
                --whisper-model <m>  Model name (default: "base")
                --audio-stream <n>   Zero-based audio stream in the input
-               --ffmpeg-cmd <cmd>   ffmpeg used to extract --audio-stream
+               --ffmpeg-cmd <cmd>   ffmpeg used to extract --audio-stream and
+                                    to measure caption coverage
+               --min-uncaptioned <secs>
+                                    Shortest stretch of speech without a cue
+                                    the coverage check reports (default 1.5)
+               --no-coverage        Skip the coverage check. By default, after
+                                    transcribing, ffmpeg measures the speech in
+                                    the audio (silencedetect) and the result's
+                                    "coverage" block lists the speech no cue
+                                    covers; any found prints one
+                                    [uncaptioned-speech] warning on stderr.
+                                    Without ffmpeg it is skipped, never fatal.
+               --no-cache           Transcribe again even when the transcript
+                                    cache holds this audio. By default the raw
+                                    transcription is cached (keyed by the audio
+                                    bytes, engine, whisper command, model,
+                                    language and word-timing mode), so a run
+                                    that only changes styling, grouping,
+                                    --script or --translate does not transcribe
+                                    (or, with --cloud, upload) again; the result
+                                    says transcript_cache hit|miss|off. Cache
+                                    dir: CAPCUT_CLI_CACHE_DIR, else
+                                    $XDG_CACHE_HOME/capcut-cli/transcripts, else
+                                    ~/.cache/capcut-cli/transcripts
+                                    (%LOCALAPPDATA%\\capcut-cli\\cache\\transcripts
+                                    on Windows). --dry-run never writes it.
                --language <code>    ISO code or "auto" (default)
                --track-name <s>     Caption track name (default: "captions")
                --style-ref <seg-id> Mirror styling from existing text segment
@@ -660,11 +738,13 @@ Caption (v0.4 — real subtitle objects, fixes import-srt mimicry):
 
 Translate (v0.4 — multi-language draft clone):
   translate  <project> --to <lang> --out <path> [options]
-             Translate every text segment via Anthropic API, write a new draft.
+             Translate every text segment via Anthropic API or CapCut cloud, write a new draft.
              Options:
+               --cloud              Experimental, unofficial: send the text to ByteDance's
+                                    CapCut servers and translate it there (no API key)
                --from <lang>        Source language (default: "auto")
                --api-key <key>      Override ANTHROPIC_API_KEY env var
-               --model <id>         Model (default: claude-haiku-4-5-20251001)
+               --model <id>         Model (default: claude-haiku-5-5)
                --dry-run            List what would be translated, no API call
 
 Migrate (v0.4 — survive JianYing/CapCut version jumps):
@@ -866,6 +946,229 @@ function fishCompletion() {
         .map((word) => `complete -c capcut -f -a "${word}"`)
         .join("\n");
 }
+const BOOLEAN_FLAGS = new Map([
+    ["--off", "off"],
+    ["--materials", "materials"],
+    ["--from-store", "fromStore"],
+    ["--ripple", "ripple"],
+    ["--word-reveal", "wordReveal"],
+    ["--soft-captions", "softCaptions"],
+    ["--per-clip", "perClip"],
+    ["--strict", "strict"],
+    ["--verify", "verify"],
+    ["--invert", "invert"],
+    ["--vertical", "vertical"],
+    ["--shadow", "shadow"],
+    ["--full", "full"],
+    ["--bubbles", "bubbles"],
+    ["--jianying", "jianying"],
+    ["--force-license", "forceLicense"],
+    ["--progress", "progress"],
+    ["--no-check-paths", "noCheckPaths"],
+    ["--fix", "fix"],
+    ["--karaoke", "karaoke"],
+    ["--no-probe", "noProbe"],
+    ["--no-coverage", "noCoverage"],
+    ["--no-cache", "noCache"],
+    ["--retime", "retime"],
+    ["--dry-run", "dryRun"],
+    ["--fail-fast", "failFast"],
+    ["--recursive", "recursive"],
+    ["--list", "list"],
+    ["--names", "names"],
+    ["--burn-captions", "burnCaptions"],
+    ["--all-video-tracks", "allVideoTracks"],
+    ["--force-write", "forceWrite"],
+    ["--continue-on-error", "continueOnError"],
+    ["--check", "check"],
+    ["--anonymize", "anonymize"],
+    ["--since-write", "sinceWrite"],
+    ["--apply", "apply"],
+    ["--nested", "nested"],
+    ["--pip", "pip"],
+    ["--frame-grid", "frameGrid"],
+    ["--clone-style", "cloneStyle"],
+    ["--stage", "stage"],
+    ["--sync", "sync"],
+    ["--add", "add"],
+    ["--json", "json"],
+    ["--reset", "reset"],
+    ["--new-track", "newTrack"],
+    ["--keep-track", "keepTrack"],
+    ["--keep-materials", "keepMaterials"],
+    ["--cloud", "cloud"],
+]);
+const STRING_FLAGS = new Map([
+    ["--out", "out"],
+    ["--translate", "translate"],
+    ["--color", "color"],
+    ["--track-name", "trackName"],
+    ["--template", "template"],
+    ["--drafts", "drafts"],
+    ["--duration", "duration"],
+    ["--like", "like"],
+    ["--captions", "captions"],
+    ["--script", "script"],
+    ["--catalogue", "catalogue"],
+    ["--shadow-color", "shadowColor"],
+    ["--border-color", "borderColor"],
+    ["--bg-color", "bgColor"],
+    ["--intro", "intro"],
+    ["--outro", "outro"],
+    ["--intro-duration", "introDuration"],
+    ["--outro-duration", "outroDuration"],
+    ["--combo", "combo"],
+    ["--combo-duration", "comboDuration"],
+    ["--resource-id", "resourceId"],
+    ["--params", "params"],
+    ["--bind", "bind"],
+    ["--style-ref", "styleRef"],
+    ["--time-offset", "timeOffset"],
+    ["--fade-out", "fadeOut"],
+    ["--time", "time"],
+    ["--bubble", "bubble"],
+    ["--effect-id", "effectId"],
+    ["--styles", "styles"],
+    ["--preset", "preset"],
+    ["--audio", "audio"],
+    ["--from-segment", "fromSegment"],
+    ["--words", "words"],
+    ["--whisper-cmd", "whisperCmd"],
+    ["--whisper-model", "whisperModel"],
+    ["--language", "language"],
+    ["--highlight-words", "highlightWords"],
+    ["--keyword-color", "keywordColor"],
+    ["--color-cycle", "colorCycle"],
+    ["--text", "text"],
+    ["--text-file", "textFile"],
+    ["--tts-cmd", "ttsCmd"],
+    ["--lexicon", "lexicon"],
+    ["--ffprobe-cmd", "ffprobeCmd"],
+    ["--video", "video"],
+    ["--srt", "srt"],
+    ["--to", "to"],
+    ["--api-key", "apiKey"],
+    ["--model", "model"],
+    ["--app", "app"],
+    ["--queue", "queue"],
+    ["--dir", "dir"],
+    ["--ffmpeg-cmd", "ffmpegCmd"],
+    ["--encoder", "encoder"],
+    ["--video-bitrate", "videoBitrate"],
+    ["--bundle", "bundle"],
+    ["--data", "data"],
+    ["--into", "into"],
+    ["--kind", "kind"],
+    ["--ratio", "ratio"],
+    ["--rect", "rect"],
+]);
+const FLOAT_FLAGS = new Map([
+    ["--font-size", "fontSize"],
+    ["--x", "x"],
+    ["--y", "y"],
+    ["--width", "width"],
+    ["--height", "height"],
+    ["--volume", "volume"],
+    ["--target", "target"],
+    ["--max-gain-db", "maxGainDb"],
+    ["--tolerance", "tolerance"],
+    ["--max-true-peak", "maxTruePeak"],
+    ["--min-script-match", "minScriptMatch"],
+    ["--min-uncaptioned", "minUncaptioned"],
+    ["--window", "window"],
+    ["--similarity", "similarity"],
+    ["--center-x", "centerX"],
+    ["--center-y", "centerY"],
+    ["--size", "size"],
+    ["--rotation", "rotation"],
+    ["--feather", "feather"],
+    ["--rect-width", "rectWidth"],
+    ["--round-corner", "roundCorner"],
+    ["--alpha", "alpha"],
+    ["--fixed-width", "fixedWidth"],
+    ["--fixed-height", "fixedHeight"],
+    ["--shadow-alpha", "shadowAlpha"],
+    ["--shadow-angle", "shadowAngle"],
+    ["--shadow-distance", "shadowDistance"],
+    ["--shadow-smoothing", "shadowSmoothing"],
+    ["--border-width", "borderWidth"],
+    ["--border-alpha", "borderAlpha"],
+    ["--bg-alpha", "bgAlpha"],
+    ["--bg-round-radius", "bgRoundRadius"],
+    ["--bg-width", "bgWidth"],
+    ["--bg-height", "bgHeight"],
+    ["--bg-h-offset", "bgHOffset"],
+    ["--bg-v-offset", "bgVOffset"],
+    ["--scale", "scale"],
+    ["--max-cue-secs", "maxCueSecs"],
+    ["--max-still-secs", "maxStillSecs"],
+    ["--max-shot-secs", "maxShotSecs"],
+    ["--min-silent-secs", "minSilentSecs"],
+    ["--min-gap-ms", "minGapMs"],
+    ["--max-cps", "maxCps"],
+    ["--safe-area", "safeArea"],
+    ["--max-gap-ms", "maxGapMs"],
+    ["--keyword-size", "keywordSize"],
+    ["--intensity", "intensity"],
+    ["--fps", "fps"],
+    ["--crf", "crf"],
+    ["--threshold", "threshold"],
+    ["--min-gap", "minGap"],
+    ["--threshold-db", "thresholdDb"],
+    ["--min-silence", "minSilence"],
+    ["--pad", "pad"],
+]);
+const INTEGER_FLAGS = new Map([
+    ["--align", "align"],
+    ["--min-words", "minWords"],
+    ["--bg-style", "bgStyle"],
+    ["--max-chars", "maxChars"],
+    ["--max-words", "maxWords"],
+    ["--step", "step"],
+    ["--cols", "cols"],
+    ["--limit", "limit"],
+]);
+const NUMBER_FLAGS = new Map([
+    ["--audio-stream", "audioStream"],
+    ["--workers", "workers"],
+    ["--retries", "retries"],
+    ["--timeout", "timeoutMs"],
+    ["--backoff-ms", "backoffMs"],
+    ["--max-buffer-mb", "maxBufferMb"],
+]);
+/**
+ * Apply args[i] when it is a table flag (and, for a value flag, a value token
+ * follows). Returns false otherwise, leaving args[i] to parseFlags's chain —
+ * a value flag at the end of the line falls through exactly as before.
+ */
+function applyTableFlag(flags, args, i) {
+    const a = args[i];
+    const flag = BOOLEAN_FLAGS.get(a);
+    if (flag) {
+        flags[flag] = true;
+        return true;
+    }
+    if (i + 1 >= args.length)
+        return false;
+    const value = args[i + 1];
+    const text = STRING_FLAGS.get(a);
+    if (text)
+        flags[text] = value;
+    else {
+        const float = FLOAT_FLAGS.get(a);
+        const integer = INTEGER_FLAGS.get(a);
+        const number = NUMBER_FLAGS.get(a);
+        if (float)
+            flags[float] = parseFloat(value);
+        else if (integer)
+            flags[integer] = parseInt(value, 10);
+        else if (number)
+            flags[number] = Number(value);
+        else
+            return false;
+    }
+    return true;
+}
 function parseFlags(args) {
     const positional = [];
     const flags = { human: false, quiet: false, batch: false };
@@ -882,12 +1185,28 @@ function parseFlags(args) {
             positional.push(a);
             continue;
         }
+        if (applyTableFlag(flags, args, i)) {
+            if (!BOOLEAN_FLAGS.has(a))
+                i++;
+            continue;
+        }
         if (a === "-H" || a === "--human")
             flags.human = true;
         else if (a === "-v" || a === "--version")
             flags.version = true;
         else if (a === "-q" || a === "--quiet")
             flags.quiet = true;
+        else if (a === "--compact")
+            flags.describeCompact = true;
+        else if (a === "--active-timeline")
+            flags.activeTimeline = true;
+        else if (a === "--command") {
+            const name = args[++i];
+            if (!name || name.startsWith("-"))
+                die("--command requires a command name (for example: --command compile)");
+            flags.describeCommands ??= [];
+            flags.describeCommands.push(name);
+        }
         else if (a === "--batch")
             flags.batch = true;
         else if (a === "--easing" && i + 1 < args.length) {
@@ -896,113 +1215,8 @@ function parseFlags(args) {
         else if ((a === "--track" || a === "--type") && i + 1 < args.length) {
             flags.track = args[++i];
         }
-        else if (a === "--out" && i + 1 < args.length) {
-            flags.out = args[++i];
-        }
-        else if (a === "--font-size" && i + 1 < args.length) {
-            flags.fontSize = parseFloat(args[++i]);
-        }
-        else if (a === "--color" && i + 1 < args.length) {
-            flags.color = args[++i];
-        }
-        else if (a === "--align" && i + 1 < args.length) {
-            flags.align = parseInt(args[++i], 10);
-        }
-        else if (a === "--x" && i + 1 < args.length) {
-            flags.x = parseFloat(args[++i]);
-        }
-        else if (a === "--y" && i + 1 < args.length) {
-            flags.y = parseFloat(args[++i]);
-        }
-        else if (a === "--track-name" && i + 1 < args.length) {
-            flags.trackName = args[++i];
-        }
-        else if (a === "--width" && i + 1 < args.length) {
-            flags.width = parseFloat(args[++i]);
-        }
-        else if (a === "--height" && i + 1 < args.length) {
-            flags.height = parseFloat(args[++i]);
-        }
-        else if (a === "--volume" && i + 1 < args.length) {
-            flags.volume = parseFloat(args[++i]);
-        }
-        else if (a === "--template" && i + 1 < args.length) {
-            flags.template = args[++i];
-        }
-        else if (a === "--drafts" && i + 1 < args.length) {
-            flags.drafts = args[++i];
-        }
-        else if (a === "--duration" && i + 1 < args.length) {
-            flags.duration = args[++i];
-        }
-        else if (a === "--off") {
-            flags.off = true;
-        }
-        else if (a === "--materials") {
-            flags.materials = true;
-        }
-        else if (a === "--like" && i + 1 < args.length) {
-            flags.like = args[++i];
-        }
-        else if (a === "--from-store") {
-            flags.fromStore = true;
-        }
         else if (a === "--from" && command === "shift-all" && i + 1 < args.length) {
             flags.fromTime = args[++i];
-        }
-        else if (a === "--ripple") {
-            flags.ripple = true;
-        }
-        else if (a === "--captions" && i + 1 < args.length) {
-            flags.captions = args[++i];
-        }
-        else if (a === "--script" && i + 1 < args.length) {
-            flags.script = args[++i];
-        }
-        else if (a === "--word-reveal") {
-            flags.wordReveal = true;
-        }
-        else if (a === "--min-script-match" && i + 1 < args.length) {
-            flags.minScriptMatch = parseFloat(args[++i]);
-        }
-        else if (a === "--audio-stream" && i + 1 < args.length) {
-            flags.audioStream = Number(args[++i]);
-        }
-        else if (a === "--window" && i + 1 < args.length) {
-            flags.window = parseFloat(args[++i]);
-        }
-        else if (a === "--similarity" && i + 1 < args.length) {
-            flags.similarity = parseFloat(args[++i]);
-        }
-        else if (a === "--min-words" && i + 1 < args.length) {
-            flags.minWords = parseInt(args[++i], 10);
-        }
-        else if (a === "--soft-captions") {
-            flags.softCaptions = true;
-        }
-        else if (a === "--center-x" && i + 1 < args.length) {
-            flags.centerX = parseFloat(args[++i]);
-        }
-        else if (a === "--center-y" && i + 1 < args.length) {
-            flags.centerY = parseFloat(args[++i]);
-        }
-        else if (a === "--size" && i + 1 < args.length) {
-            flags.size = parseFloat(args[++i]);
-        }
-        else if (a === "--rotation" && i + 1 < args.length) {
-            flags.rotation = parseFloat(args[++i]);
-        }
-        else if (a === "--feather" && i + 1 < args.length) {
-            flags.feather = parseFloat(args[++i]);
-        }
-        else if (a === "--invert") {
-            flags.invert = true;
-        }
-        else if (a === "--rect-width" && i + 1 < args.length) {
-            flags.rectWidth = parseFloat(args[++i]);
-        }
-        else if (a === "--round-corner" && i + 1 < args.length) {
-            flags.roundCorner = parseFloat(args[++i]);
         }
         else if (a === "--mask-field" && i + 1 < args.length) {
             const field = args[++i];
@@ -1011,113 +1225,8 @@ function parseFlags(args) {
             }
             flags.maskField = field;
         }
-        else if (a === "--catalogue" && i + 1 < args.length) {
-            flags.catalogue = args[++i];
-        }
-        else if (a === "--alpha" && i + 1 < args.length) {
-            flags.alpha = parseFloat(args[++i]);
-        }
-        else if (a === "--vertical") {
-            flags.vertical = true;
-        }
-        else if (a === "--fixed-width" && i + 1 < args.length) {
-            flags.fixedWidth = parseFloat(args[++i]);
-        }
-        else if (a === "--fixed-height" && i + 1 < args.length) {
-            flags.fixedHeight = parseFloat(args[++i]);
-        }
-        else if (a === "--shadow") {
-            flags.shadow = true;
-        }
         else if (a === "--no-shadow") {
             flags.shadow = false;
-        }
-        else if (a === "--shadow-alpha" && i + 1 < args.length) {
-            flags.shadowAlpha = parseFloat(args[++i]);
-        }
-        else if (a === "--shadow-angle" && i + 1 < args.length) {
-            flags.shadowAngle = parseFloat(args[++i]);
-        }
-        else if (a === "--shadow-color" && i + 1 < args.length) {
-            flags.shadowColor = args[++i];
-        }
-        else if (a === "--shadow-distance" && i + 1 < args.length) {
-            flags.shadowDistance = parseFloat(args[++i]);
-        }
-        else if (a === "--shadow-smoothing" && i + 1 < args.length) {
-            flags.shadowSmoothing = parseFloat(args[++i]);
-        }
-        else if (a === "--border-width" && i + 1 < args.length) {
-            flags.borderWidth = parseFloat(args[++i]);
-        }
-        else if (a === "--border-color" && i + 1 < args.length) {
-            flags.borderColor = args[++i];
-        }
-        else if (a === "--border-alpha" && i + 1 < args.length) {
-            flags.borderAlpha = parseFloat(args[++i]);
-        }
-        else if (a === "--bg-color" && i + 1 < args.length) {
-            flags.bgColor = args[++i];
-        }
-        else if (a === "--bg-alpha" && i + 1 < args.length) {
-            flags.bgAlpha = parseFloat(args[++i]);
-        }
-        else if (a === "--bg-style" && i + 1 < args.length) {
-            flags.bgStyle = parseInt(args[++i], 10);
-        }
-        else if (a === "--bg-round-radius" && i + 1 < args.length) {
-            flags.bgRoundRadius = parseFloat(args[++i]);
-        }
-        else if (a === "--bg-width" && i + 1 < args.length) {
-            flags.bgWidth = parseFloat(args[++i]);
-        }
-        else if (a === "--bg-height" && i + 1 < args.length) {
-            flags.bgHeight = parseFloat(args[++i]);
-        }
-        else if (a === "--bg-h-offset" && i + 1 < args.length) {
-            flags.bgHOffset = parseFloat(args[++i]);
-        }
-        else if (a === "--bg-v-offset" && i + 1 < args.length) {
-            flags.bgVOffset = parseFloat(args[++i]);
-        }
-        else if (a === "--intro" && i + 1 < args.length) {
-            flags.intro = args[++i];
-        }
-        else if (a === "--outro" && i + 1 < args.length) {
-            flags.outro = args[++i];
-        }
-        else if (a === "--intro-duration" && i + 1 < args.length) {
-            flags.introDuration = args[++i];
-        }
-        else if (a === "--outro-duration" && i + 1 < args.length) {
-            flags.outroDuration = args[++i];
-        }
-        else if (a === "--combo" && i + 1 < args.length) {
-            flags.combo = args[++i];
-        }
-        else if (a === "--combo-duration" && i + 1 < args.length) {
-            flags.comboDuration = args[++i];
-        }
-        else if (a === "--scale" && i + 1 < args.length) {
-            flags.scale = parseFloat(args[++i]);
-        }
-        else if (a === "--resource-id" && i + 1 < args.length) {
-            flags.resourceId = args[++i];
-        }
-        else if (a === "--params" && i + 1 < args.length) {
-            flags.params = args[++i];
-        }
-        else if (a === "--bind" && i + 1 < args.length) {
-            flags.bind = args[++i];
-        }
-        else if (a === "--full") {
-            flags.full = true;
-        }
-        else if (a === "--style-ref" && i + 1 < args.length) {
-            flags.styleRef = args[++i];
-        }
-        else if (a === "--time-offset" && i + 1 < args.length) {
-            flags.timeOffset = args[++i];
         }
         else if (a === "--font" && i + 1 < args.length) {
             // Accepted and ignored: no command ever read it. The value token stays
@@ -1127,111 +1236,12 @@ function parseFlags(args) {
         else if ((a === "--in" || a === "--fade-in") && i + 1 < args.length) {
             flags.fadeIn = args[++i];
         }
-        else if (a === "--fade-out" && i + 1 < args.length) {
-            flags.fadeOut = args[++i];
-        }
-        else if (a === "--time" && i + 1 < args.length) {
-            flags.time = args[++i];
-        }
-        else if (a === "--bubble" && i + 1 < args.length) {
-            flags.bubble = args[++i];
-        }
-        else if (a === "--effect-id" && i + 1 < args.length) {
-            flags.effectId = args[++i];
-        }
-        else if (a === "--bubbles") {
-            flags.bubbles = true;
-        }
-        else if (a === "--jianying") {
-            flags.jianying = true;
-        }
-        else if (a === "--styles" && i + 1 < args.length) {
-            flags.styles = args[++i];
-        }
-        else if (a === "--preset" && i + 1 < args.length) {
-            flags.preset = args[++i];
-        }
-        else if (a === "--force-license") {
-            flags.forceLicense = true;
-        }
-        else if (a === "--max-chars" && i + 1 < args.length) {
-            flags.maxChars = parseInt(args[++i], 10);
-        }
-        else if (a === "--max-cue-secs" && i + 1 < args.length) {
-            flags.maxCueSecs = parseFloat(args[++i]);
-        }
-        else if (a === "--min-gap-ms" && i + 1 < args.length) {
-            flags.minGapMs = parseFloat(args[++i]);
-        }
-        else if (a === "--max-cps" && i + 1 < args.length) {
-            flags.maxCps = parseFloat(args[++i]);
-        }
-        else if (a === "--safe-area" && i + 1 < args.length) {
-            flags.safeArea = parseFloat(args[++i]);
-        }
-        else if (a === "--progress") {
-            flags.progress = true;
-        }
-        else if (a === "--no-check-paths") {
-            flags.noCheckPaths = true;
-        }
-        else if (a === "--fix") {
-            flags.fix = true;
-        }
-        else if (a === "--audio" && i + 1 < args.length) {
-            flags.audio = args[++i];
-        }
-        else if (a === "--from-segment" && i + 1 < args.length) {
-            flags.fromSegment = args[++i];
-        }
-        else if (a === "--whisper-cmd" && i + 1 < args.length) {
-            flags.whisperCmd = args[++i];
-        }
         else if (a === "--whisper-engine" && i + 1 < args.length) {
             const engine = args[++i];
             if (!["auto", "openai", "whisper-cpp", "faster-whisper"].includes(engine)) {
                 throw new Error("--whisper-engine must be auto|openai|whisper-cpp|faster-whisper");
             }
             flags.whisperEngine = engine;
-        }
-        else if (a === "--whisper-model" && i + 1 < args.length) {
-            flags.whisperModel = args[++i];
-        }
-        else if (a === "--language" && i + 1 < args.length) {
-            flags.language = args[++i];
-        }
-        else if (a === "--karaoke") {
-            flags.karaoke = true;
-        }
-        else if (a === "--max-words" && i + 1 < args.length) {
-            flags.maxWords = parseInt(args[++i], 10);
-        }
-        else if (a === "--max-gap-ms" && i + 1 < args.length) {
-            flags.maxGapMs = parseFloat(args[++i]);
-        }
-        else if (a === "--highlight-words" && i + 1 < args.length) {
-            flags.highlightWords = args[++i];
-        }
-        else if (a === "--keyword-color" && i + 1 < args.length) {
-            flags.keywordColor = args[++i];
-        }
-        else if (a === "--keyword-size" && i + 1 < args.length) {
-            flags.keywordSize = parseFloat(args[++i]);
-        }
-        else if (a === "--color-cycle" && i + 1 < args.length) {
-            flags.colorCycle = args[++i];
-        }
-        else if (a === "--no-probe") {
-            flags.noProbe = true;
-        }
-        else if (a === "--text" && i + 1 < args.length) {
-            flags.text = args[++i];
-        }
-        else if (a === "--text-file" && i + 1 < args.length) {
-            flags.textFile = args[++i];
-        }
-        else if (a === "--tts-cmd" && i + 1 < args.length) {
-            flags.ttsCmd = args[++i];
         }
         else if (a === "--granularity" && i + 1 < args.length) {
             const granularity = args[++i];
@@ -1247,182 +1257,23 @@ function parseFlags(args) {
             }
             flags.format = format;
         }
-        else if (a === "--ffprobe-cmd" && i + 1 < args.length) {
-            flags.ffprobeCmd = args[++i];
-        }
-        else if (a === "--video" && i + 1 < args.length) {
-            flags.video = args[++i];
-        }
-        else if (a === "--srt" && i + 1 < args.length) {
-            flags.srt = args[++i];
-        }
-        else if (a === "--retime") {
-            flags.retime = true;
-        }
-        else if (a === "--to" && i + 1 < args.length) {
-            flags.to = args[++i];
-        }
         else if (a === "--from" && i + 1 < args.length) {
             flags.from = args[++i];
         }
-        else if (a === "--api-key" && i + 1 < args.length) {
-            flags.apiKey = args[++i];
+        else if (a === "--plan" && command === "batch") {
+            const file = args[++i];
+            if (!file || file.startsWith("-"))
+                die("--plan requires a plan file path (batch --plan <plan.json>)");
+            flags.planFile = file;
         }
-        else if (a === "--model" && i + 1 < args.length) {
-            flags.model = args[++i];
-        }
-        else if (a === "--dry-run") {
-            flags.dryRun = true;
-        }
-        else if (a === "--intensity" && i + 1 < args.length) {
-            flags.intensity = parseFloat(args[++i]);
-        }
-        else if (a === "--app" && i + 1 < args.length) {
-            flags.app = args[++i];
-        }
-        else if (a === "--queue" && i + 1 < args.length) {
-            flags.queue = args[++i];
-        }
-        else if (a === "--fail-fast") {
-            flags.failFast = true;
-        }
-        else if (a === "--workers" && i + 1 < args.length) {
-            flags.workers = parseInt(args[++i], 10);
-        }
-        else if (a === "--retries" && i + 1 < args.length) {
-            flags.retries = parseInt(args[++i], 10);
-        }
-        else if (a === "--timeout" && i + 1 < args.length) {
-            flags.timeoutMs = parseInt(args[++i], 10);
-        }
-        else if (a === "--backoff-ms" && i + 1 < args.length) {
-            flags.backoffMs = parseInt(args[++i], 10);
-        }
-        else if (a === "--max-buffer-mb" && i + 1 < args.length) {
-            flags.maxBufferMb = parseFloat(args[++i]);
-        }
-        else if (a === "--dir" && i + 1 < args.length) {
-            flags.dir = args[++i];
-        }
-        else if (a === "--step" && i + 1 < args.length) {
-            flags.step = parseInt(args[++i], 10);
-        }
-        else if (a === "--list") {
-            flags.list = true;
-        }
-        else if (a === "--cols" && i + 1 < args.length) {
-            flags.cols = parseInt(args[++i], 10);
-        }
-        else if (a === "--names") {
-            flags.names = true;
-        }
-        else if (a === "--fps" && i + 1 < args.length) {
-            flags.fps = parseFloat(args[++i]);
-        }
-        else if (a === "--ffmpeg-cmd" && i + 1 < args.length) {
-            flags.ffmpegCmd = args[++i];
-        }
-        else if (a === "--encoder" && i + 1 < args.length) {
-            flags.encoder = args[++i];
-        }
-        else if (a === "--crf" && i + 1 < args.length) {
-            flags.crf = parseFloat(args[++i]);
-        }
-        else if (a === "--video-bitrate" && i + 1 < args.length) {
-            flags.videoBitrate = args[++i];
-        }
-        else if (a === "--burn-captions") {
-            flags.burnCaptions = true;
-        }
-        else if (a === "--all-video-tracks") {
-            flags.allVideoTracks = true;
-        }
-        else if (a === "--force-write") {
-            flags.forceWrite = true;
-        }
-        else if (a === "--bundle" && i + 1 < args.length) {
-            flags.bundle = args[++i];
-        }
-        else if (a === "--continue-on-error") {
-            flags.continueOnError = true;
-        }
-        else if (a === "--data" && i + 1 < args.length) {
-            flags.data = args[++i];
-        }
-        else if (a === "--into" && i + 1 < args.length) {
-            flags.into = args[++i];
-        }
-        else if (a === "--check") {
-            flags.check = true;
+        else if (a === "--apply-plan") {
+            const file = args[++i];
+            if (!file || file.startsWith("-"))
+                die("--apply-plan requires a plan file path");
+            flags.applyPlan = file;
         }
         else if (a === "--plan") {
             flags.plan = true;
-        }
-        else if (a === "--apply") {
-            flags.apply = true;
-        }
-        else if (a === "--nested") {
-            flags.nested = true;
-        }
-        else if (a === "--pip") {
-            flags.pip = true;
-        }
-        else if (a === "--frame-grid") {
-            flags.frameGrid = true;
-        }
-        else if (a === "--kind" && i + 1 < args.length) {
-            flags.kind = args[++i];
-        }
-        else if (a === "--clone-style") {
-            flags.cloneStyle = true;
-        }
-        else if (a === "--stage") {
-            flags.stage = true;
-        }
-        else if (a === "--sync") {
-            flags.sync = true;
-        }
-        else if (a === "--add") {
-            flags.add = true;
-        }
-        else if (a === "--threshold" && i + 1 < args.length) {
-            flags.threshold = parseFloat(args[++i]);
-        }
-        else if (a === "--min-gap" && i + 1 < args.length) {
-            flags.minGap = parseFloat(args[++i]);
-        }
-        else if (a === "--limit" && i + 1 < args.length) {
-            flags.limit = parseInt(args[++i], 10);
-        }
-        else if (a === "--json") {
-            flags.json = true;
-        }
-        else if (a === "--threshold-db" && i + 1 < args.length) {
-            flags.thresholdDb = parseFloat(args[++i]);
-        }
-        else if (a === "--min-silence" && i + 1 < args.length) {
-            flags.minSilence = parseFloat(args[++i]);
-        }
-        else if (a === "--pad" && i + 1 < args.length) {
-            flags.pad = parseFloat(args[++i]);
-        }
-        else if (a === "--ratio" && i + 1 < args.length) {
-            flags.ratio = args[++i];
-        }
-        else if (a === "--rect" && i + 1 < args.length) {
-            flags.rect = args[++i];
-        }
-        else if (a === "--reset") {
-            flags.reset = true;
-        }
-        else if (a === "--new-track") {
-            flags.newTrack = true;
-        }
-        else if (a === "--keep-track") {
-            flags.keepTrack = true;
-        }
-        else if (a === "--keep-materials") {
-            flags.keepMaterials = true;
         }
         else {
             const hit = ENUM_FLAG_MAP.find((f) => f.flag === a);
@@ -1437,6 +1288,10 @@ function parseFlags(args) {
 }
 // --- Output ---
 function out(data, flags) {
+    if (flags.collect) {
+        flags.collect.push(data);
+        return;
+    }
     if (flags.quiet)
         return;
     // In --dry-run, stamp an object result with dryRun:true so callers can tell a
@@ -1550,7 +1405,7 @@ function cmdTracks(draft, flags) {
     const data = draft.tracks.map((t, i) => {
         const end = t.segments.reduce((max, s) => {
             const e = s.target_timerange.start + s.target_timerange.duration;
-            return e > max ? e : max;
+            return Math.max(e, max);
         }, 0);
         return {
             index: i,
@@ -1582,7 +1437,15 @@ function cmdTracks(draft, flags) {
     }
 }
 function segmentData(draft, track, seg) {
+    // Read the timing fields defensively. A segment the app itself wrote can
+    // carry a `target_timerange` without `start` (its 0 default is omitted) and
+    // no `speed`; both were typed as required, so an honest cast documents that
+    // the on-disk shape is looser than the type. Without this the tables below
+    // printed `NaN:00NaN` and `undefinedx` for a segment the app opens fine.
     const t = seg.target_timerange;
+    const startUs = t?.start ?? 0;
+    const durationUs = t?.duration ?? 0;
+    const speed = typeof seg.speed === "number" ? seg.speed : 1;
     let label = "";
     if (track.type === "text") {
         const mat = findMaterial(draft.materials.texts, seg.material_id);
@@ -1602,9 +1465,9 @@ function segmentData(draft, track, seg) {
     return {
         id: seg.id,
         type: track.type,
-        start_us: t.start,
-        duration_us: t.duration,
-        speed: seg.speed,
+        start_us: startUs,
+        duration_us: durationUs,
+        speed,
         volume: seg.volume,
         opacity: seg.clip?.alpha ?? 1,
         label,
@@ -1794,6 +1657,55 @@ function cmdSpeed(draft, filePath, segId, multiplier, flags, save = true) {
     if (save)
         saveDraft(filePath, draft);
     out({ ok: true, id: seg.id, old_speed: oldSpeed, new_speed: speed }, flags);
+}
+// `loudness` measures the draft's audible clips (EBU R128) and, with
+// --target, the gain that brings the export there; --apply writes it as
+// segment volume through the normal journaled save. --tolerance and
+// --max-true-peak make it a delivery gate: the result carries `gate`, and a
+// miss exits 1 with one line on stderr (with --apply the gain is still
+// written, as lint --fix writes its repairs before reporting what remains).
+async function cmdLoudness(draft, filePath, flags) {
+    const { applyLoudness, judgeLoudness, measureLoudness } = await import("./loudness.js");
+    if (flags.apply && flags.target === undefined)
+        die("--apply needs --target <LUFS>: say what loudness to reach.");
+    let report;
+    try {
+        report = measureLoudness(draft, {
+            ffmpegCmd: flags.ffmpegCmd,
+            target: flags.target,
+            perClip: flags.perClip,
+            maxGainDb: flags.maxGainDb,
+            draftDir: draftProjectDir(filePath),
+            tolerance: flags.tolerance,
+            maxTruePeak: flags.maxTruePeak,
+        });
+    }
+    catch (e) {
+        die(e.message);
+    }
+    let changed = 0;
+    if (flags.apply) {
+        changed = applyLoudness(draft, report);
+        if (changed > 0)
+            saveDraft(filePath, draft);
+    }
+    const judged = judgeLoudness(report, {
+        tolerance: flags.tolerance,
+        maxTruePeak: flags.maxTruePeak,
+        afterGain: Boolean(flags.apply),
+    });
+    const failure = judged?.failure ?? null;
+    out({
+        ok: failure === null,
+        ...report,
+        ...(judged ? { gate: judged.gate } : {}),
+        applied: Boolean(flags.apply) && !isDryRun(),
+        changed,
+    }, flags);
+    if (failure !== null) {
+        process.stderr.write(`loudness gate failed: ${failure}\n`);
+        process.exitCode = 1;
+    }
 }
 function cmdVolume(draft, filePath, segId, levelStr, flags, save = true) {
     const result = findSegment(draft, segId);
@@ -2168,7 +2080,7 @@ async function cmdImportTimeline(positional, flags) {
     }
     let plan;
     try {
-        plan = otioToImportPlan(doc);
+        plan = otioToImportPlan(doc, { mediaDir: path.dirname(path.resolve(otioPath)) });
     }
     catch (e) {
         die(e.message);
@@ -2198,7 +2110,7 @@ async function cmdImportTimeline(positional, flags) {
     }
     else {
         ({ draft, filePath } = loadDraft(flags.into));
-        draftPath = path.dirname(filePath);
+        draftPath = draftProjectDir(filePath);
     }
     const applied = await applyImportPlan(draft, filePath, plan);
     saveDraft(filePath, draft);
@@ -2536,13 +2448,42 @@ async function cmdTts(draft, filePath, positional, flags) {
             "  --tts-cmd 'espeak-ng -w {out} {text}'\n" +
             "The tool must write a wav (or other CapCut-supported) audio file at {out}.");
     }
+    // The lexicon rewrites only what the engine hears; refusals land here,
+    // before any engine runs.
+    let lexicon;
+    if (flags.lexicon !== undefined) {
+        const { applyLexicon, LexiconError, parseLexicon } = await import("./lexicon.js");
+        if (!existsSync(flags.lexicon))
+            die(`refused [lexicon-invalid]: lexicon file not found: ${flags.lexicon}`);
+        let doc;
+        try {
+            doc = JSON.parse(stripBom(readFileSync(flags.lexicon, "utf-8")));
+        }
+        catch (e) {
+            die(`refused [lexicon-invalid]: ${flags.lexicon} is not valid JSON (${e.message}).`);
+        }
+        try {
+            const rules = parseLexicon(doc);
+            const r = applyLexicon(text, rules);
+            lexicon = { rules: rules.length, applied: r.applied, spoken_text: r.spoken_text };
+        }
+        catch (e) {
+            if (e instanceof LexiconError)
+                die(`refused [${e.gate}]: ${flags.lexicon}: ${e.message}`);
+            throw e;
+        }
+        if (lexicon.spoken_text.trim().length === 0) {
+            die("refused [lexicon-invalid]: the lexicon rewrote the voiceover text to nothing; there is nothing to speak.");
+        }
+    }
+    const spokenText = lexicon?.spoken_text ?? text;
     const start = positional[2] ? parseTimeInput(positional[2]) : 0;
     const durationStr = positional[3];
     // Synthesize straight into the dir addAudio copies into (like the Wikimedia
     // fetch path) so its copyAssetDeduped becomes a no-op on the same file.
-    const assetsDir = path.resolve(path.dirname(filePath), "assets", "audio");
+    const assetsDir = path.resolve(draftProjectDir(filePath), "assets", "audio");
     const outPath = collisionSafeOutPath(assetsDir);
-    const synthesis = synthesizeSpeech(text, flags.ttsCmd, outPath);
+    const synthesis = synthesizeSpeech(spokenText, flags.ttsCmd, outPath);
     const media = flags.noProbe ? null : probeMedia(outPath, flags.ffprobeCmd);
     const duration = durationStr ? parseTimeInput(durationStr) : media?.durationUs;
     if (!duration || duration <= 0) {
@@ -2572,6 +2513,9 @@ async function cmdTts(draft, filePath, positional, flags) {
         duration_us: duration,
         duration_source: durationStr ? "argument" : "ffprobe",
         media_probe: media,
+        // Offsets are UTF-16 code unit indices into the trimmed source text;
+        // text_chars above stays the original (displayed) text's length.
+        ...(lexicon ? { lexicon } : {}),
     }, flags);
 }
 async function cmdAddVideo(draft, filePath, positional, flags) {
@@ -2809,7 +2753,8 @@ async function cmdTransition(draft, filePath, positional, flags) {
     out({ ok: true, ...result }, flags);
 }
 async function cmdMask(draft, filePath, positional, flags) {
-    const { addMask, MASK_FIELDS, maskSlugs } = await import("./decorators.js");
+    const { addMask, maskSlugs } = await import("./decorators.js");
+    const { MASK_FIELDS } = await import("./mask-fields.js");
     const segId = positional[2];
     const slug = positional[3];
     const ns = flags.jianying ? "jianying" : "capcut";
@@ -2866,7 +2811,7 @@ async function cmdBgBlur(draft, filePath, positional, flags) {
     out({ ok: true, ...result }, flags);
 }
 async function cmdTextStyle(draft, filePath, positional, flags) {
-    const { setTextStyle } = await import("./decorators.js");
+    const { requireTextMaterial, setTextStyle } = await import("./decorators.js");
     const { applyTextPreset, loadPresetFile } = await import("./preset.js");
     const segId = positional[2];
     if (!segId)
@@ -2880,9 +2825,22 @@ async function cmdTextStyle(draft, filePath, positional, flags) {
         applied.push(...presetResult.applied);
     }
     // Explicit flags run after the preset so they override its values.
-    const result = setTextStyle(draft, segId, opts);
+    const result = setTextStyle(draft, segId, {
+        ...opts,
+        fontSize: flags.fontSize,
+        color: flags.color,
+        alignment: flags.align,
+    });
     materialId = result.materialId;
     applied.push(...result.applied);
+    const { seg } = requireTextMaterial(draft, segId);
+    if ((flags.x !== undefined || flags.y !== undefined) && seg.clip) {
+        seg.clip.transform = {
+            x: flags.x ?? seg.clip.transform.x,
+            y: flags.y ?? seg.clip.transform.y,
+        };
+        applied.push("transform");
+    }
     if (applied.length === 0)
         die(`No styling flags provided. See 'capcut --help'.`);
     saveDraft(filePath, draft);
@@ -3516,7 +3474,7 @@ async function cmdImportSrt(draft, filePath, positional, flags) {
     const srtArg = positional[2];
     if (!srtArg)
         die(`Usage: capcut import-srt <project> <srt-path-or-->`);
-    const srtContent = stripBom(srtArg === "-" ? readFileSync(0, "utf-8") : readFileSync(srtArg, "utf-8"));
+    const srtContent = readSubtitleText(srtArg === "-" ? 0 : srtArg);
     const cues = parseSrt(srtContent);
     if (cues.length === 0)
         die(`SRT produced 0 cues`);
@@ -3527,7 +3485,7 @@ async function cmdImportAss(draft, filePath, positional, flags) {
     const assArg = positional[2];
     if (!assArg)
         die(`Usage: capcut import-ass <project> <ass-path-or-->`);
-    const assContent = stripBom(assArg === "-" ? readFileSync(0, "utf-8") : readFileSync(assArg, "utf-8"));
+    const assContent = readSubtitleText(assArg === "-" ? 0 : assArg);
     const cues = parseAss(assContent).map((cue) => ({
         ...cue,
         spans: cue.spans?.map((s) => {
@@ -3564,7 +3522,11 @@ function cmdVersion(draft, filePath, flags) {
     // discarded by the app — name the layout alongside the write-guard notes.
     // On >= 8.7 storage the layout value stays content-/info-primary by design,
     // so the same question needs the claim-free note instead of silence.
-    if (store.layout === "timelines-nested")
+    if (store.activeTimeline)
+        v.support.notes.push(store.activeTimeline.explicit
+            ? "Active timeline selected by explicit --active-timeline opt-in; desktop acceptance is unverified on this build."
+            : ACTIVE_TIMELINE_WINDOWS_ACTION);
+    else if (store.layout === "timelines-nested")
         v.support.notes.push(nestedTimelinesAction(store.version));
     else if (store.nestedTimelines.length > 0)
         v.support.notes.push(NESTED_TIMELINES_MODERN_ACTION);
@@ -3595,6 +3557,15 @@ function cmdVersion(draft, filePath, flags) {
 }
 async function cmdLint(draft, filePath, flags) {
     const { DEFAULT_LINT_OPTIONS, buildPipReport, fixDraft, lintDraft, lintExitCode, pipLintIssues, scriptLimitsExcept, summarize, } = await import("./lint.js");
+    // Opt-in thresholds in seconds; a value that is not a positive number would
+    // otherwise switch the check off without a word.
+    const thresholdUs = (seconds, flag) => {
+        if (seconds === undefined)
+            return undefined;
+        if (!Number.isFinite(seconds) || seconds <= 0)
+            die(`${flag} must be a number of seconds > 0`);
+        return Math.round(seconds * 1_000_000);
+    };
     const opts = {
         maxCharsPerLine: flags.maxChars ?? DEFAULT_LINT_OPTIONS.maxCharsPerLine,
         maxCueDurationUs: flags.maxCueSecs !== undefined ? flags.maxCueSecs * 1_000_000 : DEFAULT_LINT_OPTIONS.maxCueDurationUs,
@@ -3610,9 +3581,12 @@ async function cmdLint(draft, filePath, flags) {
         checkLocalPaths: flags.noCheckPaths ? false : DEFAULT_LINT_OPTIONS.checkLocalPaths,
         probeMedia: flags.noProbe ? false : DEFAULT_LINT_OPTIONS.probeMedia,
         ffprobeCmd: flags.ffprobeCmd,
-        draftDir: path.dirname(path.resolve(filePath)),
+        draftDir: draftProjectDir(filePath),
         dryRun: isDryRun(),
         frameGrid: flags.frameGrid,
+        maxStillUs: thresholdUs(flags.maxStillSecs, "--max-still-secs"),
+        maxShotUs: thresholdUs(flags.maxShotSecs, "--max-shot-secs"),
+        minSilentUs: thresholdUs(flags.minSilentSecs, "--min-silent-secs"),
     };
     // template-stale (#67, #111) needs the store's newest app version, which
     // costs one timeline read per sibling project — so it is looked up only for
@@ -3630,14 +3604,14 @@ async function cmdLint(draft, filePath, flags) {
             d.last_modified_platform === undefined;
         if (markerless) {
             const { isManagedDraftPath } = await import("./store.js");
-            const storeDir = path.dirname(path.dirname(path.resolve(filePath)));
+            const storeDir = path.dirname(draftProjectDir(filePath));
             const inStore = existsSync(path.join(storeDir, "root_meta_info.json")) || isManagedDraftPath(path.resolve(filePath));
             if (inStore) {
                 const { scanStore } = await import("./factory.js");
                 // The linted draft is no evidence about its own store: excluded, so a
                 // bundled-template draft alone in a JianYing store is not its own
                 // "readable 6.5.0 project".
-                const scan = scanStore(storeDir, { exclude: path.dirname(path.resolve(filePath)) });
+                const scan = scanStore(storeDir, { exclude: draftProjectDir(filePath) });
                 opts.storeAppVersion = scan.newestVersion;
                 opts.storeEncryptedProjects = scan.store.encrypted;
             }
@@ -3727,10 +3701,13 @@ async function cmdLint(draft, filePath, flags) {
 // --- Caption / translate / migrate / sfx / chroma / export / decrypt / serve ---
 async function cmdCaption(draft, filePath, flags) {
     const { loadPresetFile } = await import("./preset.js");
-    const { captionDraft } = await import("./caption.js");
-    if (!flags.audio && !flags.fromSegment) {
-        die("Missing --audio <path> or --from-segment <id>. One is required.");
+    const { captionDraft, transcriptionSourceConflict } = await import("./caption.js");
+    if (flags.words === undefined && !flags.audio && !flags.fromSegment) {
+        die("Missing --audio <path>, --from-segment <id> or --words <file.json>. One is required.");
     }
+    const conflict = transcriptionSourceConflict({ ...flags, words: flags.words !== undefined });
+    if (conflict)
+        die(conflict);
     if (flags.karaoke && flags.wordReveal)
         die("--karaoke and --word-reveal are mutually exclusive.");
     if (flags.minScriptMatch !== undefined &&
@@ -3743,6 +3720,9 @@ async function cmdCaption(draft, filePath, flags) {
     if (flags.audioStream !== undefined && (!Number.isInteger(flags.audioStream) || flags.audioStream < 0)) {
         die("--audio-stream must be a zero-based non-negative integer.");
     }
+    if (flags.minUncaptioned !== undefined && (!Number.isFinite(flags.minUncaptioned) || flags.minUncaptioned < 0)) {
+        die("--min-uncaptioned must be a number of seconds, 0 or more.");
+    }
     const emphasis = await keywordEmphasisFromFlags(flags);
     let scriptText;
     if (flags.script !== undefined) {
@@ -3750,8 +3730,20 @@ async function cmdCaption(draft, filePath, flags) {
             die(`--script file not found: ${flags.script}`);
         scriptText = stripBom(readFileSync(flags.script, "utf-8"));
     }
-    const result = captionDraft(draft, {
+    let wordsJson;
+    if (flags.words !== undefined) {
+        if (flags.words !== "-" && !existsSync(flags.words))
+            die(`--words file not found: ${flags.words}`);
+        wordsJson = stripBom(readFileSync(flags.words === "-" ? 0 : flags.words, "utf-8"));
+        if (!wordsJson.trim())
+            die(flags.words === "-" ? "No input on stdin for --words" : `--words file is empty: ${flags.words}`);
+    }
+    const captionOptions = {
+        wordsJson,
+        wordsSource: flags.words === "-" ? "stdin" : flags.words,
         audio: flags.audio,
+        cloud: flags.cloud,
+        translate: flags.translate,
         audioStream: flags.audioStream,
         ffmpegCmd: flags.ffmpegCmd,
         fromSegment: flags.fromSegment,
@@ -3773,14 +3765,58 @@ async function cmdCaption(draft, filePath, flags) {
         keywordColor: emphasis.color,
         keywordSize: emphasis.size,
         colorCycle: emphasis.cycle,
-    });
+        coverage: flags.noCoverage ? false : undefined,
+        minUncaptioned: flags.minUncaptioned,
+        cache: flags.noCache ? false : undefined,
+    };
+    if (flags.cloud && isDryRun()) {
+        // A dry run sends nothing anywhere: report what --cloud would upload.
+        const { cloudLanguageWarning, planCloudUpload } = await import("./caption.js");
+        const { normalizeLanguageCode } = await import("./capcut-cloud-translate.js");
+        let plan;
+        try {
+            plan = planCloudUpload(draft, captionOptions);
+        }
+        catch (e) {
+            die(e.message);
+        }
+        const languageWarning = cloudLanguageWarning(captionOptions);
+        if (languageWarning && !flags.quiet)
+            process.stderr.write(languageWarning);
+        out({
+            ok: true,
+            dry_run: true,
+            engine: "capcut-cloud",
+            uploaded: false,
+            would_upload: { ...plan, to: "CapCut Cloud ASR (ByteDance servers)" },
+            ...(flags.translate !== undefined
+                ? {
+                    translation: {
+                        language: normalizeLanguageCode(flags.translate),
+                        to: "CapCut Cloud translation (ByteDance servers)",
+                        sent: false,
+                    },
+                }
+                : {}),
+            cues: 0,
+        }, flags);
+        return;
+    }
+    const result = await captionDraft(draft, captionOptions);
     saveDraft(filePath, draft);
     // A script that barely matches the recognised words is almost certainly the
     // wrong script for this audio: the timing would be nonsense. Warn, never
     // refuse — a heavy accent or a noisy room legitimately lowers the ratio.
     if (result.script && result.script.match_ratio < 0.5 && !flags.quiet) {
-        process.stderr.write(`Warning: only ${Math.round(result.script.match_ratio * 100)}% of the script's words matched what whisper heard ` +
+        process.stderr.write(`Warning: only ${Math.round(result.script.match_ratio * 100)}% of the script's words matched ${flags.words !== undefined ? "the --words timings" : "what whisper heard"} ` +
             `(${result.script.matched}/${result.script.script_words}). Check that --script belongs to this audio.\n`);
+    }
+    // Speech the cues leave uncaptioned: a transcription that stopped early or
+    // dropped quiet speech. Warn, never fail — the captions that exist are fine.
+    const coverage = result.coverage;
+    if (coverage && "uncaptioned" in coverage && coverage.uncaptioned.length > 0 && !flags.quiet) {
+        const { uncaptionedWarning } = await import("./caption-coverage.js");
+        process.stderr.write(uncaptionedWarning(coverage));
     }
     out(result, flags);
 }
@@ -3797,6 +3833,7 @@ async function cmdTranslate(draft, _filePath, flags) {
         model: flags.model,
         dryRun: flags.dryRun,
         outPath: flags.out,
+        cloud: flags.cloud,
     });
     out(result, flags);
 }
@@ -3810,7 +3847,7 @@ async function cmdMigrate(draft, filePath, flags) {
     if (flags.like !== undefined || flags.fromStore) {
         if (flags.like !== undefined && flags.fromStore)
             die("--like and --from-store are mutually exclusive.");
-        const projectDir = path.dirname(path.resolve(filePath));
+        const projectDir = draftProjectDir(filePath);
         let donorPath;
         if (flags.like !== undefined) {
             donorPath = path.resolve(flags.like);
@@ -3953,13 +3990,13 @@ async function cmdServe(flags) {
         retries: flags.retries,
         timeoutMs: flags.timeoutMs,
         backoffMs: flags.backoffMs,
-        maxBufferBytes: flags.maxBufferMb ? Math.round(flags.maxBufferMb * 1024 * 1024) : undefined,
+        maxBufferBytes: flags.maxBufferMb === undefined ? undefined : flags.maxBufferMb * 1024 * 1024,
     });
     // Write a final summary line at end (JSON only, stderr to avoid mixing with per-job results)
     process.stderr.write(`${JSON.stringify({ summary: result })}\n`);
 }
 function execBatchOp(draft, filePath, op, flags) {
-    const silent = { ...flags, quiet: true };
+    const silent = { ...flags, quiet: true, collect: flags.collect };
     switch (op.cmd) {
         case "set-text":
             if (!op.id || op.text === undefined)
@@ -4000,17 +4037,11 @@ function execBatchOp(draft, filePath, op, flags) {
             die(`Unknown batch command: ${op.cmd}`);
     }
 }
-function cmdBatch(draft, filePath, flags) {
-    const input = stripBom(readFileSync(0, "utf-8")).trim();
-    if (!input)
-        die("No input on stdin");
+function parseBatchLines(input) {
+    const parsed = [];
     const lines = input.split("\n");
-    let working = structuredClone(draft);
-    const errors = [];
-    let succeeded = 0;
     for (let index = 0; index < lines.length; index++) {
-        const line = lines[index];
-        const trimmed = line.trim();
+        const trimmed = lines[index].trim();
         if (!trimmed)
             continue;
         try {
@@ -4018,20 +4049,142 @@ function cmdBatch(draft, filePath, flags) {
             if (!op || typeof op !== "object" || typeof op.cmd !== "string") {
                 throw new Error("batch line must be an object with a string cmd field");
             }
+            parsed.push({ line: index + 1, input: trimmed, op });
+        }
+        catch (e) {
+            parsed.push({
+                line: index + 1,
+                input: trimmed,
+                op: null,
+                parseError: e instanceof Error ? e.message : String(e),
+            });
+        }
+    }
+    return parsed;
+}
+// Run parsed operations against a clone of `draft`. `previews`, when given,
+// receives each operation's own result object (what the command would have
+// printed) for the reviewed-plan file.
+function runBatchOps(draft, filePath, ops, flags, previews) {
+    let working = structuredClone(draft);
+    const errors = [];
+    let succeeded = 0;
+    for (const { line, input, op, parseError } of ops) {
+        const collect = [];
+        try {
+            if (op === null)
+                throw new Error(parseError ?? "batch line must be an object with a string cmd field");
             // Each operation runs against its own clone. A failing operation can
             // never leave a partial mutation behind, even in --continue-on-error.
             const candidate = structuredClone(working);
-            execBatchOp(candidate, filePath, op, flags);
+            execBatchOp(candidate, filePath, op, previews ? { ...flags, collect } : flags);
             working = candidate;
             succeeded++;
+            previews?.push({ line, cmd: op.cmd, ok: true, result: collect[collect.length - 1] ?? null });
         }
         catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            errors.push({ line: index + 1, input: trimmed, error: msg });
+            errors.push({ line, input, error: msg });
+            previews?.push({ line, cmd: op?.cmd ?? null, ok: false, error: msg });
             if (!flags.continueOnError)
                 break;
         }
     }
+    return { working, succeeded, errors };
+}
+// Reviewed batch plans. `batch --plan <file>` validates the operations the way
+// a real run would (in memory, under dry-run) and records them with two
+// hashes: the timeline document as loaded, and a canonical serialization of
+// the operations. `batch --apply-plan <file>` re-checks both before applying,
+// so what runs is exactly what was reviewed, against exactly the draft it was
+// reviewed on.
+const BATCH_PLAN_FORMAT = "capcut-cli.batch-plan";
+const BATCH_PLAN_VERSION = 1;
+// JSON with object keys sorted at every level: equal operations hash equal
+// however the plan file was re-indented or its keys reordered.
+function canonicalJson(value) {
+    if (Array.isArray(value))
+        return `[${value.map(canonicalJson).join(",")}]`;
+    if (value !== null && typeof value === "object") {
+        const record = value;
+        const entries = Object.keys(record)
+            .filter((key) => record[key] !== undefined)
+            .sort()
+            .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+        return `{${entries.join(",")}}`;
+    }
+    return JSON.stringify(value);
+}
+function sha256Hex(content) {
+    return createHash("sha256").update(content, "utf-8").digest("hex");
+}
+// Hash of the canonical timeline document's bytes as loaded (BOM-stripped,
+// as the changed-on-disk guard compares them).
+function loadedDraftSha256(filePath) {
+    const raw = loadedDraftStore(filePath).canonical.raw;
+    return sha256Hex(raw ?? stripBom(readFileSync(filePath, "utf-8")));
+}
+function cmdBatch(draft, filePath, flags) {
+    if (flags.planFile !== undefined && flags.applyPlan !== undefined)
+        die("--plan and --apply-plan are mutually exclusive: write a plan, review it, then apply it.");
+    // --apply-plan takes its operations from the reviewed plan only; stdin is never read.
+    if (flags.applyPlan !== undefined) {
+        cmdBatchApplyPlan(draft, filePath, flags.applyPlan, flags);
+        return;
+    }
+    const input = stripBom(readFileSync(0, "utf-8")).trim();
+    if (!input)
+        die("No input on stdin");
+    const ops = parseBatchLines(input);
+    if (flags.planFile !== undefined)
+        writeBatchPlan(draft, filePath, ops, flags.planFile, flags);
+    else
+        commitBatch(draft, filePath, ops, flags);
+}
+function writeBatchPlan(draft, filePath, ops, planFile, flags) {
+    const previews = [];
+    const wasDryRun = isDryRun();
+    setDryRun(true);
+    let run;
+    try {
+        run = runBatchOps(draft, filePath, ops, flags, previews);
+    }
+    finally {
+        setDryRun(wasDryRun);
+    }
+    if (run.errors.length > 0 && !flags.continueOnError) {
+        throw new Error(`batch plan rejected at line ${run.errors[0].line}; no plan written: ${run.errors[0].error}. ` +
+            "Pass --continue-on-error to plan only the operations that validate.");
+    }
+    // Only operations that validated go into the plan, so applying it is the
+    // transactional run the preview showed.
+    const failed = new Set(run.errors.map((error) => error.line));
+    const operations = ops.filter((item) => !failed.has(item.line)).map((item) => item.op);
+    const plan = {
+        format: BATCH_PLAN_FORMAT,
+        version: BATCH_PLAN_VERSION,
+        project: filePath,
+        draft_sha256: loadedDraftSha256(filePath),
+        operations,
+        operations_sha256: sha256Hex(canonicalJson(operations)),
+        preview: previews,
+    };
+    writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`, "utf-8");
+    if (run.errors.length > 0)
+        process.exitCode = 1;
+    out({
+        ok: run.errors.length === 0,
+        plan: planFile,
+        project: filePath,
+        operations: operations.length,
+        failed: run.errors.length,
+        errors: run.errors,
+        draft_sha256: plan.draft_sha256,
+        operations_sha256: plan.operations_sha256,
+    }, flags);
+}
+function commitBatch(draft, filePath, ops, flags, extra = {}) {
+    const { working, succeeded, errors } = runBatchOps(draft, filePath, ops, flags);
     if (errors.length > 0 && !flags.continueOnError) {
         throw new Error(`batch aborted at line ${errors[0].line}; no changes written: ${errors[0].error}. ` +
             "Pass --continue-on-error to commit only successful operations.");
@@ -4042,7 +4195,54 @@ function cmdBatch(draft, filePath, flags) {
     }
     if (errors.length > 0)
         process.exitCode = 1;
-    out({ ok: errors.length === 0, transactional: !flags.continueOnError, succeeded, failed: errors.length, errors }, flags);
+    out({
+        ok: errors.length === 0,
+        transactional: !flags.continueOnError,
+        succeeded,
+        failed: errors.length,
+        errors,
+        ...extra,
+    }, flags);
+}
+function cmdBatchApplyPlan(draft, filePath, planPath, flags) {
+    let plan;
+    try {
+        plan = JSON.parse(stripBom(readFileSync(planPath, "utf-8")));
+    }
+    catch (e) {
+        die(`Cannot read plan ${planPath}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (!plan || typeof plan !== "object" || plan.format !== BATCH_PLAN_FORMAT)
+        die(`${planPath} is not a batch plan (expected format "${BATCH_PLAN_FORMAT}").`);
+    if (plan.version !== BATCH_PLAN_VERSION)
+        die(`Unsupported batch plan version ${String(plan.version)} in ${planPath} (this CLI reads ${BATCH_PLAN_VERSION}).`);
+    if (!Array.isArray(plan.operations) ||
+        typeof plan.operations_sha256 !== "string" ||
+        typeof plan.draft_sha256 !== "string")
+        die(`Batch plan ${planPath} is missing operations, operations_sha256 or draft_sha256.`);
+    if (typeof plan.project === "string" && path.resolve(plan.project) !== path.resolve(filePath)) {
+        throw new Error(`refused [plan-project-mismatch]: plan ${planPath} was made for ${plan.project}, not ${filePath}. ` +
+            "Apply it to the project it was planned on.");
+    }
+    const draftSha = loadedDraftSha256(filePath);
+    if (draftSha !== plan.draft_sha256) {
+        throw new Error(`refused [plan-draft-changed]: ${filePath} changed since the plan was made ` +
+            `(${draftSha} != ${plan.draft_sha256}). Re-run batch --plan against the current draft and review it again.`);
+    }
+    const operationsSha = sha256Hex(canonicalJson(plan.operations));
+    if (operationsSha !== plan.operations_sha256) {
+        throw new Error(`refused [plan-tampered]: the operations in ${planPath} no longer match its operations_sha256 ` +
+            `(${operationsSha} != ${plan.operations_sha256}). Re-run batch --plan and review the new plan.`);
+    }
+    const ops = plan.operations.map((op, index) => {
+        const valid = op !== null && typeof op === "object" && typeof op.cmd === "string";
+        return {
+            line: index + 1,
+            input: JSON.stringify(op),
+            op: valid ? op : null,
+        };
+    });
+    commitBatch(draft, filePath, ops, flags, { plan: planPath, operations_sha256: operationsSha });
 }
 async function cmdDoctor(flags) {
     const { runDoctor } = await import("./doctor.js");
@@ -4238,17 +4438,7 @@ async function addMaterialsToRegistrationPlan(result) {
     const sidecarWrite = result.writes.find((w) => w.file === "draft_meta_info.json");
     const onDiskRaw = existsSync(sidecarPath) ? stripBom(readFileSync(sidecarPath, "utf-8")) : null;
     const baseRaw = sidecarWrite ? sidecarWrite.content : onDiskRaw;
-    let base = null;
-    if (baseRaw !== null) {
-        try {
-            const parsed = JSON.parse(baseRaw);
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
-                base = parsed;
-        }
-        catch {
-            base = null;
-        }
-    }
+    const base = baseRaw === null ? null : parseJsonObject(baseRaw);
     const { target, fixed } = planDraftMaterials(draft, base, { sidecarPath, projectDir: plan.project_dir });
     if (fixed) {
         const content = JSON.stringify(fixed, null, 0);
@@ -4334,7 +4524,7 @@ async function cmdRename(positional, flags) {
 function cmdSyncTimelines(projectPath, flags) {
     if (!projectPath)
         die("Usage: capcut sync-timelines <project-dir> [--nested] [--apply] [--force-write]");
-    const { plan, canonicalDraft, canonicalCandidate, driftedCandidates, nestedDriftedCandidates } = planTimelineSync(projectPath, { nested: flags.nested === true });
+    const { store, plan, canonicalDraft, canonicalCandidate, driftedCandidates, nestedDriftedCandidates } = planTimelineSync(projectPath, { nested: flags.nested === true });
     const warnUnreconcilable = () => {
         if (flags.quiet)
             return;
@@ -4467,6 +4657,7 @@ function cmdSyncTimelines(projectPath, flags) {
     // Optimistic concurrency: neither the canonical source nor a mirror we are
     // about to rewrite may have changed on disk between the plan read and now.
     const nestedCandidates = nestedDriftedCandidates.map((entry) => entry.candidate);
+    assertActiveTimelineUnchanged(store);
     if (!flags.forceWrite)
         assertTargetsUnchangedOnDisk([canonicalCandidate, ...driftedCandidates, ...nestedCandidates]);
     commitDraftTargets(driftedCandidates, canonicalDraft);
@@ -4561,50 +4752,60 @@ function getCliVersion() {
 // `restore` undoes writes. Plain form restores the most recent `.bak`. With
 // --list it shows the rolling snapshot history; with --step N it rolls back N
 // writes (step 1 == the .bak). Honors --dry-run (reports without copying).
-function cmdRestore(projectPath, flags) {
+// Every restore first checks the file against the journal's before_sha256 and
+// refuses one that changed since the CLI wrote it (issue #151: the app
+// rewrites `.bak` when it saves); --force-write restores it anyway.
+async function cmdRestore(projectPath, flags) {
     if (!projectPath)
         die("Missing project path. Usage: capcut restore <project> [--step N | --list]");
+    const { pickRestoreSource, readRecoveryHistory } = await import("./history-integrity.js");
     const filePath = findDraft(projectPath);
     const hasSynchronizedSiblings = discoverDraftStore(filePath).targets.length > 1;
-    const snaps = listSnapshots(filePath);
+    const history = readRecoveryHistory(filePath);
+    const snaps = history.snapshots;
     if (flags.list) {
-        out({ ok: true, count: snaps.length, snapshots: snaps.map((s) => ({ step: s.step, path: s.path })) }, flags);
+        // Each step names the write it undoes when the journal has its index;
+        // snapshots from before the journal (or with a torn line) list with nulls.
+        const snapshots = snaps.map((s) => ({
+            step: s.step,
+            path: s.path,
+            command: s.entry?.command ?? null,
+            argv: s.entry?.argv ?? null,
+            time: s.entry?.time ?? null,
+            integrity: s.integrity,
+        }));
+        out({ ok: true, count: snaps.length, snapshots }, flags);
         return;
     }
-    if (flags.step !== undefined) {
-        if (!Number.isInteger(flags.step) || flags.step < 1)
-            die("--step must be a positive integer (1 = most recent).");
-        const target = snaps.find((s) => s.step === flags.step);
-        if (!target) {
-            const avail = snaps.length ? `1..${snaps.length}` : "none yet";
-            die(`No snapshot at --step ${flags.step}. Available: ${avail}. Try: capcut restore ${projectPath} --list`);
+    const restoreSource = (source) => {
+        if (!hasSynchronizedSiblings) {
+            copyFileSync(source, filePath);
+            // A restore is the CLI's own write; `diff --since-write` compares with it
+            // (a multi-file restore records through saveDraft).
+            recordLastWrite(filePath, readFileSync(filePath, "utf-8"));
+            return;
         }
-        if (!isDryRun()) {
-            copyFileSync(target.path, filePath);
-            if (hasSynchronizedSiblings) {
-                // skipVersionGuard: restore is the undo path and must never be gated
-                // (docs/version-support.md) — a refusal here would fire AFTER the
-                // canonical was already rolled back, leaving the mirrors diverged.
-                const restored = loadDraft(filePath);
-                saveDraft(restored.filePath, restored.draft, { backup: false, skipVersionGuard: true });
-            }
-        }
-        out({ ok: true, restored: filePath, from: target.path, step: flags.step }, flags);
-        return;
+        const restored = loadDraft(filePath);
+        const backup = parseCandidate(source);
+        if (!backup.draft)
+            die(`Backup does not contain a readable timeline: ${source}`);
+        // Load all current targets before committing the backup. This also avoids
+        // creating disagreement between active documents during pointer validation.
+        saveDraft(restored.filePath, backup.draft, { backup: false, skipVersionGuard: true });
+    };
+    let pick;
+    try {
+        pick = pickRestoreSource(history, filePath, projectPath, { step: flags.step, forceWrite: flags.forceWrite });
     }
-    const bakPath = `${filePath}.bak`;
-    if (!existsSync(bakPath)) {
-        die(`No backup found at ${bakPath}. Nothing to restore (a .bak is written on the first edit).`);
+    catch (e) {
+        die(e.message);
     }
-    if (!isDryRun()) {
-        copyFileSync(bakPath, filePath);
-        if (hasSynchronizedSiblings) {
-            // skipVersionGuard: see the --step branch above — restore stays ungated.
-            const restored = loadDraft(filePath);
-            saveDraft(restored.filePath, restored.draft, { backup: false, skipVersionGuard: true });
-        }
-    }
-    out({ ok: true, restored: filePath, from: bakPath }, flags);
+    if (!isDryRun())
+        restoreSource(pick.path);
+    const { path: from, integrity, step } = pick;
+    out(step !== undefined
+        ? { ok: true, restored: filePath, from, step, integrity }
+        : { ok: true, restored: filePath, from, integrity }, flags);
 }
 // `prune` removes materials no segment references. The referenced set is the
 // union of every segment's material_id AND its extra_material_refs[] (the latter
@@ -4621,83 +4822,24 @@ async function cmdPrune(draft, filePath, flags) {
 //   --dir <d>          for each material whose path is missing, look for a file
 //                      with the same basename in <d> and repoint to it.
 //   --from <p> --to <q> prefix-replace on every material path.
+async function saveChangedMedia(draft, filePath, ids) {
+    const { planChangedMediaRegistration } = await import("./materials-register.js");
+    const sidecar = planChangedMediaRegistration(draft, draftProjectDir(filePath), ids);
+    saveDraft(filePath, draft, { additionalFiles: sidecar ? [sidecar] : [] });
+}
 async function cmdRelink(draft, filePath, flags) {
-    if (!flags.dir && !(flags.from && flags.to)) {
-        die("Usage: capcut relink <project> (--dir <folder> | --from <oldPrefix> --to <newPrefix>) [--stage]");
-    }
-    const { copyAssetDeduped } = await import("./factory.js");
-    const dirIndex = new Map();
-    if (flags.dir) {
-        if (!existsSync(flags.dir))
-            die(`--dir not found: ${flags.dir}`);
-        for (const f of readdirSync(flags.dir))
-            dirIndex.set(path.basename(f), path.join(flags.dir, f));
-    }
-    const draftDir = path.dirname(path.resolve(filePath));
-    const relinked = [];
-    let missing = 0;
-    let ok = 0;
-    let staged = 0;
-    for (const [kind, arr] of Object.entries(draft.materials)) {
-        if (!Array.isArray(arr))
-            continue;
-        for (const m of arr) {
-            const mat = m;
-            if (typeof mat.path !== "string" || mat.path === "")
-                continue;
-            let p = mat.path;
-            let changed = false;
-            if (flags.from && flags.to && p.startsWith(flags.from)) {
-                p = flags.to + p.slice(flags.from.length);
-                changed = true;
-            }
-            if (!existsSync(p) && flags.dir) {
-                const hit = dirIndex.get(path.basename(p));
-                if (hit) {
-                    p = hit;
-                    changed = true;
-                }
-            }
-            // --stage: copy the file this run just relinked into assets/<kind>/ and
-            // point the material at the copy — the repaired draft leaves portable
-            // (pyJianYingDraft#177: a draft whose media lives outside the project
-            // folder black-screens when the folder moves machines). Same
-            // copyAssetDeduped path add-video/add-audio use, so re-runs are no-ops.
-            // A file copy is a side effect no draft write rolls back, so --dry-run
-            // skips the copy and the plan keeps the resolved external path.
-            let didStage = false;
-            if (changed &&
-                flags.stage &&
-                !isDryRun() &&
-                (kind === "videos" || kind === "audios") &&
-                existsSync(p) &&
-                !path.resolve(p).startsWith(draftDir + path.sep)) {
-                const assetKind = kind === "audios" ? "audio" : "video";
-                const destPath = copyAssetDeduped(p, path.resolve(draftDir, "assets", assetKind), assetKind === "audio" ? "audio.mp3" : "media");
-                p = destPath;
-                didStage = true;
-                staged++;
-                // Keep the display-name fields tracking the staged file, the
-                // replace-media convention — only visible when de-collision renamed.
-                const filename = path.basename(destPath);
-                if ("material_name" in mat)
-                    mat.material_name = filename;
-                if ("name" in mat)
-                    mat.name = filename;
-            }
-            if (changed && p !== mat.path) {
-                relinked.push({ id: mat.id ?? "", from: mat.path, to: p, staged: didStage });
-                mat.path = p;
-            }
-            if (existsSync(p))
-                ok++;
-            else
-                missing++;
-        }
-    }
-    if (relinked.length > 0)
-        saveDraft(filePath, draft);
-    out({ ok: true, relinked: relinked.length, staged, still_missing: missing, present: ok, changes: relinked }, flags);
+    const { relinkMedia } = await import("./relink.js");
+    const result = relinkMedia(draft, filePath, {
+        dir: flags.dir,
+        from: flags.from,
+        to: flags.to,
+        recursive: flags.recursive,
+        stage: flags.stage,
+        dryRun: isDryRun(),
+    });
+    if (result.relinked > 0)
+        await saveChangedMedia(draft, filePath, result.changes.map((change) => change.id));
+    out(result, flags);
 }
 // `replace-media` swaps a segment's source file in place (placeholder > final),
 // preserving its timeline position, timing, effects, and keyframes.
@@ -4710,7 +4852,7 @@ async function cmdReplaceMedia(draft, filePath, positional, flags) {
         retime: flags.retime,
         dryRun: isDryRun(),
     });
-    saveDraft(filePath, draft); // no-ops under --dry-run
+    await saveChangedMedia(draft, filePath, [result.material_id]); // no-ops under --dry-run
     out(result, flags);
     if (!flags.quiet && result.warning)
         process.stderr.write(`Warning: ${result.warning}\n`);
@@ -4876,7 +5018,7 @@ const SUMMARIES = {
     "import-ass": "Import an ASS/SSA subtitle file as text segments, keeping inline overrides as per-range styles.",
     "text-ranges": "Apply byte-accurate multi-style ranges to a text segment.",
     caption: "Transcribe audio via whisper into real caption-track segments.",
-    translate: "Clone a draft into another language via the Anthropic API.",
+    translate: "Clone a draft into another language via the Anthropic API or CapCut cloud.",
     migrate: "Apply known schema migrations across version boundaries.",
     "add-sfx": "Add a sound effect on a dedicated track.",
     chroma: "Green-screen / chroma key a video segment, or --off.",
@@ -4892,10 +5034,10 @@ const SUMMARIES = {
     relink: "Repair broken media paths (--dir or --from/--to).",
     timeline: "Show the track/segment layout (JSON, or -H ASCII bars).",
     projects: "List CapCut/JianYing draft folders on disk.",
-    diff: "Compare two drafts (segments/materials/tracks added/removed/changed).",
+    diff: "Compare two drafts (segments/materials/tracks added/removed/changed), or with --since-write a draft with what capcut-cli last wrote to it.",
     concat: "Append one draft onto another's timeline (id-safe), write to --out or in place.",
     config: "Show the resolved config (.capcutrc + effective defaults).",
-    describe: "Emit the full command surface as JSON (agent tool spec).",
+    describe: "Emit command contracts as JSON, optionally filtered by name or reduced to a compact discovery index.",
     completions: "Generate shell completions (bash|zsh|fish).",
     restore: "Undo writes from .bak / snapshot history (--step N, --list).",
     serve: "Run a stateless JSONL job queue from stdin/--queue.",
@@ -4904,6 +5046,7 @@ const SUMMARIES = {
     init: "Create a new empty draft from a template.",
     compile: "Build a draft from a declarative JSON spec (the inverse of describe).",
     render: "Render a low-res ffmpeg proxy preview (trim+speed+audio, --burn-captions); not CapCut's final render.",
+    loudness: "Measure each audible clip's loudness (EBU R128) and, with --target, set the gain that brings the export there.",
     "detect-scenes": "Detect scene-change cut points in a video (ffmpeg scene filter); prints cuts + segments to seed compile/cut.",
     "detect-silence": "Detect silence spans in a media file (ffmpeg silencedetect); prints silences + keep segments to seed compile/cut.",
     "detect-retakes": "Find repeated takes in the draft's captions (or an SRT): windowed word-sequence similarity, later take kept; prints cuts + keep segments to seed compile/cut.",
@@ -4912,17 +5055,69 @@ const SUMMARIES = {
 // don't have to scrape --help. Names come from COMMANDS (source of truth);
 // summaries from SUMMARIES (test-enforced complete).
 function cmdDescribe(flags) {
+    let commands = commandSpecs();
+    if (flags.describeCommands) {
+        const selected = new Set(flags.describeCommands);
+        const known = new Set(commands.map((command) => command.name));
+        const unknown = [...selected].filter((name) => !known.has(name));
+        if (unknown.length)
+            die(`Unknown command(s): ${unknown.join(", ")}. Use capcut describe --compact to list names.`);
+        commands = commands.filter((command) => selected.has(command.name));
+    }
     out({
         name: "capcut-cli",
         version: getCliVersion(),
         schema_version: 2,
         description: "Edit CapCut/JianYing draft_content.json directly. JSON in, JSON out.",
         global_flags: GLOBAL_OPTION_SPECS,
-        commands: commandSpecs(),
+        ...(flags.describeCompact ? { detail: "compact" } : {}),
+        commands: flags.describeCompact
+            ? commands.map(({ name, summary, usage, mutates }) => ({ name, summary, usage, mutates }))
+            : commands,
     }, flags);
 }
 function commandSpecs() {
     return buildCommandSpecs(COMMANDS, SUMMARIES);
+}
+// One command's help, rendered from the same registry as `describe` and the
+// generated command reference, so the three cannot disagree.
+function renderCommandHelp(spec) {
+    const lines = [`Usage: ${spec.usage}`, "", spec.summary];
+    const optionLabel = (option) => {
+        const value = option.type === "boolean" ? "" : option.values ? ` <${option.values.join("|")}>` : ` <${option.type}>`;
+        return `${option.flags.join(", ")}${value}`;
+    };
+    if (spec.options.length > 0) {
+        const width = Math.min(34, Math.max(...spec.options.map((option) => optionLabel(option).length)));
+        lines.push("", "Options:");
+        for (const option of spec.options) {
+            const label = optionLabel(option);
+            const pad = label.length > width ? `\n  ${" ".repeat(width + 2)}` : " ".repeat(width - label.length + 2);
+            lines.push(`  ${label}${pad}${option.description ?? ""}`);
+        }
+    }
+    lines.push("", `Global options: ${GLOBAL_OPTION_SPECS.flatMap((option) => option.flags).join(" ")}`, `Output: ${spec.output.description}`);
+    if (spec.mutates)
+        lines.push("Writes the draft: a .bak and a history snapshot are kept (capcut restore undoes it).");
+    if (spec.prerequisites.length > 0)
+        lines.push(`Needs: ${spec.prerequisites.join(", ")}`);
+    lines.push(`Exit codes: ${Object.entries(spec.exit_codes)
+        .map(([code, meaning]) => `${code} ${meaning}`)
+        .join("; ")}`, `Machine-readable contract: capcut describe --command ${spec.name}`);
+    return lines.join("\n");
+}
+// `capcut help [<command>]` and `capcut <command> --help|-h`. The command is
+// the first argument that is not a flag; an unknown one gets the full help.
+function helpRequest(raw) {
+    const first = raw.findIndex((arg) => !arg.startsWith("-"));
+    const wantsHelp = raw.includes("--help") || raw.includes("-h");
+    if (first >= 0 && raw[first] === "help") {
+        const named = raw.slice(first + 1).find((arg) => !arg.startsWith("-"));
+        return { command: named ?? null };
+    }
+    if (!wantsHelp)
+        return null;
+    return { command: first >= 0 ? raw[first] : null };
 }
 // Load .capcutrc from cwd, then home. cwd wins. Returns {} if none/invalid.
 function loadConfig() {
@@ -5000,15 +5195,9 @@ function indexMaterialContent(draft) {
     }
     return m;
 }
-// `diff` reports what changed between two drafts: segments added/removed/changed
-// and materials added/removed. Read-only.
-function cmdDiff(positional, flags) {
-    const aPath = positional[1];
-    const bPath = positional[2];
-    if (!aPath || !bPath)
-        die("Usage: capcut diff <projectA> <projectB>");
-    const a = readDraft(aPath).draft;
-    const b = readDraft(bPath).draft;
+// What changed from draft `a` to draft `b`: segments added/removed/changed and
+// materials added/removed/changed, the shape `diff` prints.
+function diffDrafts(a, b) {
     const aSeg = indexSegments(a);
     const bSeg = indexSegments(b);
     const segAdded = [];
@@ -5048,13 +5237,79 @@ function cmdDiff(positional, flags) {
     const matChanged = [...bMat.keys()].filter((id) => aMat.has(id) && aMat.get(id) !== bMat.get(id));
     const changed = segAdded.length + segRemoved.length + segChanged.length + matAdded.length + matRemoved.length + matChanged.length >
         0;
-    out({
-        ok: true,
+    return {
         changed,
         tracks: { a: a.tracks.length, b: b.tracks.length },
         segments: { added: segAdded, removed: segRemoved, changed: segChanged },
         materials: { added: matAdded, removed: matRemoved, changed: matChanged },
+    };
+}
+// `diff` reports what changed between two drafts: segments added/removed/changed
+// and materials added/removed. Read-only.
+function cmdDiff(positional, flags) {
+    if (flags.sinceWrite) {
+        cmdDiffSinceWrite(positional, flags);
+        return;
+    }
+    const aPath = positional[1];
+    const bPath = positional[2];
+    if (!aPath || !bPath)
+        die("Usage: capcut diff <projectA> <projectB>  |  capcut diff <project> --since-write");
+    const a = readDraft(aPath).draft;
+    const b = readDraft(bPath).draft;
+    out({ ok: true, ...diffDrafts(a, b) }, flags);
+}
+// `diff <project> --since-write`: the draft on disk against what capcut-cli
+// itself last wrote to it (the record every write keeps in the history
+// directory), so the changes the app made when it opened or saved a
+// tool-written draft show up as `a` = written, `b` = now. Read-only.
+function cmdDiffSinceWrite(positional, flags) {
+    const project = positional[1];
+    if (!project || positional[2])
+        die("Usage: capcut diff <project> --since-write");
+    const filePath = findDraft(project);
+    const record = readLastWrite(filePath);
+    if (!record) {
+        die(`No record of a capcut-cli write to ${filePath}. --since-write compares the draft with what this CLI last ` +
+            "wrote to it, which every edit command records from this version on; this draft has not been written since.");
+    }
+    const raw = readFileSync(filePath, "utf-8");
+    const written = timelineFromText(record.content);
+    const current = timelineFromText(stripBom(raw));
+    if (!written)
+        die(`The recorded write to ${filePath} does not contain a readable timeline.`);
+    if (!current)
+        die(`${filePath} does not contain a readable timeline.`);
+    const currentSha = contentDigest(raw);
+    const changed = currentSha !== record.sha256;
+    // The segment/material diff leaves out the rest of the document, which is
+    // where an app re-save usually shows: list the top-level fields that differ
+    // and whether the tracks were reordered.
+    const keys = [...new Set([...Object.keys(written), ...Object.keys(current)])].sort();
+    const topLevelChanged = keys.filter((key) => JSON.stringify(written[key]) !== JSON.stringify(current[key]));
+    const writtenIds = written.tracks.map((track) => track.id);
+    const currentIds = current.tracks.map((track) => track.id);
+    const shared = (ids, other) => ids.filter((id) => other.includes(id));
+    const trackOrderChanged = JSON.stringify(shared(writtenIds, currentIds)) !== JSON.stringify(shared(currentIds, writtenIds));
+    out({
+        ok: true,
+        ...diffDrafts(written, current),
+        since_write: {
+            file: path.basename(filePath),
+            written_at: record.written_at,
+            written_by: record.command,
+            written_sha256: record.sha256,
+            current_sha256: currentSha,
+            changed,
+            top_level_changed: topLevelChanged,
+            track_order_changed: trackOrderChanged,
+        },
     }, flags);
+    if (!flags.quiet) {
+        process.stderr.write(changed
+            ? `${path.basename(filePath)} changed since capcut-cli wrote it at ${record.written_at}.\n`
+            : `No changes: ${path.basename(filePath)} is exactly what capcut-cli wrote at ${record.written_at}.\n`);
+    }
 }
 // `concat` appends draftB onto draftA's timeline. B's segments are time-shifted
 // by A's duration; any B material/segment id that collides with A is reassigned
@@ -5130,12 +5385,14 @@ async function cmdConcat(positional, flags) {
 // factory functions the imperative add-* commands use. Resolves the bundled
 // _init template the same way `init` does.
 async function cmdCompile(positional, flags) {
-    const { compileDraft, parseSpec, planCompile } = await import("./compile.js");
+    const { compileDraft, compileIntoDraft, parseSpec, planCompile, planCompileInto } = await import("./compile.js");
     const specPath = positional[1];
     if (!specPath)
-        die("Usage: capcut compile <spec.json> [--out <draftdir>] [--drafts <dir>] [--data <rows.jsonl|->]");
+        die("Usage: capcut compile <spec.json> [--out <draftdir> | --into <project>] [--drafts <dir>] [--data <rows.jsonl|->]");
     if (!existsSync(specPath))
         die(`Spec file not found: ${specPath}`);
+    if (flags.into && [flags.out, flags.drafts, flags.template, flags.data].some((value) => value !== undefined))
+        die("compile: --into is incompatible with --out, --drafts, --template and --data.");
     // --data: mass production. One spec + N JSONL rows = N drafts. Branches
     // before anything else so the single-draft path below stays untouched.
     if (flags.data !== undefined) {
@@ -5148,6 +5405,22 @@ async function cmdCompile(positional, flags) {
     }
     catch (e) {
         die(e.message);
+    }
+    if (flags.into) {
+        const options = {
+            intoDir: flags.into,
+            specDir: path.dirname(path.resolve(specPath)),
+            activeTimeline: flags.activeTimeline === true,
+        };
+        if (flags.check || flags.plan || isDryRun())
+            out({ ...planCompileInto(spec, options), checked: true, write: false }, flags);
+        else {
+            const result = compileIntoDraft(spec, options);
+            out(result, flags);
+            if (!flags.quiet)
+                process.stderr.write(`Compiled into existing project: ${result.draft_path}\n`);
+        }
+        return;
     }
     if (flags.check || flags.plan) {
         const plan = planCompile(spec, path.dirname(path.resolve(specPath)));
@@ -5285,7 +5558,7 @@ async function cmdCompileData(specPath, flags) {
 // it never mutates the draft. With --dry-run it returns the ffmpeg plan without
 // executing, so the filter graph is inspectable (and the path is ffmpeg-free).
 async function cmdRender(draft, filePath, flags) {
-    const { buildRenderPlan, renderDraft } = await import("./render.js");
+    const { assertFaithful, buildRenderPlan, renderDraft } = await import("./render.js");
     if (flags.crf !== undefined && flags.videoBitrate !== undefined) {
         die("--crf and --video-bitrate are mutually exclusive.");
     }
@@ -5308,10 +5581,17 @@ async function cmdRender(draft, filePath, flags) {
         allVideoTracks: flags.allVideoTracks,
         dryRun: isDryRun(),
         progress: flags.progress,
+        strict: flags.strict,
+        ffprobeCmd: flags.ffprobeCmd,
     };
     if (opts.dryRun) {
         // Build-only: surface the plan; no ffmpeg needed.
-        const plan = buildRenderPlan(draft, { ...opts, out: opts.out ?? path.join(path.dirname(filePath), "preview.mp4") });
+        const plan = buildRenderPlan(draft, {
+            ...opts,
+            out: opts.out ?? path.join(draftProjectDir(filePath), "preview.mp4"),
+        });
+        if (opts.strict)
+            assertFaithful(plan.fidelity);
         out({ ok: true, executed: false, ...plan }, flags);
         return;
     }
@@ -5319,6 +5599,17 @@ async function cmdRender(draft, filePath, flags) {
     out(result, flags);
     if (!flags.quiet)
         process.stderr.write(`Rendered: ${result.output}\n`);
+    // --verify: the file stays on disk either way; the result above says why.
+    const check = result.verification;
+    if (flags.verify && check) {
+        if (!check.verified)
+            die(`render --verify: output could not be verified: ${check.reason}`);
+        if (!check.within_tolerance) {
+            die(`render --verify: output duration ${check.duration_us}us drifts ${check.drift_us}us from the draft's ` +
+                `${check.expected_duration_us}us, beyond the one-frame tolerance of ${check.tolerance_us}us. ` +
+                `The file was kept at ${result.output}; the result's \`fidelity\` lists what the proxy dropped (main_track_gaps shortens it).`);
+        }
+    }
 }
 async function cmdDetectScenes(positional, flags) {
     const { detectScenes, timecode } = await import("./scenes.js");
@@ -5504,8 +5795,13 @@ async function cmdDetectRetakes(draft, flags) {
 // --- Main ---
 async function main() {
     const raw = process.argv.slice(2);
-    if (raw.length === 0 || raw[0] === "--help" || raw[0] === "-h") {
-        console.log(`${HELP}\n\nGenerated command index:\n${renderCommandIndex(commandSpecs())}`);
+    const help = raw.length === 0 ? { command: null } : helpRequest(raw);
+    if (help) {
+        const spec = help.command ? commandSpecs().find((candidate) => candidate.name === help.command) : undefined;
+        if (spec)
+            console.log(renderCommandHelp(spec));
+        else
+            console.log(`${HELP}\n\nGenerated command index:\n${renderCommandIndex(commandSpecs())}`);
         process.exit(0);
     }
     const { positional, flags } = parseFlags(raw);
@@ -5514,6 +5810,14 @@ async function main() {
     // Global --dry-run: gate every saveDraft write (see src/draft.ts).
     setDryRun(flags.dryRun === true);
     setForceWrite(flags.forceWrite === true);
+    // Write journal: every history snapshot records the command that made it.
+    if (positional[0] !== undefined) {
+        const at = raw.indexOf(positional[0]);
+        setWriteContext(positional[0], at >= 0 ? raw.slice(at + 1) : []);
+    }
+    if (flags.activeTimeline && ["compile", "import-timeline"].includes(positional[0]) && !flags.into)
+        die("--active-timeline requires --into for this command.");
+    setActiveTimelineSelection(flags.activeTimeline === true);
     if (flags.version) {
         console.log(getCliVersion());
         process.exit(0);
@@ -5579,24 +5883,30 @@ async function main() {
             process.exit(check.ok ? 0 : 1);
         }
         if (!projectPath) {
-            die("Usage: capcut fixture <project> --out <dir> [--check]  |  capcut fixture <bundle-dir> --check");
+            die("Usage: capcut fixture <project> --out <dir> [--anonymize] [--check]  |  capcut fixture <bundle-dir> --check");
         }
         if (!flags.out)
-            die("Missing --out <dir>. Usage: capcut fixture <project> --out <dir> [--check]");
-        const report = sanitizeDraftBundle(projectPath, flags.out);
+            die("Missing --out <dir>. Usage: capcut fixture <project> --out <dir> [--anonymize] [--check]");
+        const report = sanitizeDraftBundle(projectPath, flags.out, { anonymize: flags.anonymize === true });
         // Scan the real output path from the flag: report.out_dir is itself
         // redacted (a home-dir project reports /home/USER/…), so it is display
         // data, not a filesystem path.
-        const check = flags.check ? verifyBundleRedaction(path.resolve(flags.out)) : null;
-        out(check ? { ...report, ok: report.ok && check.ok, redaction_check: check } : report, flags);
+        const check = report.redaction_check;
+        out(report, flags);
         if (!flags.quiet) {
             const total = Object.values(report.redaction_kinds).reduce((a, b) => a + b, 0);
             process.stderr.write(`Sanitized bundle: ${report.out_dir} (${report.files.length} files, ${total} redactions)\n`);
-            process.stderr.write(`Review the files, then attach the folder to issue #35.\n`);
+            if (report.anonymization) {
+                const a = report.anonymization;
+                process.stderr.write(`Anonymized: media files ${a.media_files}, folder names ${a.folders}, texts ${a.text_fields} ` +
+                    `(${a.characters} characters).\n`);
+            }
+            process.stderr.write(check.ok
+                ? "Review the files, then attach the folder to the relevant issue.\n"
+                : "Review the redaction findings before sharing this bundle.\n");
         }
-        if (check)
-            printCheck(check);
-        process.exit(check && !check.ok ? 1 : 0);
+        printCheck(check);
+        process.exit(check.ok ? 0 : 1);
     }
     // `register` reads draft_content.json directly — no loadDraft: the draft may
     // be missing exactly the sidecar files sibling discovery would look at.
@@ -5615,7 +5925,7 @@ async function main() {
     }
     // `restore` copies a backup/snapshot back over the draft — no loadDraft/parse needed.
     if (cmd === "restore") {
-        cmdRestore(projectPath, flags);
+        await cmdRestore(projectPath, flags);
         process.exit(0);
     }
     // `describe` emits the tool spec — no project needed.
@@ -5797,6 +6107,9 @@ async function main() {
             break;
         case "render":
             await cmdRender(draft, filePath, flags);
+            break;
+        case "loudness":
+            await cmdLoudness(draft, filePath, flags);
             break;
         case "detect-retakes":
             await cmdDetectRetakes(draft, flags);

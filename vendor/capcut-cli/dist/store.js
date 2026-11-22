@@ -1,11 +1,17 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { stripBom } from "./bom.js";
+import { referencedMedia } from "./materials-register.js";
 import { assessWriteSafety, atLeast, isPreRelease } from "./version.js";
 const STANDARD_FILES = ["draft_content.json", "draft_info.json", "draft_meta_info.json", "template-2.tmp"];
+let activeTimelineSelection = false;
+/** CLI process default; library callers should pass options to loadDraft instead. */
+export function setActiveTimelineSelection(value) {
+    activeTimelineSelection = value;
+}
 function hash(value) {
     return createHash("sha256").update(value).digest("hex");
 }
@@ -45,6 +51,15 @@ function findTimeline(value, path = [], depth = 0) {
         }
     }
     return null;
+}
+/** The timeline in a draft file's text, at the root or inside an envelope; null when there is none. */
+export function timelineFromText(raw) {
+    try {
+        return findTimeline(JSON.parse(raw))?.draft ?? null;
+    }
+    catch {
+        return null;
+    }
 }
 // Exported for factory.ts (register): read one file into a DraftCandidate —
 // BOM-stripped, envelope-aware — without the sibling discovery a full
@@ -191,6 +206,9 @@ export const NESTED_TIMELINES_ACTION = "Timelines/ directory with a nested timel
     "`capcut sync-timelines <project> --nested --apply` copies the root timeline into the nested documents as an " +
     "explicit opt-in repair. Evidence for this layout is report-only — if you have such a project, contribute a " +
     "bundle: `capcut fixture <project> --out <dir>`.";
+export const ACTIVE_TIMELINE_WINDOWS_ACTION = "CapCut 8.7.0 Windows active timeline selected from Timelines/project.json (issue #50). Normal writes " +
+    "synchronize that timeline and the readable root mirrors. Other timelines are preserved. Selection is " +
+    "fixture-tested; a patched open/close round-trip in the app is still required.";
 /**
  * The same structure on >= 8.7 storage, where `layout` deliberately stays at its
  * content-/info-primary value so the 7.x claim never relabels a modern store.
@@ -205,7 +223,7 @@ export const NESTED_TIMELINES_ACTION = "Timelines/ directory with a nested timel
  */
 export const NESTED_TIMELINES_MODERN_ACTION = "Timelines/ directory with a nested timeline document, on CapCut >= 8.7 storage. No discard risk is claimed " +
     "here and none is ruled out: the 7.x report in issue #50 and the 8.5.0 open/close round trip in issue #68 both " +
-    "predate this storage generation, so what the app does with the nested document on >= 8.7 is unevidenced in " +
+    "predate this storage generation, so what the app does with the nested document on this store is unevidenced in " +
     "either direction. Edit commands read and write the project-root files only; " +
     "`capcut sync-timelines <project> --nested --apply` copies the root timeline into the nested documents as an " +
     "explicit opt-in repair. If this project opens in your app " +
@@ -272,10 +290,12 @@ export function nestedTimelinesAction(appVersion) {
         "round trip), so the root-file writes the edit commands perform are the ones the app keeps. The 7.x caution " +
         "in issue #50 still applies to older builds.");
 }
-function candidatePaths(input) {
+function candidatePaths(input, nestedRoot = true) {
     const resolved = resolve(input);
     const isFile = existsSync(resolved) && statSync(resolved).isFile();
-    const projectDir = isFile ? dirname(resolved) : resolved;
+    const fileDir = dirname(resolved);
+    const nestedFile = nestedRoot && isFile && basename(dirname(fileDir)) === "Timelines";
+    const projectDir = nestedFile ? dirname(dirname(fileDir)) : isFile ? fileDir : resolved;
     const requested = isFile ? resolved : null;
     const paths = requested ? [requested] : [];
     for (const name of STANDARD_FILES) {
@@ -284,6 +304,100 @@ function candidatePaths(input) {
             paths.push(path);
     }
     return { projectDir, requested, paths };
+}
+/** Asset files and project metadata belong at the project root even when
+ * the canonical timeline document lives below Timelines/<id>/. */
+export function draftProjectDir(filePath) {
+    const dir = dirname(resolve(filePath));
+    return basename(dirname(dir)) === "Timelines" && existsSync(filePath) ? discoverDraftStore(filePath).projectDir : dir;
+}
+function containedPath(projectDir, path) {
+    try {
+        const rel = relative(realpathSync(projectDir), realpathSync(path));
+        return (!isAbsolute(rel) &&
+            rel !== ".." &&
+            !rel.startsWith(`..${sep}`) &&
+            rel === relative(resolve(projectDir), resolve(path)));
+    }
+    catch {
+        return false;
+    }
+}
+function isEvidencedWindowsDraft(draft) {
+    if (!draft)
+        return false;
+    const markers = [draft.platform, draft.last_modified_platform].filter((marker) => marker !== undefined);
+    return (draft.platform !== undefined &&
+        markers.every((marker) => {
+            if (!marker || typeof marker !== "object")
+                return false;
+            const value = marker;
+            return value.app_version === "8.7.0" && value.os === "windows" && value.app_source === "cc";
+        }));
+}
+/** Only the Windows 8.7.0 case has the sentinel experiment and field fixture
+ * in #50. Layout presence alone does not establish authority on other builds. */
+function selectActiveTimeline(projectDir, root, version, explicit = false) {
+    if (!explicit && (version !== "8.7.0" || !isEvidencedWindowsDraft(root.draft)))
+        return null;
+    const invalid = (reason) => {
+        throw new Error(`refused [active-timeline-invalid]: ${reason}`);
+    };
+    const pointerPath = join(projectDir, "Timelines", "project.json");
+    try {
+        if (!containedPath(projectDir, pointerPath))
+            invalid("The active timeline pointer is missing or traverses a symlink.");
+        const pointerRaw = stripBom(readFileSync(pointerPath, "utf-8"));
+        const pointer = JSON.parse(pointerRaw);
+        const id = pointer.main_timeline_id ?? pointer.id;
+        if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id))
+            return invalid("The pointer must name one safe timeline id.");
+        if (Array.isArray(pointer.timelines) &&
+            pointer.timelines.some((entry) => entry?.id === id && entry.is_marked_delete === true))
+            invalid("The selected timeline is marked deleted.");
+        const candidates = [];
+        for (const name of ["draft_content.json", "draft_info.json", "template-2.tmp"]) {
+            const rel = join("Timelines", id, name);
+            const path = join(projectDir, rel);
+            if (!existsSync(path))
+                continue;
+            if (!containedPath(projectDir, path))
+                invalid("A selected timeline document traverses a symlink.");
+            const candidate = parseCandidate(path);
+            if (explicit && !candidate.parseable)
+                invalid(`The selected document ${rel} is unreadable.`);
+            candidates.push({ ...candidate, name: rel.split(sep).join("/") });
+        }
+        const primary = candidates.find((candidate) => candidate.parseable && candidate.draft);
+        if (!primary)
+            return invalid("The selected timeline has no readable document.");
+        if (!explicit &&
+            (!isEvidencedWindowsDraft(primary.draft) ||
+                candidates.some((candidate) => candidate.parseable && !isEvidencedWindowsDraft(candidate.draft))))
+            return null;
+        if (explicit && new Set(candidates.map((candidate) => timelineHashWithoutId(candidate.draft))).size > 1)
+            invalid("The selected timeline's documents disagree. Reconcile them in the app before using --active-timeline.");
+        return { active: { id, pointerPath, pointerRaw, ...(explicit ? { explicit: true } : {}) }, candidates };
+    }
+    catch (error) {
+        if (explicit) {
+            if (error.message.startsWith("refused [active-timeline-invalid]:"))
+                throw error;
+            invalid(error.message);
+        }
+        // A malformed or inaccessible pointer must never redirect a root write.
+        return null;
+    }
+}
+export function assertActiveTimelineUnchanged(store) {
+    if (!store.activeTimeline)
+        return;
+    const { pointerPath, pointerRaw } = store.activeTimeline;
+    if (!containedPath(store.projectDir, pointerPath) ||
+        stripBom(readFileSync(pointerPath, "utf-8")) !== pointerRaw ||
+        store.targets.some((target) => !containedPath(store.projectDir, target.path))) {
+        throw new Error("refused [active-timeline-changed]: The active timeline pointer or target path changed after load. Reload and retry.");
+    }
 }
 /** Newest app version any readable timeline in the set declares, or null when
  * none carries a marker. The store's version evidence covers every sibling, so
@@ -294,17 +408,20 @@ function highestVersion(parseable) {
         .filter((value) => typeof value === "string" && value.length > 0);
     return versions.sort((a, b) => (atLeast(a, b) ? -1 : 1))[0] ?? null;
 }
-export function discoverDraftStore(input) {
-    const { projectDir, requested, paths } = candidatePaths(input);
-    const candidates = paths.map(parseCandidate);
-    const parseable = candidates.filter((candidate) => candidate.parseable && candidate.draft);
+export function discoverDraftStore(input, options = {}) {
+    return discoverStore(input, true, options.activeTimeline ?? activeTimelineSelection);
+}
+function discoverStore(input, nestedRoot, explicit = false) {
+    const { projectDir, requested, paths } = candidatePaths(input, nestedRoot);
+    let candidates = paths.map(parseCandidate);
+    let parseable = candidates.filter((candidate) => candidate.parseable && candidate.draft);
     if (parseable.length === 0) {
         const found = candidates.filter((candidate) => candidate.exists).map((candidate) => candidate.name);
         const detail = found.length > 0 ? `Found ${found.join(", ")}, but none contained a readable timeline.` : "";
         throw new Error(`No draft found at: ${input}\nExpected draft_content.json, draft_info.json, draft_meta_info.json, or template-2.tmp. ${detail}`.trim());
     }
-    const version = highestVersion(parseable);
-    const modernStorage = atLeast(version, "8.7");
+    let version = highestVersion(parseable);
+    let modernStorage = atLeast(version, "8.7");
     let canonical;
     if (requested)
         canonical = parseable.find((candidate) => candidate.path === requested);
@@ -315,6 +432,33 @@ export function discoverDraftStore(input) {
         .map((name) => parseable.find((candidate) => candidate.name === name))
         .find((candidate) => Boolean(candidate));
     canonical ??= parseable[0];
+    const root = parseable.find((candidate) => candidate.path === join(projectDir, "template-2.tmp")) ??
+        parseable.find((candidate) => candidate.path === join(projectDir, "draft_content.json")) ??
+        (explicit ? parseable.find((candidate) => dirname(candidate.path) === projectDir) : undefined);
+    if (explicit && !root)
+        throw new Error("refused [active-timeline-invalid]: No readable project-root timeline.");
+    if (explicit && requested && !STANDARD_FILES.some((name) => basename(requested) === name))
+        throw new Error("refused [active-timeline-invalid]: Pass the project directory or a standard timeline document.");
+    const selection = root && (!requested || STANDARD_FILES.some((name) => basename(requested) === name))
+        ? selectActiveTimeline(projectDir, root, version, explicit)
+        : null;
+    if (!selection && nestedRoot && requested && dirname(requested) !== projectDir) {
+        return discoverStore(input, false, explicit);
+    }
+    if (selection) {
+        const activeDir = join(projectDir, "Timelines", selection.active.id);
+        if (requested && dirname(requested) !== projectDir && dirname(requested) !== activeDir) {
+            throw new Error("This file belongs to an inactive timeline. Pass the project directory to edit the selected active timeline.");
+        }
+        candidates = [...candidates.filter((candidate) => dirname(candidate.path) === projectDir), ...selection.candidates];
+        parseable = candidates.filter((candidate) => candidate.parseable && candidate.draft);
+        version = highestVersion(parseable);
+        modernStorage = atLeast(version, "8.7");
+        canonical = selection.candidates.find((candidate) => candidate.parseable && candidate.draft);
+        for (const candidate of parseable) {
+            candidate.keepGuid = dirname(candidate.path) === activeDir ? selection.active.id : candidate.draft?.id;
+        }
+    }
     const contentReadable = parseable.some((candidate) => candidate.name === "draft_content.json");
     const infoReadable = parseable.some((candidate) => candidate.name === "draft_info.json");
     // Issue #50 detection only: the nested layout changes NOTHING about
@@ -330,19 +474,24 @@ export function discoverDraftStore(input) {
         candidates,
         version,
         modernStorage,
+        ...(selection ? { activeTimeline: selection.active } : {}),
         // Getter so the timeline hashes it compares stay unforced: only `diagnose`
         // reads this, and forcing them here would put the cost straight back on
         // every command discovery runs for.
         get diverged() {
-            return new Set(parseable.map((candidate) => candidate.timelineHash).filter(Boolean)).size > 1;
+            return (new Set(parseable
+                .map((candidate) => selection && candidate.draft ? timelineHashWithoutId(candidate.draft) : candidate.timelineHash)
+                .filter(Boolean)).size > 1);
         },
-        layout: nested.present && !modernStorage
-            ? "timelines-nested"
-            : contentReadable
-                ? "content-primary"
-                : infoReadable
-                    ? "info-primary"
-                    : "unknown",
+        layout: selection
+            ? "timelines-active"
+            : nested.present && !modernStorage
+                ? "timelines-nested"
+                : contentReadable
+                    ? "content-primary"
+                    : infoReadable
+                        ? "info-primary"
+                        : "unknown",
         nestedTimelines: nested.files,
     };
 }
@@ -366,7 +515,7 @@ export function discoverDraftStore(input) {
  * `diverged` collapses to false on its own, because every written target now
  * exposes the same timeline.
  */
-export function storeAfterWrite(store, draft, written) {
+export function storeAfterWrite(store, draft, written, preserveProjectFields = false) {
     const refresh = (candidate) => {
         const content = written.get(candidate.path);
         if (content === undefined)
@@ -382,6 +531,7 @@ export function storeAfterWrite(store, draft, written) {
             // The file is there — it was just renamed into place — but a stat can
             // still fail on a racing sync client. Fall back to what we wrote.
         }
+        const candidateDraft = draftForCandidate(candidate, draft, preserveProjectFields);
         let timelineHash = null;
         return {
             name: candidate.name,
@@ -393,10 +543,11 @@ export function storeAfterWrite(store, draft, written) {
             raw: content,
             parseable: true,
             envelopePath: candidate.envelopePath,
-            draft,
+            draft: candidateDraft,
+            ...(candidate.keepGuid === undefined ? {} : { keepGuid: candidate.keepGuid }),
             get timelineHash() {
                 if (timelineHash === null)
-                    timelineHash = hash(JSON.stringify(draft));
+                    timelineHash = hash(JSON.stringify(candidateDraft));
                 return timelineHash;
             },
         };
@@ -406,7 +557,7 @@ export function storeAfterWrite(store, draft, written) {
     // filename such as A.json is not lost — and that puts the canonical first in
     // the candidate list. Keep that order: it is the order targets are written
     // in and the order a changed-on-disk report names them in.
-    const order = candidatePaths(store.canonical.path).paths;
+    const order = candidatePaths(store.canonical.path, Boolean(store.activeTimeline)).paths;
     const rank = (candidate) => {
         const index = order.indexOf(candidate.path);
         return index < 0 ? order.length : index;
@@ -425,16 +576,21 @@ export function storeAfterWrite(store, draft, written) {
         candidates,
         version,
         modernStorage,
+        ...(store.activeTimeline ? { activeTimeline: store.activeTimeline } : {}),
         get diverged() {
-            return new Set(targets.map((candidate) => candidate.timelineHash).filter(Boolean)).size > 1;
+            return (new Set(targets
+                .map((candidate) => store.activeTimeline && candidate.draft ? timelineHashWithoutId(candidate.draft) : candidate.timelineHash)
+                .filter(Boolean)).size > 1);
         },
-        layout: store.nestedTimelines.length > 0 && !modernStorage
-            ? "timelines-nested"
-            : contentReadable
-                ? "content-primary"
-                : infoReadable
-                    ? "info-primary"
-                    : "unknown",
+        layout: store.activeTimeline
+            ? "timelines-active"
+            : store.nestedTimelines.length > 0 && !modernStorage
+                ? "timelines-nested"
+                : contentReadable
+                    ? "content-primary"
+                    : infoReadable
+                        ? "info-primary"
+                        : "unknown",
         nestedTimelines: store.nestedTimelines,
     };
 }
@@ -467,26 +623,90 @@ function indentOf(raw) {
         return 0;
     return match[1].includes("\t") ? "\t" : match[1].length;
 }
-export function serializeDraftCandidate(candidate, draft) {
+function draftForCandidate(candidate, draft, preserveProjectFields) {
+    if (preserveProjectFields && candidate.draft) {
+        draft = {
+            ...candidate.draft,
+            tracks: draft.tracks,
+            materials: { ...candidate.draft.materials, ...draft.materials },
+            duration: draft.duration,
+            fps: draft.fps,
+            canvas_config: {
+                ...draft.canvas_config,
+                ...candidate.draft.canvas_config,
+                width: draft.canvas_config.width,
+                height: draft.canvas_config.height,
+                ratio: draft.canvas_config.ratio,
+            },
+        };
+    }
+    return candidate.keepGuid === undefined ? draft : { ...draft, id: candidate.keepGuid };
+}
+export function serializeDraftCandidate(candidate, draft, preserveProjectFields = false, metadata) {
+    draft = draftForCandidate(candidate, draft, preserveProjectFields);
     if (!candidate.raw || candidate.envelopePath.length === 0) {
-        return JSON.stringify(draft, null, indentOf(candidate.raw));
+        return JSON.stringify(metadata ? { ...draft, ...metadata } : draft, null, indentOf(candidate.raw));
     }
     const root = JSON.parse(candidate.raw);
     const updated = replaceAtPath(root, candidate.envelopePath, draft);
-    return JSON.stringify(updated, null, indentOf(candidate.raw));
+    return JSON.stringify(metadata ? { ...updated, ...metadata } : updated, null, indentOf(candidate.raw));
 }
 export function editorProcesses() {
     try {
-        if (platform() === "win32") {
-            const result = spawnSync("tasklist", ["/FO", "CSV", "/NH"], { encoding: "utf-8", timeout: 3000 });
-            return matchEditorProcesses(result.stdout ?? "", "win32");
-        }
-        const result = spawnSync("ps", ["-axo", "comm="], { encoding: "utf-8", timeout: 3000 });
-        return matchEditorProcesses(result.stdout ?? "", "posix");
+        const flavor = platform() === "win32" ? "win32" : "posix";
+        const result = flavor === "win32"
+            ? spawnSync("tasklist", ["/FO", "CSV", "/NH"], { encoding: "utf-8", timeout: 3000 })
+            : spawnSync("ps", ["-axo", "pid=,ppid=,comm="], { encoding: "utf-8", timeout: 3000 });
+        const rows = parseProcessRows(result.stdout ?? "", flavor);
+        return matchEditorRows(rows, flavor, ownProcessChain(rows, process.pid, process.ppid));
     }
     catch {
         return [];
     }
+}
+/**
+ * Rows of `ps -axo pid=,ppid=,comm=` (posix) or `tasklist /FO CSV /NH` (win32,
+ * which lists no parent id). A line without ids is skipped.
+ */
+export function parseProcessRows(listing, flavor) {
+    const rows = [];
+    for (const raw of listing.split("\n")) {
+        const line = raw.trim();
+        if (flavor === "win32") {
+            const pid = Number(line.match(/^"[^"]*","(\d+)"/)?.[1]);
+            if (pid)
+                rows.push({ pid, ppid: 0, line });
+            continue;
+        }
+        const m = line.match(/^(\d+)\s+(\d+)\s+(.+)$/);
+        if (m)
+            rows.push({ pid: Number(m[1]), ppid: Number(m[2]), line: m[3] });
+    }
+    return rows;
+}
+/**
+ * The CLI's own process and every ancestor the listing shows (#168): a Volta
+ * shim is an executable named `capcut` that starts node, so the CLI's own
+ * parent looks like the editor by name. The direct parent always counts, also
+ * where the listing carries no parent ids (win32).
+ */
+export function ownProcessChain(rows, pid, ppid) {
+    const parent = new Map(rows.map((r) => [r.pid, r.ppid]));
+    const chain = new Set([pid, ppid]);
+    let at = parent.get(ppid);
+    while (at && at > 1 && !chain.has(at)) {
+        chain.add(at);
+        at = parent.get(at);
+    }
+    return chain;
+}
+/** The editors among a listing's rows, leaving out the CLI's own process chain. */
+export function matchEditorRows(rows, flavor, own) {
+    const listing = rows
+        .filter((r) => !own.has(r.pid))
+        .map((r) => r.line)
+        .join("\n");
+    return matchEditorProcesses(listing, flavor);
 }
 /**
  * Match a raw process listing against the editor executables, one process per
@@ -634,11 +854,14 @@ function timelineHashWithoutId(draft) {
  */
 export function planTimelineSync(input, opts = {}) {
     const resolved = resolve(input);
-    if (existsSync(resolved) && statSync(resolved).isFile() && basename(resolved) !== "draft_content.json") {
+    const store = discoverDraftStore(input, opts);
+    if (!store.activeTimeline &&
+        existsSync(resolved) &&
+        statSync(resolved).isFile() &&
+        basename(resolved) !== "draft_content.json") {
         throw new Error(`sync-timelines reconciles a project's mirror files from draft_content.json and cannot target ${basename(resolved)} directly. ` +
             `Pass the project directory instead: capcut sync-timelines ${dirname(resolved)}`);
     }
-    const store = discoverDraftStore(input);
     // draft_content.json is the sync canonical. On the draft_info-primary layout
     // (no draft_content.json; newer Mac builds drive the project from
     // draft_info.json — jianying-mcp#5, pyJianYingDraft#177/#194) draft_info.json
@@ -648,18 +871,24 @@ export function planTimelineSync(input, opts = {}) {
     // The promotion is presence-based (no readable draft_content.json), not
     // keyed on store.layout, so the detection-only timelines-nested value
     // (issue #50) cannot change which file the repair reads from.
-    const canonical = store.targets.find((candidate) => candidate.name === "draft_content.json") ??
-        store.targets.find((candidate) => candidate.name === "draft_info.json");
+    const canonical = store.activeTimeline
+        ? store.canonical
+        : (store.targets.find((candidate) => candidate.name === "draft_content.json") ??
+            store.targets.find((candidate) => candidate.name === "draft_info.json"));
     if (!canonical?.draft) {
         throw new Error("sync-timelines needs a readable draft_content.json or draft_info.json (the canonical timeline source). " +
             "Run `capcut diagnose <project>` to inspect what is on disk.");
     }
-    const canonicalNote = canonical.name === "draft_info.json"
-        ? "draft_info.json is the canonical source: this project has no draft_content.json (draft_info-primary " +
-            "layout, reported as the primary project file on newer Mac builds). Round-trip evidence for this layout " +
-            "is synthetic-only — if this project opens fine in your app, contribute a bundle: " +
-            "`capcut fixture <project> --out <dir>`."
-        : null;
+    const canonicalNote = store.activeTimeline
+        ? store.activeTimeline.explicit
+            ? "The selected active timeline is canonical by explicit --active-timeline opt-in. Only its documents and root mirrors are reconciled; other timelines are preserved. App round-trip acceptance is unverified on this build."
+            : "The selected active timeline is canonical on the evidenced CapCut 8.7.0 Windows layout (issue #50). Only its documents and the root mirrors are reconciled; other timelines are preserved."
+        : canonical.name === "draft_info.json"
+            ? "draft_info.json is the canonical source: this project has no draft_content.json (draft_info-primary " +
+                "layout, reported as the primary project file on newer Mac builds). Round-trip evidence for this layout " +
+                "is synthetic-only — if this project opens fine in your app, contribute a bundle: " +
+                "`capcut fixture <project> --out <dir>`."
+            : null;
     const canonicalDraft = canonical.draft;
     const canonicalMtime = canonical.mtime ? Date.parse(canonical.mtime) : Number.NaN;
     const targets = [syncTarget(canonical, "canonical", false)];
@@ -681,7 +910,9 @@ export function planTimelineSync(input, opts = {}) {
             }
             continue;
         }
-        const inSync = candidate.timelineHash === canonical.timelineHash;
+        const inSync = store.activeTimeline
+            ? timelineHashWithoutId(candidate.draft) === timelineHashWithoutId(canonicalDraft)
+            : candidate.timelineHash === canonical.timelineHash;
         targets.push(syncTarget(candidate, inSync ? "in_sync" : "drifted", candidate.draft.id !== canonicalDraft.id));
         if (!inSync) {
             drifted.push(candidate.name);
@@ -697,7 +928,7 @@ export function planTimelineSync(input, opts = {}) {
     // the root mirrors; the differences are that nested documents keep their own
     // GUID on rewrite (the verified 9.2.8 workaround writes the timeline id) and
     // therefore compare by id-normalized timeline hash.
-    const nestedDocs = nestedSyncDocPaths(store.projectDir);
+    const nestedDocs = store.activeTimeline ? [] : nestedSyncDocPaths(store.projectDir);
     const nestedDriftedCandidates = [];
     if (opts.nested === true) {
         const canonicalContentHash = timelineHashWithoutId(canonicalDraft);
@@ -733,6 +964,7 @@ export function planTimelineSync(input, opts = {}) {
         }
     }
     return {
+        store,
         plan: {
             project_dir: store.projectDir,
             canonical: canonical.name,
@@ -755,20 +987,6 @@ export function planTimelineSync(input, opts = {}) {
         driftedCandidates,
         nestedDriftedCandidates,
     };
-}
-/** Distinct local file paths the timeline's video/audio materials reference —
- * URLs never need registration, and repeated references to one file are one
- * file to relink. */
-function referencedLocalMedia(draft) {
-    const paths = new Set();
-    for (const group of [draft.materials.videos ?? [], draft.materials.audios ?? []]) {
-        for (const mat of group) {
-            const path = mat.path;
-            if (typeof path === "string" && path.length > 0 && !/^https?:\/\//i.test(path))
-                paths.add(path);
-        }
-    }
-    return paths.size;
 }
 /** True when `draft_materials` provably registers nothing: an empty array, an
  * array whose every group has an empty `value` array, or an object of empty
@@ -809,7 +1027,7 @@ function assessMediaRegistration(store) {
  * same observation from a draft + project dir (pyCapCut#13 reports the symptom
  * landing in CI-shaped pipelines, where diagnose is never run). */
 export function assessMediaRegistrationRaw(draft, meta) {
-    const referenced = draft ? referencedLocalMedia(draft) : 0;
+    const referenced = draft ? referencedMedia(draft).length : 0;
     if (referenced === 0)
         return null;
     let state;
@@ -867,8 +1085,8 @@ export function assessMediaRegistrationAt(draft, projectDir) {
         return null;
     }
 }
-export function diagnoseDraftStore(input) {
-    const store = discoverDraftStore(input);
+export function diagnoseDraftStore(input, options = {}) {
+    const store = discoverDraftStore(input, options);
     const running = editorProcesses();
     const safety = store.canonical.draft ? assessWriteSafety(store.canonical.draft, store.version) : null;
     const actions = [];
@@ -896,7 +1114,12 @@ export function diagnoseDraftStore(input) {
             "canonical, but round-trip evidence for this layout is synthetic-only — if this project opens fine in " +
             "your app, contribute a bundle: `capcut fixture <project> --out <dir>`.");
     }
-    if (store.layout === "timelines-nested")
+    if (store.activeTimeline) {
+        actions.push(store.activeTimeline.explicit
+            ? "Active timeline selected by explicit --active-timeline opt-in. App round-trip acceptance remains unverified on this build."
+            : ACTIVE_TIMELINE_WINDOWS_ACTION);
+    }
+    else if (store.layout === "timelines-nested")
         actions.push(nestedTimelinesAction(store.version));
     else if (store.nestedTimelines.length > 0)
         actions.push(NESTED_TIMELINES_MODERN_ACTION);
@@ -916,6 +1139,15 @@ export function diagnoseDraftStore(input) {
         diverged: store.diverged,
         layout: store.layout,
         nested_timelines: store.nestedTimelines,
+        ...(store.activeTimeline
+            ? {
+                active_timeline: {
+                    id: store.activeTimeline.id,
+                    canonical: store.canonical.name,
+                    ...(store.activeTimeline.explicit ? { explicit: true } : {}),
+                },
+            }
+            : {}),
         write_guard: safety?.action ?? "ok",
         editor_running: running,
         candidates: store.candidates.map((candidate) => ({

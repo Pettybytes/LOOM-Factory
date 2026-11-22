@@ -1,8 +1,9 @@
 import { writeFileSync } from "node:fs";
+import { translateUtterancesCapcutCloud } from "./capcut-cloud-translate.js";
 import { extractText, updateTextContent } from "./draft.js";
 /**
- * Translate every text segment in a draft via the Anthropic API. Writes the
- * translated draft to `outPath` so the original stays untouched (multi-language
+ * Translate every text segment in a draft via the Anthropic API or CapCut cloud.
+ * Writes the translated draft to `outPath` so the original stays untouched (multi-language
  * shorts factory — same source, N localized renders).
  *
  * Uses built-in `fetch` (Node ≥ 18), zero runtime deps.
@@ -23,19 +24,31 @@ export async function translateDraft(draft, opts) {
             out: opts.outPath,
             pairs: collected.map((c) => ({ ...c, translated: c.original })),
             dry_run: true,
+            engine: opts.cloud ? "capcut-cloud" : "anthropic",
         };
     }
-    const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-        throw new Error("Missing API key. Set ANTHROPIC_API_KEY or pass --api-key. " +
-            "Get one at https://console.anthropic.com/. (Use --dry-run to see what would be translated without calling the API.)");
+    let translations;
+    let keptOriginal = 0;
+    const engine = opts.cloud ? "capcut-cloud" : "anthropic";
+    if (opts.cloud) {
+        process.stderr.write(`WARNING: --cloud is experimental and unofficial: sending ${collected.length} text segment(s) to ByteDance's CapCut servers for translation.\n`);
+        const items = await translateUtterancesCapcutCloud(collected.map((c) => ({ start_time: 0, end_time: 0, text: c.original })), opts.to, { from: opts.from });
+        translations = items.map((item) => item.translation_text);
+        keptOriginal = items.filter((item) => item.kept_original).length;
     }
-    const model = opts.model ?? "claude-haiku-4-5-20251001";
-    const translations = await callAnthropicBatch(apiKey, model, collected.map((c) => c.original), opts.to, opts.from ?? "auto");
+    else {
+        const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
+        if (!apiKey) {
+            throw new Error("Missing API key. Set ANTHROPIC_API_KEY or pass --api-key. " +
+                "Get one at https://console.anthropic.com/. (Or pass --cloud to translate via CapCut Cloud without an API key, or --dry-run to see what would be translated.)");
+        }
+        const model = opts.model ?? "claude-haiku-5-5";
+        translations = await callAnthropicBatch(apiKey, model, collected.map((c) => c.original), opts.to, opts.from ?? "auto");
+    }
     const pairs = [];
     for (let i = 0; i < collected.length; i++) {
         const original = collected[i].original;
-        const translated = translations[i] ?? original;
+        const translated = translations[i];
         const mat = texts.find((m) => m.id === collected[i].id);
         if (mat)
             mat.content = updateTextContent(mat.content, translated);
@@ -50,6 +63,8 @@ export async function translateDraft(draft, opts) {
         out: opts.outPath,
         pairs,
         dry_run: false,
+        engine,
+        ...(keptOriginal > 0 ? { kept_original: keptOriginal } : {}),
     };
 }
 async function callAnthropicBatch(apiKey, model, texts, to, from) {
@@ -70,7 +85,8 @@ async function callAnthropicBatch(apiKey, model, texts, to, from) {
         },
         body: JSON.stringify({
             model,
-            max_tokens: 4096,
+            max_tokens: 16000,
+            output_config: { effort: "low" },
             messages: [{ role: "user", content: prompt }],
         }),
     });
@@ -85,13 +101,16 @@ async function callAnthropicBatch(apiKey, model, texts, to, from) {
         .replace(/^```(?:json)?\s*/i, "")
         .replace(/```\s*$/, "")
         .trim();
+    let parsed;
     try {
-        const parsed = JSON.parse(clean);
-        if (!Array.isArray(parsed))
-            throw new Error(`Expected JSON array, got: ${typeof parsed}`);
-        return parsed.map((x) => (typeof x === "string" ? x : String(x)));
+        parsed = JSON.parse(clean);
     }
     catch {
         throw new Error(`Failed to parse model output as JSON array. Raw: ${clean.slice(0, 300)}`);
     }
+    if (!Array.isArray(parsed) || parsed.length !== texts.length || parsed.some((item) => typeof item !== "string")) {
+        throw new Error(`Translation response must contain exactly ${texts.length} strings in input order. ` +
+            "No translated draft was written; retry the translation.");
+    }
+    return parsed;
 }

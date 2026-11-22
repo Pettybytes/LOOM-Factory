@@ -86,14 +86,8 @@ RENDERABLE_TEXT_KEY = "renderable_text"
 
 # Honestly unsupported by the compile spec: reported, never invented.
 UNSUPPORTED = {
-    # MEASURED 2026-09-28 against the pinned donor (src/compile.ts): the spec's
-    # TRACKS have no caption-cue type, but the spec DOES support captions via
-    # operations[].op="captions", which parses an SRT into editable caption
-    # items. build_capcut_spec() therefore still emits no caption track (its
-    # behaviour is unchanged); captions travel through build_caption_operation().
-    "captions": "not expressible as a TRACK item; supported via the spec's "
-                "`captions` operation (see build_caption_operation) -- never "
-                "fabricated, and reported as unavailable when absent",
+    "captions": "imported by the runner through OpenShorts ASS and capcut-cli "
+                "import-ass --clone-style; unavailable when no timed words exist",
     "transcript": "same as captions",
     "scenes": "no scene-marker primitive in the spec",
     "framing": "reframe/auto-framing is a render concern, not a spec field",
@@ -113,6 +107,21 @@ DEFAULT_ASPECT = "9:16"
 DEFAULT_FPS = 30
 HOOK_MAX_SECONDS = 2.0
 
+#: Resolved hook look, mirrored from ``openshorts/hooks.py`` ``HOOK_STYLES``
+#: (the canonical renderer contract). It is mirrored as DATA, not imported: the
+#: handoff lane must stay importable without PIL/ffmpeg, which hooks.py pulls in
+#: at module load. ``test_capcut_auto_edit`` parses hooks.py and fails if this
+#: mirror ever drifts from the canonical dict.
+HOOK_STYLE_CARD = {
+    # White card, black serif text (original look).
+    "classic": {"box": (255, 255, 255, 240), "text": (0, 0, 0), "outline": None, "shadow": True},
+    "dark": {"box": (18, 18, 20, 235), "text": (255, 255, 255), "outline": None, "shadow": True},
+    "yellow": {"box": (255, 214, 0, 245), "text": (0, 0, 0), "outline": None, "shadow": True},
+    "red": {"box": (220, 38, 38, 245), "text": (255, 255, 255), "outline": None, "shadow": True},
+    "outline": {"box": (0, 0, 0, 0), "text": (255, 255, 255), "outline": ((0, 0, 0), 8), "shadow": False},
+    "outline_yellow": {"box": (0, 0, 0, 0), "text": (255, 214, 0), "outline": ((0, 0, 0), 8), "shadow": False},
+}
+HOOK_SIZE_SCALE = {"S": 0.8, "M": 1.0, "L": 1.3}   # hooks.py _SIZE_SCALE
 #: How the spec's canvas was decided. Reported so a fallback is distinguishable
 #: from the operator's persisted choice at every layer (spec + handoff report).
 CANVAS_SOURCE_PERSISTED = "persisted"
@@ -308,15 +317,17 @@ def build_capcut_spec(bootstrap: dict[str, Any], *, media_path: str,
     if copy["hook"]:
         hook_duration = float(hook_settings.get("duration_seconds") or HOOK_MAX_SECONDS)
         texts.append({"text": copy["hook"], "start": 0,
-                      "duration": round(min(hook_duration, duration), 3)})
-        if generated:
-            texts[-1].update({"y": {"top": 0.65, "center": 0.0, "bottom": -0.65}.get(
-                hook_settings.get("position"), 0.65), "fontSize": 14})
+                      "duration": round(min(hook_duration, duration), 3), "ref": "hook"})
     # Auto Edit's generated title names the project. Its on-video layer is the
     # hook (the persisted pipeline calls /api/hook, not a title burn). Do not add
     # a full-duration duplicate text layer that the OpenShorts result never had.
     if copy["title"] and not generated:
         texts.append({"text": copy["title"], "start": 0, "duration": duration})
+    overlay = bootstrap.get('title_overlay') or {}
+    if overlay.get('text') and overlay.get('enabled', True):
+        texts.append({'text': overlay['text'], 'start': 0,
+                      'duration': min(float(overlay.get('duration_seconds', duration)), duration),
+                      'ref': 'title_overlay'})
     if texts:
         spec["tracks"].append({"type": "text", "items": texts})
     return spec
@@ -365,6 +376,13 @@ def normalize_caption_blocks(blocks: Any) -> list[dict[str, Any]]:
         text = str(block.get("text") or block.get("word") or "").strip()
         raw_start = block.get("startMs", block.get("start_ms"))
         raw_end = block.get("endMs", block.get("end_ms"))
+        # OpenShorts ASR stores seconds; existing LOOM cues use milliseconds.
+        if raw_start is None and raw_end is None:
+            try:
+                raw_start = float(block['start']) * 1000
+                raw_end = float(block['end']) * 1000
+            except (KeyError, TypeError, ValueError):
+                continue
         try:
             start = float(raw_start)
             end = float(raw_end)

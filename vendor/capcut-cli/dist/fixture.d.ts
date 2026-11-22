@@ -1,3 +1,4 @@
+import { type AnonymizationCounts } from "./fixture-anonymize.js";
 export interface SanitizeFileResult {
     file: string;
     bytes_in: number;
@@ -13,8 +14,16 @@ export interface SanitizeReport {
     files: SanitizeFileResult[];
     redaction_kinds: Record<string, number>;
     media_excluded: boolean;
+    /** True when built with --anonymize; `anonymization` then counts what was replaced. */
+    anonymized: boolean;
+    anonymization?: AnonymizationCounts;
     mask_keyframe_evidence: MaskKeyframeSummary;
     notes: string[];
+    redaction_check: RedactionCheck;
+}
+export interface SanitizeOptions {
+    /** Also replace media names, folder names, the project name and every text (fixture --anonymize). */
+    anonymize?: boolean;
 }
 export interface MaskEvidence {
     json_path: string;
@@ -66,7 +75,7 @@ export declare function buildMaskKeyframeReport(files: Array<{
  * Reuses the same storage discovery the `diagnose` command uses, so the
  * reported version/canonical-file analysis matches.
  */
-export declare function sanitizeDraftBundle(input: string, outDir: string): SanitizeReport;
+export declare function sanitizeDraftBundle(input: string, outDir: string, options?: SanitizeOptions): SanitizeReport;
 export interface NestedFileTreeEntry {
     path: string;
     size: number;

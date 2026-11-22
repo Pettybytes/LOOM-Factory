@@ -9,10 +9,11 @@ operation — it is an *optional* finishing lane only.
 | Field | Value |
 |---|---|
 | Upstream URL | https://github.com/renezander030/capcut-cli |
-| Pinned commit | `a21cc9ce65ef169920f0e18cb130777a13bee838` |
-| Upstream version | `0.26.0` |
+| Pinned tag | `v0.35.0` (annotated tag object `25774f3d8a12e80f155e205f5071037c9f0841bf`) |
+| Pinned commit | `6e7ef130aa7aff191a1a32a68fe2ff727fec4864` |
+| Upstream version | `0.35.0` |
 | License | **MIT** — `Copyright (c) 2026 Rene Zander` (see `LICENSE`, kept verbatim) |
-| Vendored on | 2026-09-28 |
+| Vendored on | 2026-11-21 |
 | Audited in | `~/Desktop/LOOM-EDITOR-REUSE-AUDIT.md` §2G / §10 |
 
 Attribution: the CapCut/JianYing draft format knowledge and the `compile` spec
@@ -43,7 +44,7 @@ global) toolchain — `typescript@7.0.2` exactly as pinned in `package-lock.json
 
 ```bash
 git clone https://github.com/renezander030/capcut-cli && cd capcut-cli
-git checkout a21cc9ce65ef169920f0e18cb130777a13bee838
+git checkout 6e7ef130aa7aff191a1a32a68fe2ff727fec4864
 npm ci --ignore-scripts          # devDeps only; no global install
 npx tsc                          # -> dist/
 node -e "import('node:fs').then(fs=>fs.writeFileSync('dist/enums.json',JSON.stringify(JSON.parse(fs.readFileSync('src/enums.json','utf-8')))))"
@@ -71,3 +72,11 @@ MIT permits commercial reuse. The `LICENSE` file is retained in this directory
 and the upstream copyright notice is preserved verbatim. No donor code is copied
 into LOOM's own modules; `infra/discord-review/capcut_handoff.py` reuses only the
 **spec format** and documents that attribution in its own docstring.
+
+## v0.35.0 integrity
+
+- Source archive SHA-256 (`git archive --format=tar 6e7ef130aa7aff191a1a32a68fe2ff727fec4864`): `75ea04d5cccee3035be9b268d794d428993837179be5f99f7abaca2cd2d1ba05`.
+- package-lock.json SHA-256: `0366e8717889e0a6d989319422ba2ba803de3b54008fefc5eb47e0e3513d9cd6`.
+- Built dist tree SHA-256: `b3c4e9070fae8504defcbcb5b08be3ee1839da5c050a1ab0bafd5c462e67ab67`.
+
+Tree digest: SHA-256 over sorted relative file paths, UTF-8 path + NUL + file bytes + NUL, recursively under dist/. Built with `npm ci --ignore-scripts` and `npm run build` in an isolated checkout of the pinned tag. LICENSE is byte-identical to the previous vendor copy.

@@ -107,7 +107,11 @@ export interface ImportPlan {
     captions: ImportCaptionPlan[];
     skipped: OtioSkip[];
 }
-export declare function otioToImportPlan(doc: unknown): ImportPlan;
+/** Resolve local references without fetching remote URLs or changing foreign Windows paths. */
+export declare function resolveOtioMediaPath(reference: string, mediaDir?: string): string;
+export declare function otioToImportPlan(doc: unknown, options?: {
+    mediaDir?: string;
+}): ImportPlan;
 export declare function draftToOtio(draft: Draft, options?: OtioExportOptions): {
     doc: OtioObject;
     stats: OtioStats;

@@ -1,8 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { extractText } from "./draft.js";
+import { MASK_FIELDS } from "./mask-fields.js";
+import { ffprobeAvailable, probeMedia } from "./probe.js";
 import { renderSrt } from "./srt.js";
+import { draftProjectDir } from "./store.js";
 /**
  * Headless ffmpeg proxy renderer.
  *
@@ -13,6 +16,9 @@ import { renderSrt } from "./srt.js";
  * with `--burn-captions`. The result is a watchable preview MP4 — NOT CapCut's
  * final render (no multi-track video compositing, no effects/transitions). It
  * exists to verify "did my edit land where I meant it" without launching CapCut.
+ * Every plan carries a `fidelity` census of what this proxy leaves out for the
+ * draft at hand (`--strict` refuses when it is not faithful), and a real render
+ * probes the written file's duration against the draft's (`--verify` gates it).
  *
  * Architecture mirrors `caption` (shell-out to an external binary, here ffmpeg)
  * and `export --batch` (a deterministic, unit-tested command builder, with the
@@ -84,6 +90,16 @@ export function explainFfmpegFailure(stderr) {
     return "";
 }
 /**
+ * The --strict gate, shared by renderDraft and the CLI's ffmpeg-free dry-run
+ * path. Throws before anything is written.
+ */
+export function assertFaithful(census) {
+    if (census.faithful)
+        return;
+    throw new Error(`refused [render-unfaithful]: the proxy would drop ${describeDropped(census)} that the app shows. ` +
+        "Nothing was rendered. Drop --strict to render the approximation anyway; the result's `fidelity` lists the affected segment ids.");
+}
+/**
  * Filters the base render chain hard-requires on every segment, regardless of
  * any user-facing flag (`--burn-captions`/`--all-video-tracks` gate drawtext/
  * overlay instead — see the fallback in renderDraft). A minimal/custom ffmpeg
@@ -114,25 +130,24 @@ export const PROBED_FILTERS = [
     ...AUDIO_CHAIN_FILTERS,
     ...AUDIO_CONDITIONAL_FILTERS,
 ];
+/** One `ffmpeg -hide_banner <listing>` run: its exit status and stdout+stderr text. */
+function ffmpegListing(command, listing) {
+    const r = spawnSync(command, ["-hide_banner", listing], {
+        encoding: "utf-8",
+        timeout: 10_000,
+        maxBuffer: 8 * 1024 * 1024,
+    });
+    return { status: r.status, text: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
 export function probeFfmpegCapabilities(command = "ffmpeg") {
     const filterFlags = (test) => Object.fromEntries(PROBED_FILTERS.map((name) => [name, test(name)]));
     try {
-        const filters = spawnSync(command, ["-hide_banner", "-filters"], {
-            encoding: "utf-8",
-            timeout: 10_000,
-            maxBuffer: 8 * 1024 * 1024,
-        });
-        const encoders = spawnSync(command, ["-hide_banner", "-encoders"], {
-            encoding: "utf-8",
-            timeout: 10_000,
-            maxBuffer: 8 * 1024 * 1024,
-        });
-        const filterText = `${filters.stdout ?? ""}${filters.stderr ?? ""}`;
-        const encoderText = `${encoders.stdout ?? ""}${encoders.stderr ?? ""}`;
+        const filters = ffmpegListing(command, "-filters");
+        const encoders = ffmpegListing(command, "-encoders");
         return {
             available: filters.status === 0,
-            x264: /\blibx264\b/.test(encoderText),
-            ...filterFlags((name) => new RegExp(`\\b${name}\\b`).test(filterText)),
+            x264: /\blibx264\b/.test(encoders.text),
+            ...filterFlags((name) => new RegExp(`\\b${name}\\b`).test(filters.text)),
         };
     }
     catch {
@@ -203,12 +218,8 @@ export function parseFfmpegEncoders(output) {
  */
 export function probeFfmpegEncoders(command = "ffmpeg") {
     try {
-        const r = spawnSync(command, ["-hide_banner", "-encoders"], {
-            encoding: "utf-8",
-            timeout: 10_000,
-            maxBuffer: 8 * 1024 * 1024,
-        });
-        return { listed: r.status === 0, encoders: parseFfmpegEncoders(`${r.stdout ?? ""}${r.stderr ?? ""}`) };
+        const r = ffmpegListing(command, "-encoders");
+        return { listed: r.status === 0, encoders: parseFfmpegEncoders(r.text) };
     }
     catch {
         return { listed: false, encoders: new Set() };
@@ -249,6 +260,7 @@ function audioSegments(draft) {
 }
 function textSegments(draft) {
     const out = [];
+    const fonts = new Map();
     for (const t of draft.tracks) {
         if (t.type !== "text")
             continue;
@@ -257,17 +269,261 @@ function textSegments(draft) {
             const raw = typeof mat?.content === "string" ? extractText(mat.content) : "";
             if (raw) {
                 const material = mat;
+                if (!fonts.has(s.material_id))
+                    fonts.set(s.material_id, draftFontFile(material));
                 out.push({
                     seg: s,
                     text: raw,
                     color: safeColor(material.text_color),
                     fontSize: Number(material.font_size ?? 15),
                     y: s.clip?.transform.y ?? -0.6,
+                    fontFile: fonts.get(s.material_id),
                 });
             }
         }
     }
     return out.sort((a, b) => a.seg.target_timerange.start - b.seg.target_timerange.start);
+}
+const FONT_FILE_EXTENSIONS = new Set([".ttf", ".otf", ".ttc"]);
+/**
+ * The font file a text material uses, escaped for drawtext's `fontfile=`, or
+ * undefined to keep ffmpeg's default face. CapCut renders from the content's
+ * style blocks, so the first block's `font.path` is tried first, then the
+ * material's own `font_path`. Only an existing .ttf/.otf/.ttc file whose path
+ * can be written into the filter graph is used.
+ */
+function draftFontFile(material) {
+    const candidates = [];
+    if (typeof material.content === "string") {
+        try {
+            const parsed = JSON.parse(material.content);
+            candidates.push(parsed.styles?.[0]?.font?.path);
+        }
+        catch {
+            /* content without style blocks: only font_path can name the font */
+        }
+    }
+    candidates.push(material.font_path);
+    for (const path of candidates) {
+        if (typeof path !== "string" || !FONT_FILE_EXTENSIONS.has(extname(path).toLowerCase()))
+            continue;
+        const escaped = escapeFilterPath(path);
+        if (escaped === undefined)
+            continue;
+        try {
+            if (statSync(path).isFile())
+                return escaped;
+        }
+        catch {
+            /* missing or unreadable: try the next candidate */
+        }
+    }
+    return undefined;
+}
+/**
+ * Fidelity census: what the draft carries that this proxy does not put on the
+ * picture. The header comment above states the limits (main track only unless
+ * --all-video-tracks, no effects/transitions); the census turns those limits
+ * into counts for THIS draft, so a reader of `render`'s JSON knows whether the
+ * preview can be trusted as "what the app shows" or only as a timing check.
+ *
+ * Pure, deterministic and one pass over tracks + materials (no ffmpeg, no
+ * clock). It is computed from the options the plan was actually built with,
+ * so renderDraft's drawtext/overlay fallbacks show up as dropped text/overlays.
+ */
+export const FIDELITY_CATEGORIES = [
+    "missing_media",
+    "main_track_gaps",
+    "overlay_tracks",
+    "text",
+    "stickers",
+    "transitions",
+    "effects",
+    "filters",
+    "masks",
+    "keyframes",
+    "text_animations",
+    "video_animations",
+    "mix_modes",
+    "chroma",
+    "matting",
+];
+/** Affected segment ids are listed up to this many per category; `count` is always the full total. */
+export const FIDELITY_ID_CAP = 20;
+const FIDELITY_HINTS = {
+    missing_media: "segment media is missing or has no path; `capcut relink` repairs moved media",
+    main_track_gaps: "the proxy concatenates main-track segments, so timeline gaps close up and later clips play early",
+    overlay_tracks: "extra video tracks are not composited; pass --all-video-tracks",
+    text: "text is not drawn on the picture; pass --burn-captions (--soft-captions only adds a subtitle stream)",
+    stickers: "sticker tracks are not rendered",
+    transitions: "transitions are not rendered; segments cut hard",
+    effects: "video effects are not rendered",
+    filters: "filters (colour looks) are not rendered",
+    masks: "masks are not applied",
+    keyframes: "keyframed animation is not applied; segments hold their base transform/volume",
+    text_animations: "text intro/outro animations are not rendered",
+    video_animations: "video/photo in/out/combo animations are not rendered",
+    mix_modes: "blend modes are not applied; overlays composite as Normal",
+    chroma: "chroma key is not applied",
+    matting: "smart portrait matting is not applied",
+};
+export function expectedDurationUs(draft) {
+    if (Number.isFinite(draft.duration) && draft.duration > 0)
+        return draft.duration;
+    let end = 0;
+    for (const track of draft.tracks) {
+        for (const seg of track.segments) {
+            end = Math.max(end, seg.target_timerange.start + seg.target_timerange.duration);
+        }
+    }
+    return end;
+}
+function hasKeyframes(seg) {
+    const lists = seg.common_keyframes;
+    if (!Array.isArray(lists))
+        return false;
+    return lists.some((list) => {
+        const frames = list?.keyframe_list;
+        return !Array.isArray(frames) || frames.length > 0;
+    });
+}
+export function fidelityCensus(draft, opts, skipped = []) {
+    const hits = new Map();
+    const add = (category, segId) => {
+        const list = hits.get(category) ?? [];
+        if (!list.includes(segId))
+            list.push(segId);
+        hits.set(category, list);
+    };
+    const materials = draft.materials;
+    const byId = (field) => {
+        const arr = materials[field];
+        const map = new Map();
+        if (Array.isArray(arr)) {
+            for (const m of arr)
+                if (m && typeof m.id === "string")
+                    map.set(m.id, m);
+        }
+        return map;
+    };
+    const transitions = byId("transitions");
+    const chromas = byId("chromas");
+    const animations = byId("material_animations");
+    const effectMaterials = new Map([...byId("effects"), ...byId("video_effects")]);
+    const maskIds = new Set(MASK_FIELDS.flatMap((field) => [...byId(field).keys()]));
+    const videoMaterials = new Map((draft.materials.videos ?? []).map((v) => [v.id, v]));
+    const segmentIds = new Set(draft.tracks.flatMap((t) => t.segments.map((s) => s.id)));
+    for (const { segmentId } of skipped)
+        if (segmentIds.has(segmentId))
+            add("missing_media", segmentId);
+    // Gaps on the main track: concat ignores target starts, so any segment that
+    // begins after the previous one ended (or after 0) is shifted earlier.
+    let cursor = 0;
+    for (const seg of mainVideoSegments(draft)) {
+        if (seg.target_timerange.start > cursor)
+            add("main_track_gaps", seg.id);
+        cursor = Math.max(cursor, seg.target_timerange.start + seg.target_timerange.duration);
+    }
+    const mainTrack = draft.tracks.find((t) => t.type === "video");
+    for (const track of draft.tracks) {
+        for (const seg of track.segments) {
+            if (track.type === "video" && track !== mainTrack && !opts.allVideoTracks)
+                add("overlay_tracks", seg.id);
+            if (track.type === "sticker")
+                add("stickers", seg.id);
+            if (track.type === "effect")
+                add("effects", seg.id);
+            if (track.type === "filter")
+                add("filters", seg.id);
+            if (hasKeyframes(seg))
+                add("keyframes", seg.id);
+            for (const ref of seg.extra_material_refs ?? []) {
+                if (transitions.has(ref))
+                    add("transitions", seg.id);
+                if (maskIds.has(ref))
+                    add("masks", seg.id);
+                if (chromas.has(ref))
+                    add("chroma", seg.id);
+                const effect = effectMaterials.get(ref);
+                if (effect)
+                    add(effect.type === "filter" ? "filters" : "effects", seg.id);
+                const anim = animations.get(ref);
+                if (anim && Array.isArray(anim.animations) && anim.animations.length > 0) {
+                    if (track.type === "text")
+                        add("text_animations", seg.id);
+                    else if (track.type === "video")
+                        add("video_animations", seg.id);
+                }
+            }
+            if (track.type === "video") {
+                const mat = videoMaterials.get(seg.material_id);
+                const mix = mat?.mix_mode;
+                if (typeof mix === "string" && mix !== "" && mix !== "Normal")
+                    add("mix_modes", seg.id);
+                const flag = mat?.matting?.flag;
+                if (typeof flag === "number" && flag !== 0)
+                    add("matting", seg.id);
+            }
+        }
+    }
+    if (!opts.burnCaptions)
+        for (const { seg } of textSegments(draft))
+            add("text", seg.id);
+    const dropped = {};
+    for (const category of FIDELITY_CATEGORIES) {
+        const ids = hits.get(category);
+        if (!ids || ids.length === 0)
+            continue;
+        dropped[category] = {
+            count: ids.length,
+            segment_ids: ids.slice(0, FIDELITY_ID_CAP),
+            hint: FIDELITY_HINTS[category],
+        };
+    }
+    return {
+        faithful: Object.keys(dropped).length === 0,
+        expected_duration_us: expectedDurationUs(draft),
+        dropped,
+        checked: [...FIDELITY_CATEGORIES],
+    };
+}
+/** One-line summary of a census for refusal messages: "transitions 2, masks 1". */
+export function describeDropped(census) {
+    return Object.entries(census.dropped)
+        .map(([category, entry]) => `${category} ${entry?.count}`)
+        .join(", ");
+}
+export function frameToleranceUs(fps) {
+    return Math.round(US / (fps > 0 ? fps : 30));
+}
+export function checkOutputDuration(durationUs, expectedUs, fps) {
+    const tolerance = frameToleranceUs(fps);
+    const drift = durationUs - expectedUs;
+    return {
+        verified: true,
+        duration_us: durationUs,
+        expected_duration_us: expectedUs,
+        drift_us: drift,
+        tolerance_us: tolerance,
+        within_tolerance: Math.abs(drift) <= tolerance,
+    };
+}
+export function probeRenderOutput(output, expectedUs, fps, ffprobeCmd = "ffprobe") {
+    const unverified = (reason) => ({
+        verified: false,
+        reason,
+        expected_duration_us: expectedUs,
+        tolerance_us: frameToleranceUs(fps),
+    });
+    if (!existsSync(output))
+        return unverified(`output file not found: ${output}`);
+    if (!ffprobeAvailable(ffprobeCmd)) {
+        return unverified(`ffprobe is unavailable at '${ffprobeCmd}'; install ffmpeg or pass --ffprobe-cmd <path>`);
+    }
+    const probe = probeMedia(output, ffprobeCmd, false);
+    if (!probe || probe.durationUs === null)
+        return unverified(`ffprobe could not read a duration from ${output}`);
+    return checkOutputDuration(probe.durationUs, expectedUs, fps);
 }
 // atempo only accepts 0.5..2.0 per filter instance; we keep proxy audio simple
 // and only retime when a single atempo can express it.
@@ -296,6 +552,18 @@ function safeColor(raw) {
         return "white";
     const color = raw.replace("#", "0x");
     return FFMPEG_COLOR.test(color) ? color : "white";
+}
+// A file path cannot be sanitized the way caption text is (dropping a `:` or a
+// `\` names another file), so it is escaped instead and written inside single
+// quotes: the quotes keep the filtergraph parser off `[],;`, and drawtext's
+// option parser then reads `\\` as a backslash and `\:` as a colon, so the
+// path cannot end the option early and append options of its own. A single
+// quote cannot be written inside the quotes and a control character has no
+// place in a font path; a path with either is not used.
+function escapeFilterPath(path) {
+    if (path.includes("'") || /\p{Cc}/u.test(path))
+        return undefined;
+    return path.replace(/\\/g, "\\\\").replace(/:/g, "\\:");
 }
 // drawtext is whitespace/colon/quote sensitive; sanitize aggressively for a proxy.
 function escapeDrawtext(s) {
@@ -433,14 +701,19 @@ export function buildRenderPlan(draft, opts) {
     // --- captions (optional) ---
     const texts = opts.burnCaptions ? textSegments(draft) : [];
     let textOverlays = 0;
-    for (const { seg, text, color, fontSize, y } of texts) {
+    const captionFonts = { from_draft: 0, default: 0 };
+    for (const { seg, text, color, fontSize, y, fontFile } of texts) {
         const t = escapeDrawtext(text);
         if (!t)
             continue;
         const start = round3(seg.target_timerange.start / US);
         const end = round3((seg.target_timerange.start + seg.target_timerange.duration) / US);
         const next = `vt${textOverlays}`;
-        filterParts.push(`[${vOut}]drawtext=text='${t}':fontcolor=${color}:fontsize=${Math.max(12, Math.round((height / 640) * fontSize))}:` +
+        if (fontFile)
+            captionFonts.from_draft++;
+        else
+            captionFonts.default++;
+        filterParts.push(`[${vOut}]drawtext=text='${t}':${fontFile ? `fontfile='${fontFile}':` : ""}fontcolor=${color}:fontsize=${Math.max(12, Math.round((height / 640) * fontSize))}:` +
             `box=1:boxcolor=black@0.5:boxborderw=8:x=(w-text_w)/2:y=(h-text_h)/2-(${round3(y)}*h/2):` +
             `enable='between(t,${start},${end})'[${next}]`);
         vOut = next;
@@ -553,11 +826,22 @@ export function buildRenderPlan(draft, opts) {
         skipped,
         ...(softCaptions ? { softCaptions } : {}),
         ...(filterScript ? { filterScript } : {}),
+        ...(opts.burnCaptions ? { caption_fonts: captionFonts } : {}),
         quality,
+        fidelity: fidelityCensus(draft, opts, skipped),
     };
 }
+/** The refusal for filters a render chain needs but the ffmpeg build lacks;
+ * `why` says which chain needs them and what skipping them would cost. */
+function missingFiltersError(command, missing, why) {
+    const list = missing.map((name) => `'${name}'`).join(", ");
+    return new Error(`render: ffmpeg at '${command}' is missing the filter${missing.length > 1 ? "s" : ""} ${list}, ` +
+        why +
+        `Install a full ffmpeg build, or point --ffmpeg-cmd at one that has it ('${command} -hide_banner -filters' lists what's compiled in).`);
+}
+const MINIMAL_BUILD_NOTE = "This is common on minimal/custom ffmpeg builds — e.g. Remotion's bundled compositor binary — that compile in only an explicit filter allowlist. ";
 export function renderDraft(draft, filePath, opts) {
-    const out = opts.out ?? join(dirname(filePath), "preview.mp4");
+    const out = opts.out ?? join(draftProjectDir(filePath), "preview.mp4");
     const capabilities = probeFfmpegCapabilities(opts.ffmpegCmd ?? "ffmpeg");
     if (!capabilities.available) {
         throw new Error(`render: ffmpeg is unavailable at '${opts.ffmpegCmd ?? "ffmpeg"}'. ` +
@@ -565,19 +849,13 @@ export function renderDraft(draft, filePath, opts) {
     }
     const missingBaseFilters = BASE_CHAIN_FILTERS.filter((name) => !capabilities[name]);
     if (missingBaseFilters.length > 0) {
-        const list = missingBaseFilters.map((name) => `'${name}'`).join(", ");
-        throw new Error(`render: ffmpeg at '${opts.ffmpegCmd ?? "ffmpeg"}' is missing the filter${missingBaseFilters.length > 1 ? "s" : ""} ${list}, ` +
-            "which the base render chain applies to every segment unconditionally (not gated by any flag). " +
-            "This is common on minimal/custom ffmpeg builds — e.g. Remotion's bundled compositor binary — that compile in only an explicit filter allowlist. " +
-            `Install a full ffmpeg build, or point --ffmpeg-cmd at one that has it ('${opts.ffmpegCmd ?? "ffmpeg"} -hide_banner -filters' lists what's compiled in).`);
+        throw missingFiltersError(opts.ffmpegCmd ?? "ffmpeg", missingBaseFilters, "which the base render chain applies to every segment unconditionally (not gated by any flag). " +
+            MINIMAL_BUILD_NOTE);
     }
     const missingAudioFilters = AUDIO_CHAIN_FILTERS.filter((name) => !capabilities[name]);
     if (missingAudioFilters.length > 0) {
-        const list = missingAudioFilters.map((name) => `'${name}'`).join(", ");
-        throw new Error(`render: ffmpeg at '${opts.ffmpegCmd ?? "ffmpeg"}' is missing the filter${missingAudioFilters.length > 1 ? "s" : ""} ${list}, ` +
-            "which the audio mix chain applies to every audio segment unconditionally (not gated by any flag). " +
-            "This is common on minimal/custom ffmpeg builds — e.g. Remotion's bundled compositor binary — that compile in only an explicit filter allowlist. " +
-            `Install a full ffmpeg build, or point --ffmpeg-cmd at one that has it ('${opts.ffmpegCmd ?? "ffmpeg"} -hide_banner -filters' lists what's compiled in).`);
+        throw missingFiltersError(opts.ffmpegCmd ?? "ffmpeg", missingAudioFilters, "which the audio mix chain applies to every audio segment unconditionally (not gated by any flag). " +
+            MINIMAL_BUILD_NOTE);
     }
     if (opts.encoder) {
         const { listed, encoders } = probeFfmpegEncoders(opts.ffmpegCmd ?? "ffmpeg");
@@ -612,17 +890,16 @@ export function renderDraft(draft, filePath, opts) {
     }
     const basePlan = buildRenderPlan(draft, effective);
     const plan = { ...basePlan, capabilities, skipped: [...basePlan.skipped, ...fallbackSkipped] };
+    if (opts.strict)
+        assertFaithful(plan.fidelity);
     // Speed/volume/fade filters are checked against the plan actually built:
     // a draft that never sets them must keep rendering on a build without them,
     // and one that does must fail here rather than silently lose the retiming.
     const usedFilters = new Set(filterNamesInGraph(plan.filterComplex));
     const missingConditional = AUDIO_CONDITIONAL_FILTERS.filter((name) => usedFilters.has(name) && !capabilities[name]);
     if (missingConditional.length > 0) {
-        const list = missingConditional.map((name) => `'${name}'`).join(", ");
-        throw new Error(`render: ffmpeg at '${opts.ffmpegCmd ?? "ffmpeg"}' is missing the filter${missingConditional.length > 1 ? "s" : ""} ${list}, ` +
-            "which this draft's audio needs (atempo = speed retiming, volume = per-segment volume, afade = fades). " +
-            "Rendering without them would silently change the audio, so render refuses instead of degrading. " +
-            `Install a full ffmpeg build, or point --ffmpeg-cmd at one that has it ('${opts.ffmpegCmd ?? "ffmpeg"} -hide_banner -filters' lists what's compiled in).`);
+        throw missingFiltersError(opts.ffmpegCmd ?? "ffmpeg", missingConditional, "which this draft's audio needs (atempo = speed retiming, volume = per-segment volume, afade = fades). " +
+            "Rendering without them would silently change the audio, so render refuses instead of degrading. ");
     }
     if (opts.dryRun) {
         return { ...plan, ok: true, executed: false };
@@ -698,5 +975,6 @@ export function renderDraft(draft, filePath, opts) {
             (hint ? `${hint}\n` : "") +
             "Re-run with --dry-run to inspect the filter graph without executing.");
     }
-    return { ...plan, ok: true, executed: true };
+    const verification = probeRenderOutput(plan.output, plan.fidelity.expected_duration_us, plan.fps, opts.ffprobeCmd ?? "ffprobe");
+    return { ...plan, ok: true, executed: true, verification };
 }
