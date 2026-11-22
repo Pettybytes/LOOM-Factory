@@ -2,6 +2,9 @@
 # Launch the LOOM Discord review adapter with secrets sourced from
 # ~/.openclaw/.env (never printed, never committed).
 set -euo pipefail
+# Repo root first: everything below (venv, output dir) is derived from it,
+# so a moved checkout can never fall back to a stale absolute path.
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 set -a
 for v in LOOM_DISCORD_APP_ID LOOM_DISCORD_PUBLIC_KEY LOOM_DISCORD_BOT_TOKEN \
          LOOM_SUPABASE_URL LOOM_SUPABASE_SERVICE_ROLE_KEY LOOM_N8N_API_KEY \
@@ -11,11 +14,16 @@ for v in LOOM_DISCORD_APP_ID LOOM_DISCORD_PUBLIC_KEY LOOM_DISCORD_BOT_TOKEN \
          LOOM_ACQUISITION_LIVE LOOM_ACQUISITION_DURABLE_STORE \
          LOOM_MANUAL_INTAKE_CHANNEL LOOM_MANUAL_INTAKE_CHANNEL_ID \
          LOOM_MANUAL_REVIEW_CHANNEL_ID LOOM_MANUAL_INTAKE_TENANT \
-         LOOM_GHL_INTAKE_FOLDER_ID LOOM_MANUAL_MEDIA_MAX_BYTES; do
+         LOOM_GHL_INTAKE_FOLDER_ID LOOM_MANUAL_MEDIA_MAX_BYTES \
+         LOOM_OPENSHORTS_OUTPUT; do
   line=$(grep "^${v}=" ~/.openclaw/.env | tail -n1 || true)
   [ -n "$line" ] && eval "export $line"
 done
 set +a
+
+# The OpenShorts output dir MUST be the one the backend container mounts;
+# the adapter default still points at the pre-move checkout.
+export LOOM_OPENSHORTS_OUTPUT="${LOOM_OPENSHORTS_OUTPUT:-$REPO_ROOT/openshorts/output}"
 
 # Approved acquisition lane (Gate 1 durable persistence ON, live spend OFF).
 # The live switch is the ONLY thing that can enable a paid acquisition, and it
@@ -29,7 +37,6 @@ export LOOM_N8N_REVIEW_WEBHOOK="https://fns2.app.n8n.cloud/webhook/loom-review-d
 # ImportError as "invalid signature" — every Discord interaction then 401s and
 # Discord reports "The application didn't respond in time". PATH-independent on
 # purpose: a supervisor started from any shell must not pick the system python.
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PYTHON="$REPO_ROOT/.venv/bin/python"
 if [ ! -x "$PYTHON" ]; then
   echo "[run] FATAL: repo virtualenv python not found at $PYTHON" >&2
