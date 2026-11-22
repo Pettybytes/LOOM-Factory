@@ -24,4 +24,19 @@ set +a
 export LOOM_ACQUISITION_DURABLE_STORE="${LOOM_ACQUISITION_DURABLE_STORE:-1}"
 export LOOM_ACQUISITION_LIVE="${LOOM_ACQUISITION_LIVE:-0}"
 export LOOM_N8N_REVIEW_WEBHOOK="https://fns2.app.n8n.cloud/webhook/loom-review-decision"
-exec python3 adapter.py
+# Use the REPO virtualenv interpreter explicitly. The system python3 (/opt/homebrew)
+# does not have `cryptography`, and the adapter's Ed25519 check swallows that
+# ImportError as "invalid signature" — every Discord interaction then 401s and
+# Discord reports "The application didn't respond in time". PATH-independent on
+# purpose: a supervisor started from any shell must not pick the system python.
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PYTHON="$REPO_ROOT/.venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+  echo "[run] FATAL: repo virtualenv python not found at $PYTHON" >&2
+  exit 78
+fi
+if ! "$PYTHON" -c 'import cryptography' >/dev/null 2>&1; then
+  echo "[run] FATAL: $PYTHON cannot import cryptography (Discord signature verification would fail closed)" >&2
+  exit 78
+fi
+exec "$PYTHON" adapter.py
