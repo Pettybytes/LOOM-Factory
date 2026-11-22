@@ -67,6 +67,7 @@ import tenant_routing  # noqa: E402  (same-dir module; tenant assignment/reassig
 import intake_card  # noqa: E402  (same-dir module; card-based intake wizard)
 import acquisition_ops  # noqa: E402
 import library_root as _library_root  # noqa: E402  (approved acquisition lane operator surface)
+import capcut_requests  # noqa: E402
 import capcut_runner  # noqa: E402  (OPTIONAL "Finish in CapCut" lane; never required)
 
 
@@ -1092,13 +1093,15 @@ def lookup_editor_token(token_hash):
     return ((rows[0] if rows else None), "legacy")
 
 
-def resolve_editor_session_token_diag(session_token: str):
+def resolve_editor_session_token_diag(session_token: str, *, allow_completed=False):
     """Validate the editor session token and CLASSIFY the rejection reason for
     diagnostics. Returns (session_or_None, reason) where reason is one of:
     missing_token, hash_mismatch, lookup_failed, expired, completed, revoked,
     inactive, ok.
 
-    Only an ACTIVE, unexpired session is accepted; every terminal state is
+    Only an ACTIVE, unexpired session is accepted by default. CapCut alone may
+    opt into completed sessions; expiry and identity still apply. Every other
+    terminal state is
     rejected with its OWN reason so the editor can tell an expired credential
     (re-acquire) from a completed one (already finished) from a genuinely
     unknown token, and from a lookup failure that is not an auth verdict."""
@@ -1114,8 +1117,12 @@ def resolve_editor_session_token_diag(session_token: str):
     if not row:
         return None, "hash_mismatch"
     status = str(row.get("status") or "").strip()
-    if status != SESSION_STATUS_ACTIVE:
+    if status != SESSION_STATUS_ACTIVE and not (allow_completed and status == "completed"):
         return None, _terminal_reason(status)
+    if status == "completed":
+        expiry = _parse_expiry(row.get("expires_at"))
+        if not expiry or not expiry.tzinfo:
+            return None, "expired"
     if _session_expired(row):
         return None, "expired"
     session = _session_identity(row)
@@ -5005,7 +5012,8 @@ class Handler(BaseHTTPRequestHandler):
         if not auth.startswith("Bearer "):
             self._send_json(401, {"ok": False, "error": "missing session token"})
             return
-        session, reason = resolve_editor_session_token_diag(auth[len("Bearer "):].strip())
+        session, reason = resolve_editor_session_token_diag(
+            auth[len("Bearer "):].strip(), allow_completed=True)
         if not session:
             print(f"[capcut] reject={reason}", flush=True)
             self._send_json(401, {"ok": False, "error": "invalid or expired session",
@@ -5022,7 +5030,13 @@ class Handler(BaseHTTPRequestHandler):
 
         tenant_id = session.get("tenant_id")
         clip_id = session.get("clip_id")
-        source_asset_version = session.get("source_asset_version")
+        completed = session.get("status") == "completed"
+        source_asset_version = (session.get("target_asset_version") if completed
+                                else session.get("source_asset_version"))
+        if completed and (not source_asset_version or source_asset_version in ASSET_VERSION_LATEST_TOKENS):
+            self._send_json(409, {"ok": False, "error": "missing_target_version",
+                                  "reason": "This completed session has no registered target version. Open the clip from its review card."})
+            return
         durable, reason = resolve_durable_bootstrap_diag(
             tenant_id, clip_id, source_asset_version)
         if not durable:
@@ -5030,11 +5044,31 @@ class Handler(BaseHTTPRequestHandler):
                                   "error": "missing_data", "reason": reason})
             return
         durable = dict(durable)
-        # Autosaved settings belong to this authenticated clip session. An
-        # explicit None/disabled Header must override the completed version.
+        # An active session can preview its saved Header. Completed exports use
+        # only the registered target's settings, never a stale autosave.
         saved_draft = session.get("draft")
-        if isinstance(saved_draft, dict) and "title_overlay" in saved_draft:
+        if not completed and isinstance(saved_draft, dict) and "title_overlay" in saved_draft:
             durable["title_overlay"] = saved_draft["title_overlay"]
+        resolved_version = durable.get("asset_version")
+        if completed and resolved_version != source_asset_version:
+            self._send_json(409, {"ok": False, "error": "target_version_mismatch",
+                                  "reason": "The registered version could not be resolved exactly. Open this clip from its review card."})
+            return
+        try:
+            status, response = capcut_requests.run_once(
+                capcut_runner.DEFAULT_HANDOFF_ROOT,
+                (tenant_id, clip_id, resolved_version),
+                lambda: Handler._build_editor_capcut(self, session, body, durable))
+        except Exception as exc:
+            print(f"[capcut] request coordination failed: {type(exc).__name__}", flush=True)
+            self._send_json(500, {"ok": False, "error": "handoff_request_failed",
+                                  "reason": "CapCut export could not be confirmed. Ask the operator to check the handoff before retrying."})
+            return
+        self._send_json(status, response)
+
+    def _build_editor_capcut(self, session, body, durable):
+        """Build once under the store lock; the coordinator saves the response."""
+        tenant_id, clip_id = session.get("tenant_id"), session.get("clip_id")
         resolved_version = durable.get("asset_version")
         job_id = session.get("job_id") or str(clip_id or "").rpartition(":")[0]
         # Local-first (unchanged), then the durable record's own object is
@@ -5045,11 +5079,10 @@ class Handler(BaseHTTPRequestHandler):
         if not media_path:
             print(f"[capcut] working media unavailable for {clip_id}@"
                   f"{resolved_version}: {media_source}", flush=True)
-            self._send_json(409, {"ok": False, "lane": "capcut",
+            return (409, {"ok": False, "lane": "capcut",
                                   "error": "working_media_unavailable",
                                   "reason": media_source,
                                   "asset_version": resolved_version})
-            return
         try:
             report = capcut_runner.run_handoff(
                 bootstrap=durable,
@@ -5071,17 +5104,15 @@ class Handler(BaseHTTPRequestHandler):
         except capcut_runner.ch.CapCutHandoffUnavailable as exc:
             print(f"[capcut] unavailable for {clip_id}@{resolved_version}: {exc}",
                   flush=True)
-            self._send_json(409, {"ok": False, "lane": "capcut",
+            return (409, {"ok": False, "lane": "capcut",
                                   "error": "handoff_unavailable", "reason": str(exc),
                                   "asset_version": resolved_version})
-            return
         except Exception as exc:  # noqa: BLE001
             print(f"[capcut] unexpected failure for {clip_id}: {type(exc).__name__}",
                   flush=True)
-            self._send_json(500, {"ok": False, "lane": "capcut",
+            return (500, {"ok": False, "lane": "capcut",
                                   "error": "handoff_failed",
                                   "reason": f"{type(exc).__name__}"})
-            return
 
         print(f"[capcut] draft '{report.get('draft_name')}' for {clip_id}@"
               f"{resolved_version}", flush=True)
@@ -5122,7 +5153,7 @@ class Handler(BaseHTTPRequestHandler):
         # durable transport copy). Reported for the operator; it never changes
         # which version was exported.
         body["media_source"] = media_source
-        self._send_json(200, body)
+        return (200, body)
 
     def _handle_editor_api(self, method):
         """Authenticated, allowlisted editor API gateway. Only the endpoints the

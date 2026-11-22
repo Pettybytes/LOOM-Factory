@@ -217,7 +217,7 @@ def _endpoint(extra_attrs=None):
     handler = _Handler()
     session = {"edit_session_id": "sess-1", "tenant_id": TENANT,
                "clip_id": CLIP_ID, "source_asset_version": ASSET_VERSION}
-    attrs = {"resolve_editor_session_token_diag": lambda token: (session, "ok"),
+    attrs = {"resolve_editor_session_token_diag": lambda token, **kw: (session, "ok"),
              "supabase_filter_get": lambda *a, **k: []}
     attrs.update(extra_attrs or {})
     return handler, session, attrs
@@ -241,6 +241,10 @@ class _Base(unittest.TestCase):
         self.store = os.path.join(self.tmp, "drafts")
         self.handoffs = os.path.join(self.tmp, "handoffs")
         self.transport = os.path.join(self.tmp, "transport")
+        from unittest.mock import patch
+        request_root = patch.object(cr, 'DEFAULT_HANDOFF_ROOT', self.handoffs)
+        request_root.start()
+        self.addCleanup(request_root.stop)
         os.makedirs(self.output, exist_ok=True)
         os.makedirs(self.store, exist_ok=True)
 

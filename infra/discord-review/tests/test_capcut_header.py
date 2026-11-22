@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -54,7 +55,7 @@ class HeaderForwardingTests(unittest.TestCase):
 
     def test_finish_endpoint_forwards_the_authenticated_sessions_saved_header(self):
         for overlay in (HEADER, {**HEADER,'enabled':False}, None):
-            with self.subTest(overlay=overlay):
+            with self.subTest(overlay=overlay), tempfile.TemporaryDirectory() as request_root:
                 responses=[]
                 handler = SimpleNamespace(headers={'Authorization':'Bearer test'},
                     _read_body=lambda: b'{"edit_session_id":"session"}',
@@ -63,7 +64,8 @@ class HeaderForwardingTests(unittest.TestCase):
                          'source_asset_version':'render-1.5','draft':{'title_overlay':overlay}}
                 durable={'asset_version':'render-1.5', 'title_overlay':{**HEADER,'text':'Older saved Header'}}
                 original=copy.deepcopy(durable)
-                with patch.object(adapter, 'resolve_editor_session_token_diag', return_value=(session,'ok')), \
+                with patch.object(adapter.capcut_runner, 'DEFAULT_HANDOFF_ROOT', request_root), \
+                     patch.object(adapter, 'resolve_editor_session_token_diag', return_value=(session,'ok')), \
                      patch.object(adapter, 'resolve_durable_bootstrap_diag', return_value=(durable,'ok')), \
                      patch.object(adapter, 'materialize_local_working_media', return_value=('/tmp/unused.mp4','local')), \
                      patch.object(adapter.capcut_runner, 'run_handoff', side_effect=adapter.capcut_runner.ch.CapCutHandoffUnavailable('test boundary')) as handoff:
