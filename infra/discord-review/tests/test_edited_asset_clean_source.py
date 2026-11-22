@@ -100,7 +100,8 @@ def session_row(**over):
         "clip_id": "clip-abc:0",
         "source_asset_version": "render-1.2",
         "status": "active",
-        "expires_at": None,
+        "expires_at": (adapter.datetime.now(adapter.timezone.utc) + adapter.timedelta(minutes=30)).isoformat(),
+        "created_at": adapter.datetime.now(adapter.timezone.utc).isoformat(),
     }
     row.update(over)
     return row

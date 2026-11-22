@@ -25,6 +25,7 @@ class CompletedFinishTests(unittest.TestCase):
                     'status': 'completed', 'source_asset_version': 'render-1.0',
                     'target_asset_version': 'render-1.1',
                     'expires_at': '2099-01-01T00:00:00Z',
+                    'created_at': adapter.datetime.now(adapter.timezone.utc).isoformat(),
                     'draft': {'title_overlay': {'text': 'Stale draft'}}}
         self.durable = {'asset_version': 'render-1.1',
                         'title_overlay': {'text': 'Registered Header'},

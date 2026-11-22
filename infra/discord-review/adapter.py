@@ -56,7 +56,7 @@ from typing import Any
 
 import discord_media  # tier-aware upload limit + poster fallback (shared with the acquisition path)
 from urllib.request import Request, urlopen
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 from urllib.error import HTTPError, URLError
 
 import source_review  # noqa: E402  (same-dir module; Source Review Inbox)
@@ -242,7 +242,8 @@ def verify_signature(public_key_hex: str, signature_hex: str, timestamp: str, ra
 
 REVIEW_TOKEN_TTL_SECONDS = 72 * 3600  # 72h. Expired cards revert to manual Hold (never auto-approve).
 EDITOR_TOKEN_TTL_SECONDS = 15 * 60     # 15 min single-use LAUNCH window (pending -> authenticated).
-EDITOR_SESSION_TTL_SECONDS = 4 * 3600  # 4h authenticated editor session (draft stays resumable).
+EDITOR_SESSION_TTL_SECONDS = 30 * 60  # Sliding lease while the editor is in use.
+EDITOR_SESSION_MAX_SECONDS = 8 * 3600  # Absolute limit from immutable created_at.
 
 # ---------------------------------------------------------------------------
 # Operator-facing intake failure classification.
@@ -744,7 +745,7 @@ def consume_editor_token(token_hash: str):
     PATCH consumed_at only where status='active' AND consumed_at IS NULL; a
     competing/replayed exchange affects zero rows."""
     url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
-           f"?token_hash=eq.{token_hash}&status=eq.active&consumed_at=is.null")
+           f"?token_hash=eq.{token_hash}&status=eq.active&consumed_at=is.null&expires_at=gt.now")
     data = json.dumps({"consumed_at": now_iso()}).encode()
     headers = _supabase_headers()
     headers["Content-Type"] = "application/json"
@@ -821,8 +822,8 @@ def mint_session_token(edit_session_id: str):
 
     Minting marks the moment the editor becomes AUTHENTICATED. We extend
     expires_at to the (longer) session TTL here, so the 15-minute LAUNCH window
-    never terminates an already-open editor — the durable draft remains
-    resumable until it completes or is explicitly expired.
+    never terminates an already-open editor. Activity renews this lease up to
+    the absolute session lifetime; an expired credential is never revived.
 
     NEVER rebinds an existing credential. Returns the token, or None."""
     token, _code = mint_session_token_diag(edit_session_id)
@@ -845,23 +846,35 @@ def mint_session_token_diag(edit_session_id: str):
     is still NULL (write-once), which is what removes the rebinding defect."""
     if not edit_session_id:
         return None, "not_active"
+    try:
+        rows = fetch_session_by_id(edit_session_id)
+    except SupabaseLookupError:
+        return None, "lookup_failed"
+    row = rows[0] if rows else None
+    if not row or row.get("status") != "active" or _session_expired(row):
+        return None, "not_active"
     token = secrets.token_urlsafe(24)  # ~32 chars, opaque
     token_hash = hash_token(token)
-    session_expires_at = (datetime.now(timezone.utc)
-                          + timedelta(seconds=EDITOR_SESSION_TTL_SECONDS)).isoformat()
+    session_expires_at = _next_editor_expiry(row)
 
     # 1) Append-only credential table (preferred: concurrent editors each keep
     #    their own credential).
     append = _append_editor_token(edit_session_id, token_hash, session_expires_at)
     if append == "ok":
+        # The credential and its parent must share the authenticated lease.
+        # Previously only the child changed, leaving a 15-minute parent.
+        try:
+            if not _patch_editor_lease("loom_edit_sessions", _session_lease_filter(row), session_expires_at):
+                return None, "not_active"
+        except SupabaseLookupError:
+            return None, "lookup_failed"
         return token, "ok"
     if append == "error":
         return None, "lookup_failed"
 
     # 2) Legacy fallback: bind the single column ONLY if it is unbound.
-    url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions"
-           f"?id=eq.{edit_session_id}&status=eq.{SESSION_STATUS_ACTIVE}"
-           f"&session_token_hash=is.null")
+    url = (f"{SUPABASE_URL}/rest/v1/loom_edit_sessions?" + urlencode({
+        **_session_lease_filter(row), "session_token_hash": "is.null"}))
     data = json.dumps({"session_token_hash": token_hash,
                        "expires_at": session_expires_at}).encode()
     headers = _supabase_headers()
@@ -1009,7 +1022,37 @@ def _parse_expiry(expires_at):
 
 def _session_expired(row) -> bool:
     exp = _parse_expiry((row or {}).get("expires_at"))
-    return bool(exp and exp < datetime.now(timezone.utc))
+    created = _parse_expiry((row or {}).get("created_at"))
+    now = datetime.now(timezone.utc)
+    return (not exp or not exp.tzinfo or exp <= now
+            or not created or not created.tzinfo or created > now
+            or created + timedelta(seconds=EDITOR_SESSION_MAX_SECONDS) <= now)
+
+
+def _next_editor_expiry(row):
+    return min(datetime.now(timezone.utc) + timedelta(seconds=EDITOR_SESSION_TTL_SECONDS),
+               _parse_expiry(row["created_at"]) + timedelta(seconds=EDITOR_SESSION_MAX_SECONDS)).isoformat()
+
+
+def _session_lease_filter(row):
+    # Never write a status or token binding. CAS plus database time prevents a
+    # stale request from reviving a session that expired while we were working.
+    return {"id": "eq." + row["id"], "status": "eq." + row["status"],
+            "tenant_id": "eq." + row["tenant_id"], "clip_id": "eq." + row["clip_id"],
+            "source_asset_version": "eq." + row["source_asset_version"],
+            "and": f"(expires_at.eq.{row['expires_at']},expires_at.gt.now)"}
+
+
+def _patch_editor_lease(table, filters, expires_at):
+    req = Request(f"{SUPABASE_URL}/rest/v1/{table}?" + urlencode(filters),
+                  data=json.dumps({"expires_at": expires_at}).encode(), method="PATCH",
+                  headers={**_supabase_headers(), "Content-Type": "application/json",
+                           "Prefer": "return=representation"})
+    try:
+        with urlopen(req, timeout=15) as resp:
+            return bool(json.loads(resp.read().decode() or "[]"))
+    except (HTTPError, URLError) as exc:
+        raise SupabaseLookupError(getattr(exc, "code", 0), req.full_url) from exc
 
 
 def _session_identity(row):
@@ -1087,10 +1130,33 @@ def lookup_editor_token(token_hash):
         sid = (tokens[0] or {}).get("edit_session_id")
         if sid:
             rows = fetch_session_by_id(sid)
-            return ((rows[0] if rows else None), "token_table")
+            row = dict(rows[0]) if rows else None
+            if row:
+                row["_credential"] = tokens[0]
+            return row, "token_table"
         return None, "token_table"
     rows = fetch_sessions_by_session_token_hash(token_hash)
     return ((rows[0] if rows else None), "legacy")
+
+
+def _editor_token_reason(row, *, allow_completed=False):
+    if not row:
+        return "hash_mismatch"
+    credential = row.get("_credential")
+    if credential is not None:
+        if credential.get("revoked_at"):
+            return "revoked"
+        expiry = _parse_expiry(credential.get("expires_at"))
+        if not expiry or not expiry.tzinfo or expiry <= datetime.now(timezone.utc):
+            return "expired"
+    status = str(row.get("status") or "").strip()
+    if status != SESSION_STATUS_ACTIVE and not (allow_completed and status == "completed"):
+        return _terminal_reason(status)
+    if _session_expired(row):
+        return "expired"
+    if not _session_identity(row) or not row.get("tenant_id") or not row.get("source_asset_version"):
+        return "hash_mismatch"
+    return "ok"
 
 
 def resolve_editor_session_token_diag(session_token: str, *, allow_completed=False):
@@ -1099,8 +1165,8 @@ def resolve_editor_session_token_diag(session_token: str, *, allow_completed=Fal
     missing_token, hash_mismatch, lookup_failed, expired, completed, revoked,
     inactive, ok.
 
-    Only an ACTIVE, unexpired session is accepted by default. CapCut alone may
-    opt into completed sessions; expiry and identity still apply. Every other
+    Only an ACTIVE, unexpired session is accepted by default. CapCut may opt
+    into completed sessions; expiry and identity still apply. Every other
     terminal state is
     rejected with its OWN reason so the editor can tell an expired credential
     (re-acquire) from a completed one (already finished) from a genuinely
@@ -1114,17 +1180,9 @@ def resolve_editor_session_token_diag(session_token: str, *, allow_completed=Fal
         print(f"[session] lookup_failed status={e.code} fp={token_fp(session_token)}",
               flush=True)
         return None, "lookup_failed"
-    if not row:
-        return None, "hash_mismatch"
-    status = str(row.get("status") or "").strip()
-    if status != SESSION_STATUS_ACTIVE and not (allow_completed and status == "completed"):
-        return None, _terminal_reason(status)
-    if status == "completed":
-        expiry = _parse_expiry(row.get("expires_at"))
-        if not expiry or not expiry.tzinfo:
-            return None, "expired"
-    if _session_expired(row):
-        return None, "expired"
+    reason = _editor_token_reason(row, allow_completed=allow_completed)
+    if reason != "ok":
+        return None, reason
     session = _session_identity(row)
     if not session:
         return None, "hash_mismatch"
@@ -3174,6 +3232,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/discord/editor/draft":
             self._handle_editor_draft()
             return
+        if path == "/discord/editor/renew":
+            self._handle_editor_renew()
+            return
         if path == "/discord/editor/capcut":
             self._handle_editor_capcut()
             return
@@ -4973,6 +5034,59 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[pending] resolved clip-specific session for user {launch_user_id} -> {clip_id}", flush=True)
         self._send_json(200, {"ok": True, "pending": True, "session": session})
 
+    def _handle_editor_renew(self):
+        """Bounded activity lease; never mint, rebind, reopen, or edit a clip.
+
+        The previous expiry is a CAS receipt. A duplicate/stale heartbeat reads
+        the current lease but cannot extend it again. Client clocks are unused.
+        """
+        auth = self.headers.get("Authorization", "")
+        token = auth[len("Bearer "):].strip() if auth.startswith("Bearer ") else ""
+        if not token:
+            self._send_json(401, {"ok": False, "reason": "missing_token"})
+            return
+        try:
+            row, source = lookup_editor_token(hash_token(token))
+            reason = _editor_token_reason(row, allow_completed=True)
+            if reason != "ok":
+                self._send_json(401, {"ok": False, "reason": reason})
+                return
+            try:
+                body = json.loads(self._read_body().decode() or "{}")
+            except (ValueError, UnicodeError):
+                self._send_json(400, {"ok": False, "error": "bad json"})
+                return
+            if not isinstance(body, dict) or body.get("edit_session_id") != row["id"]:
+                self._send_json(403, {"ok": False, "reason": "session_mismatch"})
+                return
+            if body.get("expires_at") == row["expires_at"]:
+                expiry = _next_editor_expiry(row)
+                credential = row.get("_credential")
+                if source == "token_table":
+                    filters = {"token_hash": "eq." + hash_token(token),
+                               "edit_session_id": "eq." + row["id"], "revoked_at": "is.null",
+                               "and": f"(expires_at.eq.{credential['expires_at']},expires_at.gt.now)"}
+                    # Update the child first. A partial failure never makes an
+                    # expired/revoked parent valid; both records gate every use.
+                    if not _patch_editor_lease(EDITOR_TOKEN_TABLE, filters, expiry):
+                        self._send_json(409, {"ok": False, "reason": "renew_conflict"})
+                        return
+                filters = _session_lease_filter(row)
+                if source == "legacy":
+                    filters["session_token_hash"] = "eq." + hash_token(token)
+                if not _patch_editor_lease("loom_edit_sessions", filters, expiry):
+                    self._send_json(409, {"ok": False, "reason": "renew_conflict"})
+                    return
+                # Recheck revocation/expiry after both writes, including races.
+                row, _ = lookup_editor_token(hash_token(token))
+                reason = _editor_token_reason(row, allow_completed=True)
+                if reason != "ok":
+                    self._send_json(401, {"ok": False, "reason": reason})
+                    return
+            self._send_json(200, {"ok": True, "expires_at": row["expires_at"]})
+        except SupabaseLookupError:
+            self._send_json(503, {"ok": False, "reason": "lookup_failed"})
+
     def _handle_editor_draft(self):
         """Persist the trim draft server-side BEFORE render starts, so an
         Activity reload cannot erase an in-progress trim. Authenticated by the
@@ -5395,12 +5509,15 @@ class Handler(BaseHTTPRequestHandler):
                                   "reason": "lookup_failed"})
             return
         if not token_row:
-            # Unknown credential. A TERMINAL session still authenticates here:
-            # its credential stays valid so an idempotent replay can resolve;
-            # only a token matching no session is rejected.
+            # Unknown credentials cannot resolve even an idempotent replay.
             print("[complete] reject=hash_mismatch", flush=True)
             self._send_json(401, {"ok": False, "error": "invalid session token",
                                   "reason": "hash_mismatch"})
+            return
+
+        reason = _editor_token_reason(token_row, allow_completed=True)
+        if reason != "ok":
+            self._send_json(401, {"ok": False, "reason": reason})
             return
 
         try:

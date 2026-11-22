@@ -80,7 +80,8 @@ def session_row(**over):
         "clip_id": "clip-abc:0",
         "source_asset_version": "render-1.2",
         "status": "active",
-        "expires_at": None,
+        "expires_at": (adapter.datetime.now(adapter.timezone.utc) + adapter.timedelta(minutes=30)).isoformat(),
+        "created_at": adapter.datetime.now(adapter.timezone.utc).isoformat(),
     }
     row.update(over)
     return row
@@ -202,6 +203,12 @@ class TokenLookupSourceTests(unittest.TestCase):
 class MintingIsWriteOnceTests(unittest.TestCase):
     """Minting must never rebind an existing credential (the hash_mismatch root
     cause): the open editor's token must survive a second mint."""
+
+    def setUp(self):
+        from unittest.mock import patch
+        self.addCleanup(patch.stopall)
+        patch.object(adapter, 'fetch_session_by_id', return_value=[session_row()]).start()
+        patch.object(adapter, '_patch_editor_lease', return_value=True).start()
 
     def test_appending_a_second_credential_succeeds(self):
         with _Patch(_append_editor_token=lambda *a: "ok"):
