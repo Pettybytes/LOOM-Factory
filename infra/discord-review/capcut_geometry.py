@@ -5,9 +5,12 @@ anchor and padded raster image, so its image dimensions cannot position these
 native objects. Browser-measured fixtures guard this port against drift.
 """
 from PIL import ImageFont
+from capcut_handoff import active_title_overlay
 
 
 def wrapped_lines(text, font, width):
+    # Arithmetic at a shrink-to-fit boundary can differ by a few float ULPs.
+    width += 1e-6
     lines = []
     for paragraph in text.split('\n'):
         line = ''
@@ -57,10 +60,13 @@ def activity_box(text, settings, canvas, font_path, role, has_background=True):
         center_y = h * .07
     else:
         raise ValueError('Activity geometry supports hook and title')
-    font = ImageFont.truetype(font_path, max(1, font_px))
-    width = min(max_box_width, max(font.getlength(p) for p in text.split('\n')) + 2*padding_x)
+    # BASIC FreeType rounds small glyph advances. Measure Header text at
+    # higher resolution, then scale back to CSS fractional-pixel metrics.
+    metric_scale = 100 if role == 'title' else 1
+    font = ImageFont.truetype(font_path, max(1, font_px * metric_scale))
+    width = min(max_box_width, max(font.getlength(p) / metric_scale for p in text.split('\n')) + 2*padding_x)
     wrap_width = max(1, width - 2*padding_x)
-    lines = wrapped_lines(text, font, wrap_width)
+    lines = wrapped_lines(text, font, wrap_width * metric_scale)
     height = len(lines) * line_height + 2*padding_y
     x = (w-width)/2
     if role == 'title':
@@ -74,3 +80,18 @@ def activity_box(text, settings, canvas, font_path, role, has_background=True):
             'font_px': font_px, 'line_height': line_height, 'padding_x': padding_x,
             'padding_y': padding_y, 'radius_px': radius, 'wrap_width_px': wrap_width,
             'lines': lines}
+
+
+def header_video_band(overlay, canvas):
+    """Activity PreviewSurface's dedicated region in output pixels.
+
+    The source is the already-composed full-frame video. Cropping 9% off each
+    source edge retains 82% of its height; shifting its centre down by 9% puts
+    that region below the 18% band without stretching or re-encoding it.
+    """
+    if active_title_overlay(overlay).get('region') != 'dedicated':
+        return None
+    w, h = float(canvas['width']), float(canvas['height'])
+    return {'x':0, 'y':h*.18, 'width':w, 'height':h*.82,
+            'crop':[0, .09, 1, .82], 'transform_y':-.18,
+            'source':'Activity PreviewSurface.canvasLayout'}

@@ -7,7 +7,7 @@ No reference project or particular hook copy is needed at runtime.
 import json
 from pathlib import Path
 
-from capcut_handoff import HOOK_STYLE_CARD, HOOK_SIZE_SCALE
+from capcut_handoff import HOOK_STYLE_CARD, HOOK_SIZE_SCALE, active_title_overlay
 from capcut_geometry import activity_box, wrapped_lines
 
 CATALOG = json.loads(Path(__file__).with_name('capcut_text_styles.json').read_text())
@@ -149,7 +149,7 @@ def prepare_text_commands(spec, bootstrap, cues, workspace):
             role = 'hook' if ref == 'hook' else 'title'
             settings = dict(auto.get('hook_settings') or {}) if role == 'hook' else dict(bootstrap.get('title_overlay') or {})
             if role == 'hook':
-                settings.setdefault('region', (bootstrap.get('title_overlay') or {}).get('region', 'overlay'))
+                settings.setdefault('region', active_title_overlay(bootstrap.get('title_overlay')).get('region', 'overlay'))
             plan = style_plan(item['text'], settings, canvas, role)
             plan.update(ref=ref, role=role)
             plans.append(plan)

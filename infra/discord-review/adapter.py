@@ -1590,6 +1590,10 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
     crop_reframe = correction.get("crop_reframe_changes") or {}
     framing = crop_reframe.get("framing") or "auto"
 
+    edit_metadata = correction.get("edl_metadata") or {}
+    if not isinstance(edit_metadata, dict):
+        edit_metadata = {}
+
     # 3) Durable suggested copy (hook + social caption).
     scores = supabase_get("loom_scores", clip_id) or []
     score = (scores or [{}])[0] if scores else {}
@@ -1650,9 +1654,10 @@ def resolve_durable_bootstrap(tenant_id, clip_id, source_asset_version):
         "title": "",
         # Renderable copy, by explicit contract. A rendered clip's hook is copy
         # LOOM generated for this clip, so it may appear on screen; there is no
-        # operator-set title overlay on this lane, so title stays empty rather
-        # than borrowing the source metadata title.
+        # generated title overlay on this lane. Explicit Header settings travel
+        # separately; metadata must never be borrowed as on-video text.
         "renderable_text": {"hook": hook, "title": ""},
+        "title_overlay": edit_metadata.get("title_overlay"),
         "source_filename": source_filename or "",
         "hook": hook,
         "has_burned_hook": has_burned_hook,
@@ -5025,6 +5030,11 @@ class Handler(BaseHTTPRequestHandler):
                                   "error": "missing_data", "reason": reason})
             return
         durable = dict(durable)
+        # Autosaved settings belong to this authenticated clip session. An
+        # explicit None/disabled Header must override the completed version.
+        saved_draft = session.get("draft")
+        if isinstance(saved_draft, dict) and "title_overlay" in saved_draft:
+            durable["title_overlay"] = saved_draft["title_overlay"]
         resolved_version = durable.get("asset_version")
         job_id = session.get("job_id") or str(clip_id or "").rpartition(":")[0]
         # Local-first (unchanged), then the durable record's own object is

@@ -194,6 +194,15 @@ def renderable_copy(bootstrap: dict[str, Any],
     return out
 
 
+def active_title_overlay(value):
+    """Only a saved, enabled, nonblank Header can reserve layout space."""
+    if not isinstance(value, dict) or value.get('enabled') is False:
+        return {}
+    if not str(value.get('text') or '').strip():
+        return {}
+    return value
+
+
 def build_capcut_spec(bootstrap: dict[str, Any], *, media_path: str,
                       aspect: str | None = None, fps: int | None = None,
                       renderable: dict[str, Any] | None = None,
@@ -323,7 +332,7 @@ def build_capcut_spec(bootstrap: dict[str, Any], *, media_path: str,
     # a full-duration duplicate text layer that the OpenShorts result never had.
     if copy["title"] and not generated:
         texts.append({"text": copy["title"], "start": 0, "duration": duration})
-    overlay = bootstrap.get('title_overlay') or {}
+    overlay = active_title_overlay(bootstrap.get('title_overlay'))
     if overlay.get('text') and overlay.get('enabled', True):
         texts.append({'text': overlay['text'], 'start': 0,
                       'duration': min(float(overlay.get('duration_seconds', duration)), duration),

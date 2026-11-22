@@ -1,0 +1,170 @@
+{
+  "sources": {
+    "openshorts/dashboard/src/components/PreviewSurface.jsx": "1371050c0fa772dd22bc78faf6d13ce46047ecd8e3723ba7831f6497f49d1e13",
+    "openshorts/dashboard/src/components/TextOverlayPreview.jsx": "551c67d7ea7fa3695a1d9480e36fe8c2f8f3f5912cc403c6b568ef27a8d0da41",
+    "openshorts/dashboard/src/lib/overlayLayout.js": "1bbc8b47d476e53c29761768d8d1d2e7921d25e950d1fa75e2bd90f69def292b",
+    "openshorts/dashboard/src/lib/editorPreviewState.js": "99fa20444669e40067e5d52b111e30b41f2749217569f3dcded26da08f175c11"
+  },
+  "cases": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 1200
+      },
+      "region": "overlay",
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "width": 576,
+        "height": 1024,
+        "centerX": 288,
+        "centerY": 512
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "width": 576,
+        "height": 1024,
+        "centerX": 288,
+        "centerY": 512
+      },
+      "objectFit": "cover",
+      "header": {
+        "x": 57.921875,
+        "y": 52.484375,
+        "width": 460.15625,
+        "height": 38.390625,
+        "centerX": 288,
+        "centerY": 71.6796875
+      },
+      "hook": {
+        "x": 70.265625,
+        "y": 164.890625,
+        "width": 435.453125,
+        "height": 79.8125,
+        "centerX": 287.9921875,
+        "centerY": 204.796875
+      }
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 1200
+      },
+      "region": "dedicated",
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "width": 576,
+        "height": 1024,
+        "centerX": 288,
+        "centerY": 512
+      },
+      "video": {
+        "x": 0,
+        "y": 184.3125,
+        "width": 576,
+        "height": 839.671875,
+        "centerX": 288,
+        "centerY": 604.1484375
+      },
+      "objectFit": "cover",
+      "header": {
+        "x": 57.921875,
+        "y": 52.484375,
+        "width": 460.15625,
+        "height": 38.390625,
+        "centerX": 288,
+        "centerY": 71.6796875
+      },
+      "hook": {
+        "x": 70.265625,
+        "y": 312.34375,
+        "width": 435.453125,
+        "height": 79.8125,
+        "centerX": 287.9921875,
+        "centerY": 352.25
+      }
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "region": "overlay",
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "width": 390,
+        "height": 693.328125,
+        "centerX": 195,
+        "centerY": 346.6640625
+      },
+      "video": {
+        "x": 0,
+        "y": 0,
+        "width": 390,
+        "height": 693.328125,
+        "centerX": 195,
+        "centerY": 346.6640625
+      },
+      "objectFit": "cover",
+      "header": {
+        "x": 31.1875,
+        "y": 10.140625,
+        "width": 327.625,
+        "height": 76.78125,
+        "centerX": 195,
+        "centerY": 48.53125
+      },
+      "hook": {
+        "x": 47.5625,
+        "y": 110.5625,
+        "width": 294.859375,
+        "height": 56.1875,
+        "centerX": 194.9921875,
+        "centerY": 138.65625
+      }
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "region": "dedicated",
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "width": 390,
+        "height": 693.328125,
+        "centerX": 195,
+        "centerY": 346.6640625
+      },
+      "video": {
+        "x": 0,
+        "y": 124.796875,
+        "width": 390,
+        "height": 568.515625,
+        "centerX": 195,
+        "centerY": 409.0546875
+      },
+      "objectFit": "cover",
+      "header": {
+        "x": 31.1875,
+        "y": 10.140625,
+        "width": 327.625,
+        "height": 76.78125,
+        "centerX": 195,
+        "centerY": 48.53125
+      },
+      "hook": {
+        "x": 47.5625,
+        "y": 210.40625,
+        "width": 294.859375,
+        "height": 56.1875,
+        "centerX": 194.9921875,
+        "centerY": 238.5
+      }
+    }
+  ]
+}

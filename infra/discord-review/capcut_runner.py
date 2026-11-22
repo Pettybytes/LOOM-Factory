@@ -799,6 +799,9 @@ def _apply_lane_operations(operations: list[dict[str, Any]], *, refs: dict[str, 
                 raise _unavailable(
                     f"background blur level {level!r} is outside the lane's 1-4 range")
             command = list(invocation) + ["bg-blur", target, segment_id, str(level)]
+        elif kind == 'crop':
+            rect = ','.join(str(v) for v in operation['rect'])
+            command = list(invocation) + ['crop', target, segment_id, '--rect', rect]
         else:
             raise _unavailable(
                 f"the lane has no command for the '{kind}' composition operation")
@@ -809,7 +812,8 @@ def _apply_lane_operations(operations: list[dict[str, Any]], *, refs: dict[str, 
                 f"{(err or out or '').strip()[:300] or 'no output'}")
         applied.append({"op": kind, "ref": ref, "segment_id": segment_id,
                         "level": operation.get("level"),
-                        "renderer_blur_sigma": operation.get("renderer_blur_sigma")})
+                        "renderer_blur_sigma": operation.get("renderer_blur_sigma"),
+                        **({"rect": operation["rect"]} if kind == "crop" else {})})
     return applied
 
 
@@ -998,6 +1002,24 @@ def run_handoff(*, bootstrap: dict[str, Any], media_path: str,
                                aspect=aspect, fps=fps, renderable=renderable,
                                canvas=canvas_plan, composition=composition,
                                visual_state=state, clip_start=coords["start"])
+    from capcut_geometry import header_video_band
+    header_band = header_video_band(working_bootstrap.get('title_overlay'),
+                                   {'width':spec['width'], 'height':spec['height']})
+    if header_band:
+        # Apply the region to clean, already-composed pixels exactly once. A
+        # moving/layered source composition needs clipping after composition;
+        # don't silently crop its raw source instead.
+        if not composition or not composition.get('identity'):
+            raise _unavailable('dedicated Header band requires an already-composed full-frame working asset')
+        for track in spec['tracks']:
+            if track['type'] != 'video':
+                continue
+            for item in track['items']:
+                item['y'] = header_band['transform_y']
+                spec.setdefault('lane_operations', []).append(
+                    {'op':'crop', 'ref':item['ref'], 'rect':header_band['crop']})
+        spec['header_video_band'] = header_band
+        visual_report['header_video_band'] = header_band
     spec["name"] = safe_draft_name(spec.get("name") or "", store=store)
 
     caption_state: dict[str, Any] = {"included": False,

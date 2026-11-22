@@ -11,7 +11,7 @@ Canonical inventory: local `dashboard/src/remotion/lib/types.ts` (ShortVideoProp
 | Trim in/out | draft.trim_start/end; timeline.range; correction source_range | source_timerange/target_timerange | mapped+tested; generated render imports its already trimmed 0–26s |
 | Cuts, ordering | ClipEditor EDL.segments; correction edl_metadata.segments | ordered video segments | accepted generated pixels retained; independent reconstruction missing for generated output |
 | AUTO/FULL/TRACK framing | draft.framing, crop_reframe_changes; persisted visual state | clip.scale/transform and crop keyframes, background blur composition | existing mapping+tests; AUTO render identity tested this run; no new alternate-layout visual claim |
-| Split/screencast and dedicated header region | persisted composition / title_overlay.region | multi-track composition | missing/refused for unsupported source composition; already baked pixels preserved |
+| Split/screencast and dedicated header region | persisted composition / title_overlay.region | multi-track composition | split/screencast source composition remains missing/refused; dedicated Header band now maps over clean already-composed pixels |
 | Zoom/center position | EffectSegment.zoom/zoomCenterX/zoomCenterY; auto_edit.edit_plan | transform/scale keyframes | accepted render effects preserved as pixels; independent generated-effect controls missing |
 | Brightness/contrast/saturate | EffectSegment; auto_edit.edit_plan/filter_string | adjustment materials/keyframes | native mapping missing; any already baked result retained |
 | Flash/punch-in | auto_edit.edit_plan | effect materials/keyframes | native mapping missing; accepted flash/punch-in retained in video |
@@ -26,9 +26,9 @@ Canonical inventory: local `dashboard/src/remotion/lib/types.ts` (ShortVideoProp
 | Hook font and weight | implicit NotoSerif-Bold; custom mapper font_family/weight | CLI preset font_path and bold → material + content styles | default and alternate fonts tested; weight field serialized, visual weight untested; local HookConfig has no HookFont/weight picker |
 | Hook entrance | draft.hook_entrance; HookConfig.entranceAnimation | text animation material | missing |
 | Hook/Header rich base and spans | draft.hook_rich/header_rich; correction.edl_metadata equivalents; base color/font and spans start/end/color/font/size multiplier | CLI text-ranges/preset text_ranges (available, not wired) | missing: version bootstrap omits them, CLI base-style preset currently supplies one run |
-| On-video title enabled/text | title_overlay.enabled/text; correction.edl_metadata.title_overlay; TitleOverlayConfig | separate text material + segment | mapped+tested when supplied; LIVE forwarding missing because version bootstrap omits title_overlay |
+| On-video title enabled/text | title_overlay.enabled/text; correction.edl_metadata.title_overlay; TitleOverlayConfig | separate text material + segment | mapped+tested through both durable version loaders and authenticated Finish endpoint; saved session Header overrides completed-version Header, including disable/removal; live service reload is Bentley-owned |
 | Title font/size/color/background/alignment/position | title_overlay snake_case fields; TitleOverlayConfig camelCase schema | shared text mapper fields | mapped+tested for supplied saved snake_case; direct Remotion-props ingestion missing; visual calibration pending |
-| Title region/timing | title_overlay.region; default full clip duration | text timerange and dedicated band geometry | full-duration text mapped; dedicated video band missing; no saved title timing control in this fork |
+| Title region/timing | title_overlay.region; default full clip duration | text timerange and dedicated band geometry | full-duration native text and dedicated band mapped+tested for clean already-composed video via CLI crop + position; visual validation pending; layered/unresolved compositions refused; no saved title timing control |
 | Captions text/times | auto_edit.captions; CaptionWord.text/startMs/endMs; ASR start/end seconds | CLI import-ass creates text materials + target_timerange | mapped+tested for both input unit conventions; ASS has centisecond precision; render-1.5 has zero cues, no caption visual proof |
 | Caption font/color/uppercase/background/base opacity | auto_edit.caption_settings; draft.caption_*; SubtitleStyle | OpenShorts generate_ass → CLI import-ass --clone-style with explicit role seed; font/fill/background fields | mapped+tested for supplied settings and karaoke dimmed colors; caption background capability flags are not cloned by upstream, visual behavior unverified; latest edited caption persistence incomplete in this fork |
 | Caption size/position/border | caption_settings.font_size/alignment/border_*; SubtitleStyle/SubtitlePosition | CLI seed font_size/border_*; import-ass --x/--y | mapped untested visually; source ASS PlayResY conversion used |
@@ -89,3 +89,38 @@ not agree. This lane follows the Activity preview as Bryan requested. The
 fixture hashes the exact preview sources so future editor changes fail tests.
 
 Hook acceptance: Claude’s visual check on 2026-11-21 confirmed the 2022 draft opens cleanly, font panel size 11, editable single-string text with native reflow, and unchanged 26-second video. This acceptance does not validate the missing Header/caption/rich-text/animation paths listed above.
+
+## Header/title candidate after hook acceptance
+
+Both durable bootstrap paths forward correction `edl_metadata.title_overlay`.
+The authenticated Finish-in-CapCut endpoint additionally forwards the current
+session's autosaved `draft.title_overlay`, preserving explicit disable/removal.
+This is covered by endpoint tests; no service restart/deployment was performed.
+
+The dedicated video region is implemented with CLI `crop --rect 0,0.09,1,0.82`
+and compile item y=-0.18, retaining unit scale and the byte-identical video.
+This currently requires an already-composed full-frame working asset. A layered
+or moving raw-source composition is refused rather than cropped in the wrong
+coordinate system. Other composition support remains a separate gap.
+
+Approved temporary visual fixture (not written to the clip's saved settings):
+`HEADER TEST — dedicated band`, Verdana Bold, size 64, white text, no card,
+centred, top, dedicated region. On 576×1024 the Activity preview gives Header
+centre 71.68px (7%), top 52.48px, width about 460.16px and height 38.39px.
+The video begins at 184.32px (18%) and fills the remaining 839.68px (82%).
+The existing hook's top anchor becomes 34.4% because it is relative to that
+video region. Header remains for all 26 seconds; hook remains 0–5 seconds.
+
+The actual PreviewSurface/TextOverlayPreview components were measured at
+1440×1200 and 390×844 viewports. `capcut_header_geometry.json` stores those
+measurements and source hashes; tests compare Header/video boxes within 2px.
+Header font advances are measured at higher resolution to avoid FreeType's
+small-font rounding while retaining the editor's fractional pixel sizes.
+
+Header acceptance: Claude verified `LOOM render-1.5 20261121-2039` on 2026-11-21:
+native editable Verdana Bold, panel size 11, white text natively wrapped into two
+centred lines at about 7%, lasting 0–26s; black band about 18%; lower video area
+about 82% without visible stretching; accepted hook at about 34%, lasting 0–5s.
+The temporary Header copy is explicit fixture data only, never a runtime default.
+Absent, disabled, or blank saved Header settings produce no Header text, no band,
+and no Header-induced hook displacement, even if a stale region value remains.

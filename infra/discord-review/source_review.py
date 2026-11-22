@@ -641,6 +641,9 @@ back to the source version and never substitutes a 0:00 range.
         # correction JSON. A new editor session must not analyze it again just
         # because that session has no target version yet.
         "auto_edit": edit_metadata.get("auto_edit"),
+        # On-video Header is independent of the clip's metadata title. Keep
+        # absent/disabled values so reopening never resurrects an old overlay.
+        "title_overlay": edit_metadata.get("title_overlay"),
         "previous_asset_version": (media_row.get("previous_asset_version")
                                    or SOURCE_EDITOR_ASSET_VERSION),
         "publication_status": media_row.get("publication_status") or "",
