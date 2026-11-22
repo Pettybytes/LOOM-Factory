@@ -17,7 +17,9 @@ for v in LOOM_DISCORD_APP_ID LOOM_DISCORD_PUBLIC_KEY LOOM_DISCORD_BOT_TOKEN \
          LOOM_GHL_INTAKE_FOLDER_ID LOOM_MANUAL_MEDIA_MAX_BYTES \
          LOOM_OPENSHORTS_OUTPUT; do
   line=$(grep "^${v}=" ~/.openclaw/.env | tail -n1 || true)
-  [ -n "$line" ] && eval "export $line"
+  # Quoted export: values may contain spaces/& (e.g. a path under "01 Dreemzy & Clients").
+  # eval would split on & and silently export a truncated path.
+  [ -n "$line" ] && export "$line"
 done
 set +a
 
