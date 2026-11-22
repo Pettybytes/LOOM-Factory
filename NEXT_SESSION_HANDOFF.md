@@ -1,5 +1,72 @@
 # LOOM — NEXT SESSION HANDOFF
 
+## START HERE — 2026-11-21 — FINAL NIGHT CHECKPOINT; STOPPED FOR BENTLEY
+
+This section supersedes the historical October scopes, status claims and next-action lists below. Bryan requested a final session-expiry repair, commits/pushes, and saved state. **Work is stopped. Bentley owns adapter/frontend reloads, services, tunnel and n8n.** No service was reloaded during this final pass. Do not automatically start queued editor or caption work.
+
+### Live checkout and preservation
+
+- Outer repo: `/Users/user/Desktop/01 Dreemzy & Clients/LOOM-Factory`, branch `master`, remote `origin` (Pettybytes/LOOM-Factory).
+- Nested repo: `openshorts`, branch `loom/factory-mvp-baseline-fixes`, remote **`loom`** (Pettybytes/loom-openshorts). Nested `origin` is upstream mutonby; do not push LOOM changes there.
+- Never reset/clean/restore, touch stashes, or stage unrelated dirty files. Keep `infra/supabase/038_loom_editor_session_tokens.sql` untracked and untouched. Keep `openshorts/aborted-runs/` and all pre-existing files listed below.
+- CapCut native references `1121` and `1121 (1)` are read-only. Before any future CapCut draft write: quit CapCut, SIGTERM only its main app if needed, verify closed; archive the prior LOOM draft instead of deleting it. Claude supplies CapCut visual checks because macOS screenshots are denied to this agent.
+
+### Tonight's recovery
+
+Supabase had auto-paused and was restored. Bentley recovered the adapter's `.venv`/`cryptography` runtime and hardened `run.sh` to use the repo virtualenv, set `LOOM_OPENSHORTS_OUTPUT` to this actual checkout and export values safely when paths contain spaces or `&`. Relevant outer commits: `132d721`, `88f0c8f`, `27e2e98`. Tailscale was fully removed (`cc9c2df`); Cloudflare tunnel + Caddy is the ingress. The tunnel token was verified during recovery. Do not restore the retired VPN path or copy credentials into docs.
+
+**Correction to old documentation:** the table from 038, `loom_editor_session_tokens`, already exists live, with **27 rows reported during tonight's recovery**. The local SQL remains untracked; “038 unapplied/table absent” statements below are historical and wrong for the current database. This final pass read the live table but did not migrate or alter it.
+
+### CapCut work accepted and committed
+
+| Commit | Result |
+| --- | --- |
+| `6332123` | Adopted pinned `vendor/capcut-cli` v0.35.0 with provenance/license; native hook mapping and correct nested Timelines synchronization. |
+| `fbd539a` | Saved Header forwarding and dedicated video-band geometry. Temporary HEADER TEST text is only an explicitly supplied visual-check fixture, never a runtime default. No saved Header means no band. |
+| `f447524` | Finish accepts a valid completed session, pins the export to its registered target/version/settings, serializes requests and persists tenant/clip/asset results for safe replay. Visible accessible refusals; autosave stops after completion. Nested companion: `9b5cc8a`. |
+| `4fcd338` | Registration persists verified `auto_edit.clean_output` separately from captioned `output_url`; guard verifies clean hash/size without weakening stale/raw-source refusal. |
+| `1832efdd87c6b2c7be46d55f09ae53429c3757f6` | Final adapter fix: bounded sliding session renewal, parent lease extended at mint, token expiry/revocation enforced, expired completion replay refused. |
+| nested `9ab87a0f96c39c9cab51715d2ef27289c29d9431` | Editor activity heartbeat, processing/playback keep-alive, visible renewal failures and browser regressions. |
+
+All these code changes are pushed to their owning repositories. CLI v0.35.0 pin: `6e7ef130aa7aff191a1a32a68fe2ff727fec4864`; see `vendor/capcut-cli/PROVENANCE.md` and `infra/discord-review/CAPCUT_COVERAGE.md` for implementation coverage.
+
+Claude visually accepted the native hook in **LOOM render-1.5 20261121-2022**: Noto Serif, black/bold, size 11, one text string with native wrapping, rounded white card, saved top/M geometry, 0–5s. Header/video band passed in **LOOM render-1.5 20261121-2039**: native Verdana Bold white Header, black top band about 18%, video in the lower 82% without visible stretch, hook positioned in the video region. This used Bryan-authorized temporary Header test data because this historical clip had no saved Header. The accepted 26s 576×1024 video SHA remains `c4c2ca72e56e1ddba206542cd6e19cb5f6cedcbd21395ffc9edd95ca7900a3d9`.
+
+Geometry comes from each clip's persisted editor settings. Do not calibrate to the old `openshorts-reference.png`, add hard-coded hook values, or invent a drag schema. Native title/Hook styling shares the mapper. Captions and other coverage gaps remain open below.
+
+### Live end-to-end status and final expiry repair
+
+- Manual Intake works with an attachment **and a `url:` line**. Attachment-only intake is still unsupported. Auto Edit works in the real Discord Activity editor at `app.loomz.stream/edit`.
+- Test clip: `loom-dc3adf8c0642`, durable clip `src-953094d5e9bc1f3021b04243ea3b0fee42bdbd19a8c5158f9ba980a29538a06e:0`, tenant `dreemzy`, registered output `render-1.0` from producing job `loom-8635802cb090`.
+- The clean-vs-captioned mismatch was repaired by `4fcd338`. This clip's correction was backfilled from the existing, hash-checked clean file, **without regeneration**: `edited_recut_1795316770_15114b_loom_8635802c_clip_1.mp4`, 4,534,123 bytes, SHA-256 `94b249dd0d247bba0925c850cb5b315ea559346e3b8b1fdd5eebab4c00064df9`. Captioned preview URL and all other metadata remain unchanged. Its preview hash differs legitimately (`f6cff32e…59b3e`). The fresh 13.1s draft did not itself register another asset version.
+- Last live Finish attempt after that repair was refused as **expired**. Read-only DB verification found the cause: parent session `dee1ba10-1b80-410e-9950-4f284706157d` expired at `2026-11-22T04:08:58.779645Z` (15-minute launch deadline), while its child credential expired at `07:54:02.153554Z`. The append-token mint path had never extended the parent.
+- **Fixed in committed code; not yet live accepted.** New mint extends the parent; `/discord/editor/renew` renews a 30-minute lease, capped at **8 hours from immutable session creation**. The editor checks once a minute during recent visible interaction (5-minute activity window), playback or ongoing render/CapCut processing. Hidden idle editors stop renewing. Server time controls expiry; invalid, expired, revoked and identity-mismatched tokens remain rejected. Completed sessions can renew for Finish, without reopening draft/render mutations.
+- Renewal uses the existing tables with expiry compare-and-swap and database-time predicates; no schema migration. Duplicate/stale heartbeat receipts return the current lease without extending it again. Token revocation/expiry and the parent state are rechecked. Launch tokens stay single-use; completion/CapCut replay guards remain intact.
+- **Next live step belongs to Bentley:** reload the adapter and serve the updated frontend from the nested commit, then open a **fresh** Edit from the review card and verify the full flow through CapCut. Previously expired tokens are intentionally not revived. No new CapCut project was created in this final pass. Do not describe the fresh clip's complete end-to-end flow as accepted yet.
+
+Final verification: **528 tests passed** (205 CapCut, 78 editor/backend, 24 clean-source registration, 221 frontend), frontend build passed with the existing large-chunk advisory, both diff checks passed. Mocked browser reproduction at 1440×900 and 390×844 first failed after 21 minutes; after the fix it passed a **35-minute Auto Edit wait + 21 more minutes before Finish**, then displayed revocation without stealing keyboard focus. These are isolated browser/API fixtures, not live CapCut acceptance. The exact renewal timestamp filter was also accepted by a read-only live Supabase query.
+
+### Open work, in priority order
+
+0. Bentley reload + fresh-session end-to-end verification, including actual CapCut opening. Preserve stale/raw-source checks and single-flight export behavior.
+1. Bryan's queued editor feedback: subtitle-modal style edits do not affect spoken subtitles; add px size controls for hook and subtitles like Header; free Y-axis positioning for the hook. Free positioning/resizing of hook/title/captions is not available in the current editor, so it cannot be mapped today. A saved per-clip drag schema is a separate proposed feature, not an existing field.
+2. CapCut captions: native card/background fidelity and ASS tags dropped by CLI import (pop/glow/box/positioning), then hook/Header rich-text spans and hook entrance animation. Use the CLI wherever supported; follow `infra/discord-review/CAPCUT_COVERAGE.md` and request Claude's visual check after each scoped rebuild.
+3. CapCut export return path to a Discord channel, with **react vs ready** routing; this flow is not implemented/accepted.
+4. Attachment-only uploads without `url:` (optional source URL and optional window). Earlier investigation found identity/ingress work beyond a small parser edit; no intake patch was made.
+5. RLS on the three LOOM tables flagged during recovery; audit the exact live tables/policies before changes.
+6. Supabase free-tier auto-pause keep-alive strategy; nothing scheduled by this agent.
+7. Reconcile 038 documentation with the existing live credential table/27-row recovery observation; never blindly apply the untracked SQL.
+8. Remove old-path defaults at `adapter.py:110–111` and `capcut_runner.py:310` (`/Users/user/Desktop/LOOM-Factory/openshorts/output`). `run.sh` now supplies the right path, but those fallback literals remain.
+9. Review the `codex-gameplay` backport. Do not backport upstream caption persistence or other queued changes during closeout.
+
+### Remaining dirty files and evidence
+
+No uncommitted files owned by this final fix remain after its commits. Preserved outer untracked files: `.playwright-cli/`, `infra/supabase/038_loom_editor_session_tokens.sql`, `n8n-workflows/live-2026-11-21/`. Preserved nested changes: `.gitignore`, `dashboard/src/components/LoomActivityRoot.jsx`, `dashboard/src/lib/api.js`, `tests/test_header_rich_text.py`; untracked `aborted-runs/`, `security_utils.py.bak-20260908212436`. Stashes were not inspected or modified.
+
+Local verification receipts: `/tmp/loom-renewal-{red,green,editor-suites,frontend-all,build}.log`, `/tmp/loom-renewal-browser-{before,final}.log`, `/tmp/loom-renewal-{1440,390}.png`; clean-identity backfill snapshot `/tmp/loom-clean-identity-backfill-before.json`. Browser fixtures are committed in `openshorts/dashboard/tests/editor-renewal.browser.cjs`. Historical native-text reference/evidence remains under `~/Desktop/bentley/loom-checkpoint-2026-10-03/evidence/final-two/` and prior broken drafts under `~/Desktop/bentley/loom-tailscale-removal-2026-11-21/capcut-broken-draft/`.
+
+---
+
 ## START HERE — 2026-10-03 — USER-REQUESTED STOP / COMMITTED RECOVERY CHECKPOINT
 
 Read the newest `CURRENT_STATE.md` section first. **Bryan asked to save and stop, not to continue fixing during this closeout.** Earlier conditions withholding commits until full CapCut acceptance are superseded by his explicit checkpoint/commit request. Accepted work is committed; text-style research is backed up but **not fixed or promoted**. Resume only the one remaining text-style seam when asked.

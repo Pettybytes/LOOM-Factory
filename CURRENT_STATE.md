@@ -1,5 +1,42 @@
 # LOOM — Current State (handoff)
 
+## CURRENT — 2026-11-21 — SESSION RENEWAL COMMITTED; STOPPED FOR BENTLEY
+
+This entry supersedes older current-state claims below. Read the new top section of `NEXT_SESSION_HANDOFF.md` for exact paths, preservation rules, hashes and the prioritized queue. Bryan requested a final repair and saved state, then STOP. Bentley owns service/frontend reloads; none were performed during this pass.
+
+### Recovery and accepted CapCut work
+
+- Supabase was paused and restored. Adapter `.venv`/`cryptography` recovery and `run.sh` hardening are in `132d721`, `88f0c8f`, `27e2e98`: repo virtualenv, correct `LOOM_OPENSHORTS_OUTPUT`, safe quoted exports. Tailscale is fully removed (`cc9c2df`); Cloudflare+Caddy is the ingress and the tunnel token was verified during recovery.
+- `6332123`: vendored CapCut CLI v0.35.0, pinned provenance/license, native hook and Timelines mirror support. `fbd539a`: saved Header forwarding and dedicated video band. Claude visually accepted the native hook in `LOOM render-1.5 20261121-2022` and Header/band in `LOOM render-1.5 20261121-2039`. The 26s 576×1024 media remains unchanged. Temporary Header test text is not a default; absent saved Header means no band.
+- `f447524` (nested companion `9b5cc8a`): completed-session Finish, exact saved target/version, persisted single-flight/replay result, visible errors and no autosave after completion.
+- `4fcd338`: explicit verified clean Auto Edit identity, preserving the captioned preview URL. The new clip's render-1.0 was backfilled from existing clean bytes, SHA-256 `94b249dd0d247bba0925c850cb5b315ea559346e3b8b1fdd5eebab4c00064df9`; no regeneration or saved-edit change.
+
+### Final live result and expiry fix
+
+Attachment intake works with a `url:` line; Auto Edit works. The new end-to-end clip `loom-dc3adf8c0642` still hit a live Finish refusal after `4fcd338`: “Your editor session expired.” The live credential table mint path gave the child token four hours but left the parent at its 15-minute launch expiry. Validation checked that parent. This was confirmed read-only against the latest session and its credential.
+
+**Code fixed and pushed, live acceptance pending Bentley reload:** outer `1832efdd87c6b2c7be46d55f09ae53429c3757f6`; nested `9ab87a0f96c39c9cab51715d2ef27289c29d9431`. Mint now extends the parent. Editor activity renews a 30-minute lease with an eight-hour absolute lifetime from session creation. Heartbeats continue during processing/playback and recent visible editing, stop for idle/closed editors, and display accessible renewal failures. Both parent and credential expiry/revocation are enforced. Compare-and-swap prevents stale heartbeat extension; launch, completion and CapCut replay safeguards remain. No migration or live-session revival was performed.
+
+**Next:** Bentley reloads adapter and updated frontend, then Bryan opens a fresh review-card Edit to prove the actual end-to-end Finish/CapCut result. Already-expired sessions must remain refused. No CapCut draft was written in this final pass.
+
+Verification: 528 tests passed (205 CapCut + 78 editor/backend + 24 registration + 221 frontend); build and diff checks passed. Mocked browser tests at 1440×900 and 390×844 reproduced the old expiry, then passed 35 minutes processing plus 21 minutes before Finish; revocation remained visible and keyboard focus stayed put. These checks do not constitute live CapCut acceptance.
+
+### Prioritized queue after live verification
+
+1. Bryan's editor feedback: subtitle-modal styles do not affect spoken subtitles; px sizing for hook and subtitles; free hook Y position. Custom text drag/resize is not an existing saved editor feature.
+2. CapCut caption cards and dropped ASS styling/position tags (pop/glow/box), rich-text spans, hook entrance animation; retain native editable text and CLI reuse.
+3. CapCut export return to Discord with react vs ready routing.
+4. Attachment-only intake without a `url:` line; source URL/window optionality is not implemented.
+5. RLS on the three flagged LOOM tables.
+6. Supabase free-tier auto-pause keep-alive strategy.
+7. 038 documentation correction: `loom_editor_session_tokens` exists live, with 27 rows reported tonight, despite historical docs. Local 038 SQL stays untracked/untouched; do not blindly apply it.
+8. Old-path fallback literals at `adapter.py:110–111` and `capcut_runner.py:310`; current `run.sh` masks them with the correct output path.
+9. `codex-gameplay` backport review.
+
+No queued feature work was started. All files owned by this fix are committed. Existing dirty/untracked files in both repos, 038, `aborted-runs` and stashes are preserved; see the handoff for the exact list. No service reload, n8n export change, tunnel change or database schema change was performed by this final pass.
+
+---
+
 ## CURRENT — 2026-10-03 — SAVED CHECKPOINT; CAPCUT EDITABLE TEXT STYLE STILL OPEN
 
 **This section supersedes all older “current”, permission-blocked, no-commit and next-action instructions below.** Bryan explicitly requested STOP, backup, commit, current state and a seamless handoff. This checkpoint is authorized before final visual acceptance; it is NOT a claim that CapCut is fully accepted. No further repair, model call, live render or service restart was performed during closeout.
