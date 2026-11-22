@@ -316,17 +316,34 @@ def verified_auto_edit_state(bootstrap: dict[str, Any], *, media_path: str,
                              digest: str, asset_version: str) -> dict[str, Any] | None:
     """Resolve the registered PRE-HOOK generated artifact, never the final render.
 
-    Existing Auto Edit stores its applied plan and output URL in the correction.
-    Its clean source already contains those effects. Verify the exact output
-    bytes before reading its actual canvas; importing those pixels at identity
+    Registration stores the applied plan and verified clean output identity
+    separately from the captioned preview URL. The clean source already contains
+    those effects. Verify its exact bytes before reading its actual canvas;
+    importing those pixels at identity
     preserves AUTO framing without guessing geometry or applying it twice.
     Hook/captions remain separate editable objects in the existing mapper.
     """
     auto = bootstrap.get("auto_edit") or {}
     if not isinstance(auto, dict) or auto.get("status") != "completed":
         return None
-    generated = _served_video_path(str(auto.get("output_url") or ""))
-    if not generated or sha256_file(generated) != digest:
+    clean = auto.get("clean_output")
+    if clean is not None:
+        # Registration binds this durable clean identity to the preview. The
+        # preview may have captions burned in, and its old workspace may be
+        # gone; neither changes the hash of the registered clean artifact.
+        verified = (isinstance(clean, dict)
+                    and str(clean.get("url") or "").startswith("https://")
+                    and bool(clean.get("preview_url"))
+                    and clean.get("preview_url") == auto.get("output_url")
+                    and clean.get("sha256") == digest
+                    and clean.get("size_bytes") == os.path.getsize(media_path)
+                    and sha256_file(media_path) == digest)
+    else:
+        # Preserve the strict legacy path. No filename-based fallback or
+        # tolerance: older records still need byte-identical local evidence.
+        generated = _served_video_path(str(auto.get("output_url") or ""))
+        verified = bool(generated and sha256_file(generated) == digest)
+    if not verified:
         raise _unavailable("the clean source cannot be verified against the persisted "
                            "Auto Edit output; refusing raw-source or stale-edit handoff")
     try:

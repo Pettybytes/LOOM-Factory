@@ -292,6 +292,37 @@ class FinalizePropagatesCleanSourceTests(_JobWorkspace, unittest.TestCase):
                            "loom_abc123de_clip_1.mp4")])
         self.assertEqual(handler.responses[-1][0], 200)
 
+    def test_auto_edit_registration_binds_clean_bytes_without_replacing_preview(self):
+        clean_name = 'edited_recut_123_clip.mp4'
+        self.write(clean_name, b'generated-clean-bytes')
+        preview = f'/videos/{self.JOB}/subtitled_456_{clean_name}'
+        ready = f'subtitled_789_hooked_567_{clean_name}'
+        self.write(ready, b'captioned-hooked-preview')
+        auto = {'status': 'completed', 'output_url': preview,
+                'clean_output': {'sha256': 'untrusted-browser-value'}}
+        captured, handler = self._complete({'edit_session_id': 'sess-1',
+            'ready_file': ready, 'edl_metadata': {'auto_edit': auto}})
+        saved = captured['rpc'][0]['p_edl_metadata']['auto_edit']
+        self.assertEqual(saved['output_url'], preview)
+        self.assertEqual(saved['clean_output'], {
+            'url': 'https://filesafe.example/clean.mp4', 'filename': clean_name,
+            'sha256': hashlib.sha256(b'generated-clean-bytes').hexdigest(),
+            'size_bytes': len(b'generated-clean-bytes'), 'preview_url': preview})
+        self.assertEqual(auto['clean_output']['sha256'], 'untrusted-browser-value')
+        self.assertEqual(handler.responses[-1][0], 200)
+
+    def test_wrong_job_or_raw_sibling_cannot_be_registered_as_clean_auto_edit(self):
+        for name, job in [('raw_clip.mp4', self.JOB), ('edited_clip.mp4', 'other-job')]:
+            with self.subTest(name=name, job=job):
+                self.write(name, b'raw-or-stale')
+                ready = 'hooked_123_' + name
+                self.write(ready, b'preview')
+                captured, _ = self._complete({'edit_session_id': 'sess-1', 'ready_file': ready,
+                    'edl_metadata': {'auto_edit': {'status': 'completed',
+                        'output_url': f'/videos/{job}/subtitled_456_{name}',
+                        'clean_output': {'sha256': 'forged'}}}})
+                self.assertNotIn('clean_output', captured['rpc'][0]['p_edl_metadata']['auto_edit'])
+
     def test_an_unobtainable_clean_source_leaves_the_fields_null(self):
         """Honest dead-end: the version registers, and stays truthfully
         replacement-unavailable rather than receiving a fabricated reference."""

@@ -258,6 +258,31 @@ class AutoEditHandoffTests(unittest.TestCase):
             with self.assertRaisesRegex(ch.CapCutHandoffUnavailable, 'cannot be verified'):
                 cr.verified_auto_edit_state(self.bootstrap(), media_path=str(self.media), digest='0'*64, asset_version='render-1.5')
 
+    def test_captioned_preview_uses_the_registered_clean_identity(self):
+        b = self.bootstrap()
+        b['auto_edit']['output_url'] = '/videos/old-job/subtitled_123_generated.mp4'
+        b['auto_edit']['clean_output'] = {
+            'url': 'https://filesafe.example/generated.mp4',
+            'filename': 'generated.mp4', 'sha256': self.digest,
+            'size_bytes': self.media.stat().st_size,
+            'preview_url': b['auto_edit']['output_url'],
+        }
+        # The original workspace/preview may be evicted. The registered hash
+        # still proves a transported clean copy without trusting its filename.
+        state = cr.verified_auto_edit_state(b, media_path=str(self.media),
+            digest=self.digest, asset_version='render-1.5')
+        self.assertEqual(state['auto_edit']['output_sha256'], self.digest)
+        for field, value in [('sha256', '0'*64), ('size_bytes', 1),
+                             ('preview_url', '/videos/other/stale.mp4')]:
+            stale = json.loads(json.dumps(b))
+            stale['auto_edit']['clean_output'][field] = value
+            with self.subTest(field=field), self.assertRaises(ch.CapCutHandoffUnavailable):
+                cr.verified_auto_edit_state(stale, media_path=str(self.media),
+                    digest=self.digest, asset_version='render-1.5')
+        with self.assertRaises(ch.CapCutHandoffUnavailable):
+            cr.verified_auto_edit_state(b, media_path=str(self.media),
+                digest='0'*64, asset_version='render-1.5')
+
     def test_missing_generated_output_refuses_instead_of_rerendering(self):
         b = self.bootstrap(); b['auto_edit']['output_url'] = '/videos/missing/output.mp4'
         with self.assertRaisesRegex(ch.CapCutHandoffUnavailable, 'cannot be verified'):

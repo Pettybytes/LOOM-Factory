@@ -2467,6 +2467,35 @@ def derive_clean_source_for_edit(job_id, ready_file):
     }
 
 
+def verified_auto_edit_clean_output(auto_edit, job_id, clean_fields):
+    """Bind a completed Auto Edit preview to its verified, registered clean bytes.
+
+    Uses the existing clean-source derivation, not browser-supplied hashes. The
+    preview must name the SAME job and edited sibling as the final render.
+    This also supports a hash-checked backfill without uploading or rendering.
+    """
+    if not isinstance(auto_edit, dict) or auto_edit.get("status") != "completed":
+        return None
+    name = str(clean_fields.get("p_clean_source_filename") or "")
+    preview = str(auto_edit.get("output_url") or "")
+    preview_path = urlparse(preview).path
+    if (not job_id or not name.startswith("edited_") or os.path.basename(name) != name
+            or os.path.dirname(preview_path) != f"/videos/{job_id}"
+            or _strip_clean_filename(os.path.basename(preview_path)) != name):
+        return None
+    digest = str(clean_fields.get("p_clean_source_hash") or "")
+    url = str(clean_fields.get("p_clean_source_url") or "")
+    size = clean_fields.get("p_clean_source_size_bytes")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest) or not url.startswith("https://"):
+        return None
+    path = os.path.join(OPENSHORTS_OUTPUT, job_id, name)
+    if (not os.path.isfile(path) or os.path.getsize(path) != size
+            or _sha256_file(path) != digest):
+        return None
+    return {"url": url, "filename": name, "sha256": digest,
+            "size_bytes": size, "preview_url": preview}
+
+
 def _url_reachable(url: str, timeout: int = 8) -> bool:
     """True if the URL answers a byte-range GET (filesafe CDN rejects the default
     Python-urllib UA, so send a browser UA)."""
@@ -5459,6 +5488,7 @@ class Handler(BaseHTTPRequestHandler):
         # so the version stays truthfully replacement-unavailable rather than
         # receiving a guessed, fabricated or borrowed reference.
         clean_fields = {}
+        cs_job_id = None
         try:
             cs_job_id, _cs_index = rehydrate_edit_job(
                 edit_session_id, session.get("tenant_id"),
@@ -5469,6 +5499,20 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001 — never block a registration on this
             print(f"[complete] clean-source derivation failed (non-fatal): "
                   f"{type(e).__name__}: {e}", flush=True)
+
+        auto_edit = edl_metadata.get("auto_edit")
+        if isinstance(auto_edit, dict):
+            auto_edit = dict(auto_edit)
+            # Never persist a browser-asserted clean identity. Only this
+            # registration's independently derived bytes can establish it.
+            auto_edit.pop("clean_output", None)
+            try:
+                clean_output = verified_auto_edit_clean_output(auto_edit, cs_job_id, clean_fields)
+            except OSError:
+                clean_output = None
+            if clean_output:
+                auto_edit["clean_output"] = clean_output
+            edl_metadata["auto_edit"] = auto_edit
 
         rpc_payload = {
             "p_edit_session_id": edit_session_id,
